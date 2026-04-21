@@ -2,36 +2,6 @@ import Foundation
 import Testing
 @testable import CairnCore
 
-private actor FakeWriter: ImmichWriter {
-    var upsertedTagValues: [String] = []
-    var taggedBatches: [(tagIds: [String], assetIds: [String])] = []
-    var trashedBatches: [[String]] = []
-
-    var nextTagId = "tag-uuid-1"
-    var failTrashWith: Error? = nil
-    var failTagWith: Error? = nil
-
-    func setFailTrash(_ error: Error?) { failTrashWith = error }
-    func setFailTag(_ error: Error?) { failTagWith = error }
-
-    func upsertTag(value: String) async throws -> ImmichTag {
-        if let err = failTagWith { throw err }
-        upsertedTagValues.append(value)
-        return ImmichTag(id: nextTagId, value: value)
-    }
-
-    func bulkTagAssets(tagIds: [String], assetIds: [String]) async throws {
-        taggedBatches.append((tagIds, assetIds))
-    }
-
-    func trashAssets(ids: [String]) async throws {
-        if let err = failTrashWith { throw err }
-        trashedBatches.append(ids)
-    }
-}
-
-private struct FakeError: Error, CustomStringConvertible { let message: String; var description: String { message } }
-
 @Suite("TrashOrchestrator")
 struct TrashOrchestratorTests {
 

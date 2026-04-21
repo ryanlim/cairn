@@ -84,6 +84,18 @@ public struct ImmichClient: Sendable {
         try Self.expectOK(resp, data: data)
     }
 
+    /// Restores specific assets from trash by their UUIDs. Server is idempotent for
+    /// assets that aren't currently trashed, so callers don't need to pre-filter.
+    public func restoreAssets(ids: [String]) async throws {
+        guard !ids.isEmpty else { return }
+        var req = try makeRequest(method: "POST", path: "trash/restore/assets")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let body: [String: Any] = ["ids": ids]
+        req.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (data, resp) = try await session.data(for: req)
+        try Self.expectOK(resp, data: data)
+    }
+
     // MARK: - Tags (breadcrumbs)
 
     /// Creates (or returns existing) tag. Immich's POST /tags is upsert-by-value.

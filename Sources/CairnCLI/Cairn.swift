@@ -7,7 +7,7 @@ struct Cairn: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "cairn",
         abstract: "Reconcile a local-photo set against an Immich server, trashing assets that have left the local set.",
-        subcommands: [Verify.self, DryRun.self, Trash.self, DumpServerChecksums.self],
+        subcommands: [Verify.self, DryRun.self, Trash.self, Restore.self, DumpServerChecksums.self],
         defaultSubcommand: DryRun.self
     )
 }
@@ -301,3 +301,59 @@ struct Trash: AsyncParsableCommand {
     }
 }
 
+// MARK: - restore (undo a trash run)
+
+struct Restore: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "restore",
+        abstract: "Restore every asset trashed by a prior run, looking up the asset IDs in the deletion journal."
+    )
+
+    @OptionGroup var globals: GlobalOptions
+
+    @Option(name: .long, help: "The trash run ID to undo. Check the journal or the breadcrumb tag on Immich (cairn/<run_id>) to find it.")
+    var runId: String
+
+    @Option(name: .long, help: "Path to the deletion journal (JSONL).")
+    var journal: String = "deletion-journal.jsonl"
+
+    @Flag(name: .long, help: "Skip interactive confirmation.")
+    var yes: Bool = false
+
+    func run() async throws {
+        let client = try loadClient(globals)
+        let journalActor = DeletionJournal(path: URL(fileURLWithPath: journal))
+
+        let entries = try await journalActor.readAll()
+        let forRun = entries.filter { $0.runId == runId }
+        if forRun.isEmpty {
+            throw RuntimeError("run '\(runId)' not found in journal at \(journal)")
+        }
+        var assetIds: [String] = []
+        for entry in forRun {
+            if case .trashSucceeded(let ids) = entry.event { assetIds = ids }
+        }
+        if assetIds.isEmpty {
+            throw RuntimeError("run '\(runId)' has no trashSucceeded event — nothing to restore")
+        }
+
+        print("run: \(runId)")
+        print("would restore \(assetIds.count) asset id(s):")
+        for id in assetIds.prefix(20) { print("  \(id)") }
+        if assetIds.count > 20 { print("  … and \(assetIds.count - 20) more") }
+
+        if !yes {
+            print("\nproceed with restore? [y/N] ", terminator: "")
+            let answer = readLine() ?? ""
+            if answer.lowercased() != "y" && answer.lowercased() != "yes" {
+                print("aborted by user.")
+                throw ExitCode.failure
+            }
+        }
+
+        let orch = RestoreOrchestrator(writer: client, journal: journalActor)
+        let summary = try await orch.restore(fromRunId: runId)
+        print("\nrestored \(summary.restoredAssetIds.count) asset id(s).")
+        print("journal: \(journal)")
+    }
+}

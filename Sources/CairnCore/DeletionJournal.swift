@@ -72,6 +72,9 @@ public struct JournalEntry: Codable, Sendable, Equatable {
         case trashFailed(assetIds: [String], message: String)
         case runCompleted(deletedCount: Int)
         case runAborted(reason: String)
+        case restoreStarted(fromRunId: String, assetIds: [String])
+        case restoreSucceeded(fromRunId: String, assetIds: [String])
+        case restoreFailed(fromRunId: String, assetIds: [String], message: String)
     }
 
     public struct TrashTarget: Codable, Sendable, Equatable {

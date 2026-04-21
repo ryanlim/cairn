@@ -7,6 +7,7 @@ public protocol ImmichWriter: Sendable {
     func upsertTag(value: String) async throws -> ImmichTag
     func bulkTagAssets(tagIds: [String], assetIds: [String]) async throws
     func trashAssets(ids: [String]) async throws
+    func restoreAssets(ids: [String]) async throws
 }
 
 public struct ImmichTag: Sendable, Equatable {
