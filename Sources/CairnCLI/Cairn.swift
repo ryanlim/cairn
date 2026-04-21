@@ -19,13 +19,9 @@ struct GlobalOptions: ParsableArguments {
 }
 
 func loadClient(_ opts: GlobalOptions) throws -> ImmichClient {
-    EnvLoader.load(from: opts.envFile)
-    let urlString = try EnvLoader.require("IMMICH_URL")
-    let apiKey = try EnvLoader.require("IMMICH_API_KEY")
-    guard let url = URL(string: urlString) else {
-        throw RuntimeError("IMMICH_URL is not a valid URL: \(urlString)")
-    }
-    return ImmichClient(baseURL: url, apiKey: apiKey)
+    EnvFileLoader.load(fromPath: opts.envFile)
+    let secrets = EnvSecretStore()
+    return ImmichClient(baseURL: try secrets.serverURL(), apiKey: try secrets.apiKey())
 }
 
 // MARK: - verify
@@ -99,9 +95,11 @@ struct DryRun: AsyncParsableCommand {
 
     func run() async throws {
         let client = try loadClient(globals)
+        let photos = ChecksumFilePhotoEnumerator(filePath: localChecksumsFile)
+        let store = JSONFileEverSeenStore(filePath: everSeenStore)
 
-        let local = try Self.loadLocalChecksums(localChecksumsFile)
-        let everSeenBefore = Self.loadEverSeen(everSeenStore)
+        let local = try await photos.currentChecksums()
+        let everSeenBefore = try await store.snapshot()
         let isFirstRun = everSeenBefore.isEmpty
 
         print("local checksums: \(local.count)")
@@ -150,30 +148,9 @@ struct DryRun: AsyncParsableCommand {
 
         // Persist the updated ever-seen set even on dry-run; it's only the deletion that
         // we're suppressing. This makes repeated dry-runs converge correctly.
-        let everSeenAfter = everSeenBefore.union(local)
-        try Self.saveEverSeen(everSeenAfter, to: everSeenStore)
+        try await store.union(local)
+        let everSeenAfter = try await store.snapshot()
         print("ever-seen (after): \(everSeenAfter.count)  → \(everSeenStore)")
-    }
-
-    static func loadLocalChecksums(_ path: String) throws -> Set<Checksum> {
-        let raw = try String(contentsOfFile: path, encoding: .utf8)
-        let values = raw.split(whereSeparator: \.isNewline)
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty && !$0.hasPrefix("#") }
-        return Set(values.map { Checksum(base64: $0) })
-    }
-
-    static func loadEverSeen(_ path: String) -> Set<Checksum> {
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
-              let array = try? JSONDecoder().decode([String].self, from: data)
-        else { return [] }
-        return Set(array.map { Checksum(base64: $0) })
-    }
-
-    static func saveEverSeen(_ set: Set<Checksum>, to path: String) throws {
-        let array = Array(set.map(\.base64)).sorted()
-        let data = try JSONEncoder().encode(array)
-        try data.write(to: URL(fileURLWithPath: path), options: .atomic)
     }
 }
 
@@ -210,9 +187,11 @@ struct Trash: AsyncParsableCommand {
 
     func run() async throws {
         let client = try loadClient(globals)
+        let photos = ChecksumFilePhotoEnumerator(filePath: localChecksumsFile)
+        let store = JSONFileEverSeenStore(filePath: everSeenStore)
 
-        let local = try DryRun.loadLocalChecksums(localChecksumsFile)
-        let everSeenBefore = DryRun.loadEverSeen(everSeenStore)
+        let local = try await photos.currentChecksums()
+        let everSeenBefore = try await store.snapshot()
         let isFirstRun = everSeenBefore.isEmpty
 
         if isFirstRun {
@@ -295,8 +274,8 @@ struct Trash: AsyncParsableCommand {
         }
         print("journal: \(journal)")
 
-        let everSeenAfter = everSeenBefore.union(local)
-        try DryRun.saveEverSeen(everSeenAfter, to: everSeenStore)
+        try await store.union(local)
+        let everSeenAfter = try await store.snapshot()
         print("ever-seen (after): \(everSeenAfter.count)  → \(everSeenStore)")
     }
 }
