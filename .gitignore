@@ -1,0 +1,15 @@
+.env
+.env.*
+!.env.example
+.build/
+.swiftpm/
+*.xcodeproj
+DerivedData/
+.DS_Store
+
+# Local persistence for the CLI
+ever-seen.json
+deletion-journal.jsonl
+
+# Per-machine Claude Code permissions (the "local" suffix is the convention)
+.claude/settings.local.json
