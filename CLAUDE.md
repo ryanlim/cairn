@@ -35,6 +35,18 @@ All auth via `x-api-key` header.
 - `POST /api/assets/bulk-upload-check` with `{assets:[{id, checksum}]}` → batch SHA1 presence check. `server/src/controllers/asset-media.controller.ts:180–193`.
 - `POST /api/sync/stream` → JSONL change-event stream used by the official mobile app. `server/src/controllers/sync.controller.ts:20–37`. Candidate for steady-state tracking instead of re-pulling metadata.
 
+## Portability contract (Option C — Swift now, Kotlin if/when)
+
+Cairn may eventually need an Android port. The decision is to **stay single-platform Swift for Phase 1 and Phase 2**, then port `CairnCore` to Kotlin directly if Android demand materializes. To keep that future port tractable, honor these constraints now:
+
+- **`CairnCore` stays pure Foundation + CryptoKit.** No PhotoKit, no SwiftData, no Keychain, no UIKit, no SwiftUI, no BackgroundTasks. If a new type requires an Apple-only API, it belongs in the iOS target, not Core.
+- **Apple-only APIs live behind protocols defined in Core** (like `ImmichWriter` already does). The Phase 2 iOS target provides the concrete implementation; a future Android port provides a parallel Kotlin implementation of the same protocol shape.
+- **The test suite is the conformance spec.** The Kotlin port's first job is to translate `Tests/CairnCoreTests/*` into Kotest/JUnit and make them pass with a Kotlin `CairnCore`. Don't let the test suite atrophy — every new bit of core logic gets a test.
+- **Keep interfaces narrow.** If a public type grows an Apple-specific parameter or return type, that's leakage — refactor.
+- **Port order when the time comes:** `Types` → `SafetyRails` + `ReconciliationEngine` → `Hashing` → `DeletionJournal` + `JournalReader` → `TagSchema` → `ImmichClient` → `TrashOrchestrator` + `RestoreOrchestrator`. Each has few dependencies on the previous.
+
+This is not KMP. We're not sharing a compiled binary. We're keeping the reference implementation small enough that a mechanical port is a day of work when the Android audience is real. See the plan doc's "Portability" section for the full rationale.
+
 ## Tag schema (v1)
 
 Every trash run writes `cairn/v1/run/<run_id>` as a tag on Immich. One tag per run; every trashed asset (including Live Photo motion videos) attached. `<run_id>` = ISO-8601 timestamp + short device id. Schema-versioned at the path — bump to `v2` for breaking changes, old tools keep reading old tags. Full rationale and what's intentionally excluded is in the plan doc's "Tag schema" section — read that before touching `Sources/CairnCore/TagSchema.swift` or the tag path in `TrashOrchestrator`.

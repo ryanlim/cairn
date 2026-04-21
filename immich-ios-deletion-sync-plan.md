@@ -248,6 +248,20 @@ Edge-case tests to write early:
 5. **First-run hashing cost.** Measure actual throughput for PhotoKit `requestData → SHA1` on a 5–10k-photo library. If it's minutes, we need progress UI and/or a background-run mode for the initial scan.
 6. **Pull vs. sync stream.** Evaluate `POST /api/sync/stream` — if it cleanly emits asset create/delete events with checksums, it might replace the paginated metadata pull as our server-state source, especially for incremental background refreshes.
 
+## Portability
+
+Android is a plausible future target (Immich has a large self-hosting audience that uses Android phones). Decided direction: **stay single-platform Swift for now, port to Kotlin later if demand materializes.** Not Kotlin Multiplatform, not a Rust core with FFI — both add complexity disproportionate to a ~1,000-line reconciliation layer.
+
+Three constraints to keep a future port tractable:
+
+1. **`CairnCore` stays pure Foundation + CryptoKit.** Nothing Apple-specific leaks into the core module — no PhotoKit, SwiftData, Keychain, BackgroundTasks, UIKit, SwiftUI. If a new type needs an Apple API, it belongs in the iOS target.
+2. **Apple APIs live behind protocols defined in Core.** The iOS target supplies concrete implementations (PhotoKit-backed enumerator, SwiftData-backed ever-seen store, Keychain-backed secret vault). A future Android port supplies Kotlin equivalents of the same protocol shapes.
+3. **The test suite is the spec.** The Kotlin port's first milestone is "translate `Tests/CairnCoreTests/*` to Kotest/JUnit and make them pass." Every new piece of core logic gets a test to keep the spec complete.
+
+**Port order when the time comes:** `Types` → `SafetyRails` + `ReconciliationEngine` → `Hashing` → `DeletionJournal` + `JournalReader` → `TagSchema` → `ImmichClient` → `TrashOrchestrator` + `RestoreOrchestrator`. Each has minimal dependencies on the previous. Each Apple stdlib dep has a near-identical Android counterpart (`URLSession` → `OkHttp`/`Ktor`, `CryptoKit` → `java.security.MessageDigest`, `ISO8601DateFormatter` → `java.time.Instant`, `FileHandle` → `java.io.RandomAccessFile`).
+
+The cost of maintaining two implementations is small because the codebase is small and the tests are thorough. The cost of drift is mitigated by porting the tests first — if both test suites pass, both implementations are correct enough.
+
 ## Anti-scope (discipline reminder)
 
 To keep this buildable and maintainable:
