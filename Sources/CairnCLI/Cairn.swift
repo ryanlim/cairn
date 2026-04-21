@@ -317,6 +317,9 @@ struct Restore: AsyncParsableCommand {
     @Option(name: .long, parsing: .singleValue, help: "Asset ID within the run to restore. Repeat for multiple. If absent, the whole run is restored. Live Photo halves auto-expand — passing a still also restores its motion video.")
     var assetId: [String] = []
 
+    @Option(name: .long, help: "ICU regex matched against each asset's originalFileName; only matching assets are restored. Requires `tag.read` on the API key. Mutually exclusive with --asset-id.")
+    var fileNameMatches: String?
+
     @Option(name: .long, help: "Path to the deletion journal (JSONL).")
     var journal: String = "deletion-journal.jsonl"
 
@@ -342,20 +345,69 @@ struct Restore: AsyncParsableCommand {
             throw RuntimeError("run '\(runId)' has no trashSucceeded event — nothing to restore")
         }
 
-        let assetIdsOverride: Set<String>? = assetId.isEmpty ? nil : Set(assetId)
+        if fileNameMatches != nil && !assetId.isEmpty {
+            throw RuntimeError("--file-name-matches and --asset-id can't be combined; use one or the other")
+        }
+
+        let assetIdsOverride: Set<String>?
         let previewIds: [String]
-        if let override = assetIdsOverride {
+
+        if let pattern = fileNameMatches {
+            let regex: NSRegularExpression
+            do {
+                regex = try NSRegularExpression(pattern: pattern)
+            } catch {
+                throw RuntimeError("invalid regex '\(pattern)': \(error)")
+            }
+            let wantValue = TagSchema.runTagValue(runId: runId)
+            let tags: [ImmichTag]
+            do {
+                tags = try await client.listTags()
+            } catch let err as ImmichClientError {
+                if case .httpStatus(401, _) = err {
+                    throw RuntimeError("--file-name-matches requires `tag.read` on the API key; add it in Immich account settings")
+                }
+                throw err
+            }
+            guard let tag = tags.first(where: { $0.value == wantValue }) else {
+                throw RuntimeError("no server tag matches \(wantValue); --file-name-matches requires the server-side tag to still exist")
+            }
+            let members = try await client.assetsForTag(tagId: tag.id, includeTrashed: true)
+            let matched = members.filter { asset in
+                guard let name = asset.originalFileName else { return false }
+                return regex.firstMatch(in: name, range: NSRange(location: 0, length: name.utf16.count)) != nil
+            }
+            if matched.isEmpty {
+                throw RuntimeError("no assets in run '\(runId)' matched filename regex '\(pattern)'")
+            }
+            print("filename regex '\(pattern)' matched \(matched.count) of \(members.count) assets in the run:")
+            for a in matched.prefix(10) {
+                print("  \(a.id)  \(a.originalFileName ?? "(no filename)")")
+            }
+            if matched.count > 10 { print("  … and \(matched.count - 10) more") }
+
+            let expanded = RestoreOrchestrator.expandLivePhotoPairs(
+                Set(matched.map(\.id)),
+                from: members
+            )
+            assetIdsOverride = expanded
+            previewIds = expanded.sorted()
+        } else if !assetId.isEmpty {
+            let override = Set(assetId)
             let unknown = override.subtracting(trashedIds)
             if !unknown.isEmpty {
                 throw RuntimeError("asset id(s) not in run '\(runId)': \(unknown.sorted().joined(separator: ", "))")
             }
-            previewIds = RestoreOrchestrator.expandLivePhotoPairs(override, from: planningTargets).sorted()
+            let expanded = RestoreOrchestrator.expandLivePhotoPairs(override, from: planningTargets)
+            assetIdsOverride = expanded
+            previewIds = expanded.sorted()
         } else {
+            assetIdsOverride = nil
             previewIds = trashedIds
         }
 
         print("run: \(runId)")
-        if assetIdsOverride != nil {
+        if !assetId.isEmpty {
             print("partial restore: \(assetId.count) requested, \(previewIds.count) total after Live Photo expansion")
         }
         print("would restore \(previewIds.count) asset id(s):")

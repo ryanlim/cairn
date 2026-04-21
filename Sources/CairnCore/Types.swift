@@ -15,12 +15,20 @@ public struct ServerAsset: Hashable, Sendable, Codable {
     public let checksum: Checksum
     public let livePhotoVideoId: String?
     public let isTrashed: Bool
+    public let originalFileName: String?
 
-    public init(id: String, checksum: Checksum, livePhotoVideoId: String? = nil, isTrashed: Bool = false) {
+    public init(
+        id: String,
+        checksum: Checksum,
+        livePhotoVideoId: String? = nil,
+        isTrashed: Bool = false,
+        originalFileName: String? = nil
+    ) {
         self.id = id
         self.checksum = checksum
         self.livePhotoVideoId = livePhotoVideoId
         self.isTrashed = isTrashed
+        self.originalFileName = originalFileName
     }
 }
 

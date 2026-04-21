@@ -127,4 +127,21 @@ public struct RestoreOrchestrator: Sendable {
         }
         return out
     }
+
+    /// ServerAsset-flavored overload for when the source of truth is a
+    /// server query (e.g. `cairn restore --file-name-matches`) rather than
+    /// the local journal. Same pairing rules; different input shape.
+    public static func expandLivePhotoPairs(
+        _ requested: Set<String>,
+        from serverAssets: [ServerAsset]
+    ) -> Set<String> {
+        let targets = serverAssets.map {
+            JournalEntry.TrashTarget(
+                assetId: $0.id,
+                checksum: $0.checksum.base64,
+                livePhotoVideoId: $0.livePhotoVideoId
+            )
+        }
+        return expandLivePhotoPairs(requested, from: targets)
+    }
 }

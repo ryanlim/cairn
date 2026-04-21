@@ -234,13 +234,15 @@ struct AssetItemDTO: Decodable {
     let checksum: String
     let livePhotoVideoId: String?
     let isTrashed: Bool
+    let originalFileName: String?
 
     var asServerAsset: ServerAsset {
         ServerAsset(
             id: id,
             checksum: Checksum(base64: checksum),
             livePhotoVideoId: livePhotoVideoId,
-            isTrashed: isTrashed
+            isTrashed: isTrashed,
+            originalFileName: originalFileName
         )
     }
 }

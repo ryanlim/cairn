@@ -161,6 +161,22 @@ struct RestoreOrchestratorTests {
         #expect(summary.restoredAssetIds == ["a", "b", "c"])
     }
 
+    @Test("expandLivePhotoPairs(from serverAssets): same pairing semantics as journal-based overload")
+    func expandFromServerAssets() {
+        let still = ServerAsset(id: "s1", checksum: Checksum(base64: "ck-s"), livePhotoVideoId: "v1")
+        let video = ServerAsset(id: "v1", checksum: Checksum(base64: "ck-v"), livePhotoVideoId: nil)
+        let other = ServerAsset(id: "o1", checksum: Checksum(base64: "ck-o"), livePhotoVideoId: nil)
+
+        let fromStill = RestoreOrchestrator.expandLivePhotoPairs(["s1"], from: [still, video, other])
+        #expect(fromStill == ["s1", "v1"])
+
+        let fromVideo = RestoreOrchestrator.expandLivePhotoPairs(["v1"], from: [still, video, other])
+        #expect(fromVideo == ["s1", "v1"])
+
+        let unrelated = RestoreOrchestrator.expandLivePhotoPairs(["o1"], from: [still, video, other])
+        #expect(unrelated == ["o1"])
+    }
+
     @Test("multiple runs in the same journal: restore only touches the requested run's assets")
     func multipleRunsIsolation() async throws {
         let (journal, path) = tempJournal()
