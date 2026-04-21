@@ -7,7 +7,7 @@ struct Cairn: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "cairn",
         abstract: "Reconcile a local-photo set against an Immich server, trashing assets that have left the local set.",
-        subcommands: [Verify.self, DryRun.self, Trash.self, Restore.self, DumpServerChecksums.self, Diagnose.self],
+        subcommands: [Verify.self, DryRun.self, Trash.self, Restore.self, Journal.self, DumpServerChecksums.self, Diagnose.self],
         defaultSubcommand: DryRun.self
     )
 }
