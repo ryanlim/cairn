@@ -37,7 +37,9 @@ All auth via `x-api-key` header.
 
 ## Live Photos
 
-A Live Photo is one `PHAsset` on iOS but **two Immich assets** linked by `livePhotoVideoId`. Mobile upload path: motion video first to obtain a UUID, then still with `livePhotoVideoId` set (`mobile/lib/services/foreground_upload.service.dart:341–358`). Whether the server cascades a trash through `livePhotoVideoId` is an open question in the plan — verify before relying on it.
+A Live Photo is one `PHAsset` on iOS but **two Immich assets** linked by `livePhotoVideoId`. Mobile upload path: motion video first to obtain a UUID, then still with `livePhotoVideoId` set (`mobile/lib/services/foreground_upload.service.dart:341–358`).
+
+**Server does NOT cascade trash** through `livePhotoVideoId` (verified empirically 2026-04-21). Deleting only the still leaves the motion video orphaned. `TrashOrchestrator.run` must always include linked video UUIDs in the delete batch — it already does, and tests in `TrashOrchestratorTests.swift` pin that behavior.
 
 ## Hashing
 
