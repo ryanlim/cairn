@@ -87,6 +87,80 @@ struct RestoreOrchestratorTests {
         #expect(!entries.contains { if case .restoreSucceeded = $0.event { return true } else { return false } })
     }
 
+    @Test("per-asset: restoring a subset only touches the requested assets")
+    func perAssetRestoreSubset() async throws {
+        let (journal, path) = tempJournal()
+        defer { try? FileManager.default.removeItem(at: path) }
+        try await seedTrashRun(journal, runId: "R1", assetIds: ["a1", "a2", "a3", "a4"])
+
+        let writer = FakeWriter()
+        let orch = RestoreOrchestrator(writer: writer, journal: journal)
+        let summary = try await orch.restore(fromRunId: "R1", assetIds: ["a2", "a4"])
+        #expect(summary.restoredAssetIds == ["a2", "a4"])
+        #expect(await writer.restoredBatches == [["a2", "a4"]])
+    }
+
+    @Test("per-asset: passing an ID that wasn't in the run throws .assetIdsNotInRun")
+    func perAssetRejectsUnknownId() async throws {
+        let (journal, path) = tempJournal()
+        defer { try? FileManager.default.removeItem(at: path) }
+        try await seedTrashRun(journal, runId: "R1", assetIds: ["a1", "a2"])
+
+        let writer = FakeWriter()
+        let orch = RestoreOrchestrator(writer: writer, journal: journal)
+        await #expect(throws: RestoreError.self) {
+            _ = try await orch.restore(fromRunId: "R1", assetIds: ["a1", "ghost"])
+        }
+        #expect(await writer.restoredBatches.isEmpty)
+    }
+
+    @Test("Live Photo auto-expand: restoring the still implicitly restores the linked motion video")
+    func livePhotoStillExpandsToVideo() async throws {
+        let (journal, path) = tempJournal()
+        defer { try? FileManager.default.removeItem(at: path) }
+
+        try await journal.append(.init(runId: "LIVE", event: .runStarted(dryRun: false, candidateCount: 1, assetsInPurview: 100)))
+        try await journal.append(.init(runId: "LIVE", event: .planningTrash(targets: [
+            JournalEntry.TrashTarget(assetId: "still-1", checksum: "ck-still", livePhotoVideoId: "video-1")
+        ])))
+        try await journal.append(.init(runId: "LIVE", event: .trashSucceeded(assetIds: ["still-1", "video-1"])))
+        try await journal.append(.init(runId: "LIVE", event: .runCompleted(deletedCount: 2)))
+
+        let writer = FakeWriter()
+        let orch = RestoreOrchestrator(writer: writer, journal: journal)
+        let summary = try await orch.restore(fromRunId: "LIVE", assetIds: ["still-1"])
+
+        #expect(summary.restoredAssetIds.sorted() == ["still-1", "video-1"])
+    }
+
+    @Test("Live Photo auto-expand: restoring the motion video implicitly restores its still")
+    func livePhotoVideoExpandsToStill() async throws {
+        let (journal, path) = tempJournal()
+        defer { try? FileManager.default.removeItem(at: path) }
+
+        try await journal.append(.init(runId: "LIVE", event: .planningTrash(targets: [
+            JournalEntry.TrashTarget(assetId: "still-1", checksum: "ck-still", livePhotoVideoId: "video-1")
+        ])))
+        try await journal.append(.init(runId: "LIVE", event: .trashSucceeded(assetIds: ["still-1", "video-1"])))
+
+        let writer = FakeWriter()
+        let orch = RestoreOrchestrator(writer: writer, journal: journal)
+        let summary = try await orch.restore(fromRunId: "LIVE", assetIds: ["video-1"])
+        #expect(summary.restoredAssetIds.sorted() == ["still-1", "video-1"])
+    }
+
+    @Test("per-asset: nil assetIds (default) restores the whole run — backward compat")
+    func nilMeansFull() async throws {
+        let (journal, path) = tempJournal()
+        defer { try? FileManager.default.removeItem(at: path) }
+        try await seedTrashRun(journal, runId: "R1", assetIds: ["a", "b", "c"])
+
+        let writer = FakeWriter()
+        let orch = RestoreOrchestrator(writer: writer, journal: journal)
+        let summary = try await orch.restore(fromRunId: "R1", assetIds: nil)
+        #expect(summary.restoredAssetIds == ["a", "b", "c"])
+    }
+
     @Test("multiple runs in the same journal: restore only touches the requested run's assets")
     func multipleRunsIsolation() async throws {
         let (journal, path) = tempJournal()

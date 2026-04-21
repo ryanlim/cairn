@@ -306,13 +306,16 @@ struct Trash: AsyncParsableCommand {
 struct Restore: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "restore",
-        abstract: "Restore every asset trashed by a prior run, looking up the asset IDs in the deletion journal."
+        abstract: "Restore assets trashed by a prior run. By default restores the whole run; pass --asset-id (repeatable) to restore a subset."
     )
 
     @OptionGroup var globals: GlobalOptions
 
     @Option(name: .long, help: "The trash run ID to undo. Check the journal or the breadcrumb tag on Immich (cairn/<run_id>) to find it.")
     var runId: String
+
+    @Option(name: .long, parsing: .singleValue, help: "Asset ID within the run to restore. Repeat for multiple. If absent, the whole run is restored. Live Photo halves auto-expand — passing a still also restores its motion video.")
+    var assetId: [String] = []
 
     @Option(name: .long, help: "Path to the deletion journal (JSONL).")
     var journal: String = "deletion-journal.jsonl"
@@ -329,18 +332,35 @@ struct Restore: AsyncParsableCommand {
         if forRun.isEmpty {
             throw RuntimeError("run '\(runId)' not found in journal at \(journal)")
         }
-        var assetIds: [String] = []
+        var trashedIds: [String] = []
+        var planningTargets: [JournalEntry.TrashTarget] = []
         for entry in forRun {
-            if case .trashSucceeded(let ids) = entry.event { assetIds = ids }
+            if case .trashSucceeded(let ids) = entry.event { trashedIds = ids }
+            if case .planningTrash(let targets) = entry.event { planningTargets = targets }
         }
-        if assetIds.isEmpty {
+        if trashedIds.isEmpty {
             throw RuntimeError("run '\(runId)' has no trashSucceeded event — nothing to restore")
         }
 
+        let assetIdsOverride: Set<String>? = assetId.isEmpty ? nil : Set(assetId)
+        let previewIds: [String]
+        if let override = assetIdsOverride {
+            let unknown = override.subtracting(trashedIds)
+            if !unknown.isEmpty {
+                throw RuntimeError("asset id(s) not in run '\(runId)': \(unknown.sorted().joined(separator: ", "))")
+            }
+            previewIds = RestoreOrchestrator.expandLivePhotoPairs(override, from: planningTargets).sorted()
+        } else {
+            previewIds = trashedIds
+        }
+
         print("run: \(runId)")
-        print("would restore \(assetIds.count) asset id(s):")
-        for id in assetIds.prefix(20) { print("  \(id)") }
-        if assetIds.count > 20 { print("  … and \(assetIds.count - 20) more") }
+        if assetIdsOverride != nil {
+            print("partial restore: \(assetId.count) requested, \(previewIds.count) total after Live Photo expansion")
+        }
+        print("would restore \(previewIds.count) asset id(s):")
+        for id in previewIds.prefix(20) { print("  \(id)") }
+        if previewIds.count > 20 { print("  … and \(previewIds.count - 20) more") }
 
         if !yes {
             print("\nproceed with restore? [y/N] ", terminator: "")
@@ -352,7 +372,7 @@ struct Restore: AsyncParsableCommand {
         }
 
         let orch = RestoreOrchestrator(writer: client, journal: journalActor)
-        let summary = try await orch.restore(fromRunId: runId)
+        let summary = try await orch.restore(fromRunId: runId, assetIds: assetIdsOverride)
         print("\nrestored \(summary.restoredAssetIds.count) asset id(s).")
         print("journal: \(journal)")
     }
