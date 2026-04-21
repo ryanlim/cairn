@@ -103,6 +103,31 @@ When the iOS target lands, switch to:
 
 The result is a simpler, more uniform pipeline that **doesn't depend on `livePhotoVideoId` existing on the server response**. If Immich ever drops or restructures that field, Phase-2 reconciliation continues to work; Phase-1 would silently orphan motion videos. Phase 1 ships the correct behavior today; Phase 2 removes a special case and raises the robustness floor.
 
+## Tag schema (server-side breadcrumbs)
+
+Every destructive run leaves a tag on Immich that together with the trash contents forms a complete audit trail even if the client's local journal is lost.
+
+**Schema (v1):**
+
+```
+cairn/v1/run/<run_id>
+```
+
+where `<run_id>` = `<iso-8601 timestamp>-<short device id>`. Example: `cairn/v1/run/2026-04-21T17:57:15Z-034389BC`.
+
+**One tag per trash run.** Every asset trashed in that run — including linked Live Photo motion videos — is attached to that single tag.
+
+**Version is at the path level** because Immich tags have no description or arbitrary-metadata fields (only name/value/color/timestamps). If semantics change, bump to `v2`; old tags remain interpretable by old tools. The `run/` qualifier leaves room for sibling categories (`cairn/v1/archive/*`, etc.) without breaking changes.
+
+**Deliberately NOT in the schema:**
+- Per-asset status tags — status lives on the asset itself (`isTrashed`), not duplicated in tags.
+- Device dimension as its own tag — device ID is in the run-id slug; can be promoted to `cairn/v2/device/*` if needed.
+- Checksum-keyed or outcome-keyed tags — abusive use of the tag system.
+
+**Reserved (non-breaking additions within v1):** tag `color` — a single hex-string metadata field, currently unused. Could later indicate run status at a glance in the Immich UI (green = all restored, etc.).
+
+**API key scope:** writing tags needs `tag.create` + `tag.asset`; the `history` subcommand additionally needs `tag.read` to list runs from the server.
+
 ## Safety rails
 
 Roughly in order of importance:

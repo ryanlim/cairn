@@ -7,7 +7,7 @@ struct Cairn: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "cairn",
         abstract: "Reconcile a local-photo set against an Immich server, trashing assets that have left the local set.",
-        subcommands: [Verify.self, DryRun.self, Trash.self, Restore.self, Journal.self, DumpServerChecksums.self, Diagnose.self],
+        subcommands: [Verify.self, DryRun.self, Trash.self, Restore.self, Journal.self, History.self, DumpServerChecksums.self, Diagnose.self],
         defaultSubcommand: DryRun.self
     )
 }
@@ -18,7 +18,7 @@ struct GlobalOptions: ParsableArguments {
     var envFile: String = ".env"
 }
 
-private func loadClient(_ opts: GlobalOptions) throws -> ImmichClient {
+func loadClient(_ opts: GlobalOptions) throws -> ImmichClient {
     EnvLoader.load(from: opts.envFile)
     let urlString = try EnvLoader.require("IMMICH_URL")
     let apiKey = try EnvLoader.require("IMMICH_API_KEY")
@@ -270,7 +270,7 @@ struct Trash: AsyncParsableCommand {
 
         if !yes {
             print("\nrun-id: \(resolvedRunId)")
-            print("breadcrumb tag will be: cairn/\(resolvedRunId)")
+            print("breadcrumb tag will be: \(TagSchema.runTagValue(runId: resolvedRunId))")
             print("journal: \(journal)")
             print("\nproceed with trashing? [y/N] ", terminator: "")
             let answer = readLine() ?? ""
@@ -311,7 +311,7 @@ struct Restore: AsyncParsableCommand {
 
     @OptionGroup var globals: GlobalOptions
 
-    @Option(name: .long, help: "The trash run ID to undo. Check the journal or the breadcrumb tag on Immich (cairn/<run_id>) to find it.")
+    @Option(name: .long, help: "The trash run ID to undo. Check the journal or the breadcrumb tag on Immich (cairn/v1/run/<run_id>) to find it.")
     var runId: String
 
     @Option(name: .long, parsing: .singleValue, help: "Asset ID within the run to restore. Repeat for multiple. If absent, the whole run is restored. Live Photo halves auto-expand — passing a still also restores its motion video.")

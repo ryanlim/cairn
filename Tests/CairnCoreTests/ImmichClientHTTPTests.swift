@@ -191,6 +191,59 @@ struct ImmichClientHTTPTests {
         #expect(json["force"] == nil)
     }
 
+    @Test("listTags GETs /api/tags and parses the response array")
+    func listTagsParsesArray() async throws {
+        let client = makeClient()
+        MockURLProtocol.handler = { req in
+            #expect(req.httpMethod == "GET")
+            #expect(req.url?.path == "/api/tags")
+            let json = """
+            [
+              {"id":"t1","value":"cairn/v1/run/abc","color":"#FF0000","createdAt":"2026-04-21T00:00:00.000Z"},
+              {"id":"t2","value":"cairn/v1/run/def"}
+            ]
+            """
+            return (HTTPURLResponse(url: req.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
+                    Data(json.utf8))
+        }
+        let tags = try await client.listTags()
+        #expect(tags.count == 2)
+        #expect(tags[0].value == "cairn/v1/run/abc")
+        #expect(tags[0].color == "#FF0000")
+        #expect(tags[0].createdAt != nil)
+        #expect(tags[1].color == nil)
+    }
+
+    @Test("assetsForTag iterates timeline/archive/hidden and merges, passing tagIds and withDeleted:true in each request")
+    func assetsForTagIteratesVisibilities() async throws {
+        let client = makeClient()
+        let seenVisibilities = Ref<[String]>([])
+        MockURLProtocol.handler = { req in
+            let body = req.readBody()
+            let json = try JSONSerialization.jsonObject(with: body) as! [String: Any]
+            #expect(json["tagIds"] as? [String] == ["T-123"])
+            #expect(json["withDeleted"] as? Bool == true)
+            seenVisibilities.mutate { $0.append(json["visibility"] as! String) }
+            return (HTTPURLResponse(url: req.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
+                    Data(#"{"assets":{"items":[],"nextPage":null}}"#.utf8))
+        }
+        _ = try await client.assetsForTag(tagId: "T-123")
+        #expect(seenVisibilities.value == ["timeline", "archive", "hidden"])
+    }
+
+    @Test("assetsForTag dedupes assets that appear under multiple visibility queries")
+    func assetsForTagDedupes() async throws {
+        let client = makeClient()
+        MockURLProtocol.handler = { req in
+            // Pretend the same asset shows up for every visibility class.
+            let body = #"{"assets":{"items":[{"id":"dup","checksum":"ck","livePhotoVideoId":null,"isTrashed":false}],"nextPage":null}}"#
+            return (HTTPURLResponse(url: req.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
+                    Data(body.utf8))
+        }
+        let assets = try await client.assetsForTag(tagId: "T")
+        #expect(assets.count == 1)
+    }
+
     @Test("trashAssets and restoreAssets on empty id lists are no-ops (no network)")
     func emptyIdListsSkipNetwork() async throws {
         let client = makeClient()

@@ -13,9 +13,14 @@ public protocol ImmichWriter: Sendable {
 public struct ImmichTag: Sendable, Equatable {
     public let id: String
     public let value: String
-    public init(id: String, value: String) {
+    public let color: String?
+    public let createdAt: Date?
+
+    public init(id: String, value: String, color: String? = nil, createdAt: Date? = nil) {
         self.id = id
         self.value = value
+        self.color = color
+        self.createdAt = createdAt
     }
 }
 
@@ -102,7 +107,7 @@ public struct TrashOrchestrator: Sendable {
             return TrashRunSummary(runId: runId, trashedAssetIds: [], breadcrumbTag: nil, aborted: false, abortReason: nil)
         }
 
-        let tagValue = "cairn/\(runId)"
+        let tagValue = TagSchema.runTagValue(runId: runId)
         let tag = try await writer.upsertTag(value: tagValue)
         try await writer.bulkTagAssets(tagIds: [tag.id], assetIds: allIds)
         try await journal.append(.init(

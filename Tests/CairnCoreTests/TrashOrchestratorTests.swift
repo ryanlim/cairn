@@ -29,8 +29,8 @@ struct TrashOrchestratorTests {
         )
 
         #expect(summary.trashedAssetIds == ["a1", "a2"])
-        #expect(summary.breadcrumbTag?.value == "cairn/RUN-1")
-        #expect(await writer.upsertedTagValues == ["cairn/RUN-1"])
+        #expect(summary.breadcrumbTag?.value == "cairn/v1/run/RUN-1")
+        #expect(await writer.upsertedTagValues == ["cairn/v1/run/RUN-1"])
         #expect(await writer.trashedBatches == [["a1", "a2"]])
 
         let entries = try await journal.readAll()
