@@ -80,6 +80,29 @@ This gives the intended behavior:
 - Photo on iPhone *and* Mac → single server asset (content-deduped); iPhone deletion is authoritative for content it has held. This is intentional — we treat the iPhone library as the source of truth for anything it has ever contained.
 - Photo edited in Photos app → new SHA1 → treated as a new asset; the old checksum becomes a candidate when it's no longer on device. Acceptable since the edit produces a different file anyway.
 
+## Live Photos and hidden assets
+
+A Live Photo is one `PHAsset` on iOS but **two Immich assets**: the still (visibility `timeline`) and the motion video (visibility `hidden`), linked by the still's `livePhotoVideoId` field. Immich's `POST /api/search/metadata` endpoint excludes `hidden` by default, so a naive asset list undercounts by the number of Live Photos in the library.
+
+Empirical findings (verified 2026-04-21):
+
+- The server does **not** cascade trash via `livePhotoVideoId`. Trashing the still alone leaves the motion video live and orphaned. The delete batch must explicitly include the linked video UUID.
+- The `locked` visibility class requires an elevated-permissions auth flow (PIN/session upgrade) that API-key auth doesn't have; listing it returns HTTP 401. Our tooling skips it.
+
+### Phase 1 (current): exclude-hidden view, orchestrator cascades
+
+`listAllAssets` defaults to the server's native filter (excludes hidden). `TrashOrchestrator` explicitly includes every candidate's `livePhotoVideoId` in the delete batch. Tests pin this behavior (`TrashOrchestratorTests.livePhotoVideoIncluded`). The `cairn diagnose` subcommand queries every visibility class separately and reports counts plus integrity (dangling video references, orphaned hidden assets) for observability.
+
+### Phase 2 (iOS): include-hidden view, uniform checksum diff
+
+When the iOS target lands, switch to:
+
+1. Hash every `PHAssetResource` that Immich would have uploaded — for Live Photos that's both `.photo` (still) and `.pairedVideo` (motion video). Each ends up in `ever-seen` independently.
+2. `listAllAssets` queries all non-locked visibility classes and merges. Hidden motion videos enter reconciliation as first-class entities.
+3. Drop the `livePhotoVideoId` cascade logic in `TrashOrchestrator` — the diff naturally flags both halves when the user deletes the Live Photo from the iPhone.
+
+The result is a simpler, more uniform pipeline that **doesn't depend on `livePhotoVideoId` existing on the server response**. If Immich ever drops or restructures that field, Phase-2 reconciliation continues to work; Phase-1 would silently orphan motion videos. Phase 1 ships the correct behavior today; Phase 2 removes a special case and raises the robustness floor.
+
 ## Safety rails
 
 Roughly in order of importance:

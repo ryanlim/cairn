@@ -89,6 +89,23 @@ struct ImmichClientHTTPTests {
         #expect(assets.last?.livePhotoVideoId == "v1")
     }
 
+    @Test("listAllAssets omits visibility filter by default and sets it when provided")
+    func visibilityFilterPropagates() async throws {
+        let client = makeClient()
+        let seenVisibilities = Ref<[String?]>([])
+        MockURLProtocol.handler = { req in
+            let body = req.readBody()
+            let json = try JSONSerialization.jsonObject(with: body) as! [String: Any]
+            seenVisibilities.mutate { $0.append(json["visibility"] as? String) }
+            return (HTTPURLResponse(url: req.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
+                    Data(#"{"assets":{"items":[],"nextPage":null}}"#.utf8))
+        }
+        _ = try await client.listAllAssets()
+        _ = try await client.listAllAssets(visibility: .hidden)
+        _ = try await client.listAllAssets(visibility: .timeline)
+        #expect(seenVisibilities.value == [nil, "hidden", "timeline"])
+    }
+
     @Test("listAllAssets requests `withDeleted: false` by default and `true` when asked")
     func withDeletedFlagPropagates() async throws {
         let client = makeClient()

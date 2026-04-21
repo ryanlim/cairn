@@ -51,18 +51,27 @@ public struct ImmichClient: Sendable {
 
     // MARK: - List assets (paginated)
 
-    /// Streams every asset visible to the API key's user. Set `includeTrashed: true`
-    /// if you want trashed assets in the result (we usually don't).
-    public func listAllAssets(includeTrashed: Bool = false, pageSize: Int = 1000) async throws -> [ServerAsset] {
+    /// Streams every asset visible to the API key's user. By default the server
+    /// excludes hidden assets (e.g., motion videos of Live Photos); pass an explicit
+    /// `visibility` to filter to a single class, or call repeatedly across cases of
+    /// `AssetVisibility` and merge to get a complete view.
+    public func listAllAssets(
+        includeTrashed: Bool = false,
+        visibility: AssetVisibility? = nil,
+        pageSize: Int = 1000
+    ) async throws -> [ServerAsset] {
         var out: [ServerAsset] = []
         var page = 1
         while true {
-            let body: [String: Any] = [
+            var body: [String: Any] = [
                 "page": page,
                 "size": pageSize,
                 "withDeleted": includeTrashed,
                 "withExif": false,
             ]
+            if let visibility {
+                body["visibility"] = visibility.rawValue
+            }
             let result: SearchResponseDTO = try await postJSON(path: "search/metadata", jsonObject: body)
             out.append(contentsOf: result.assets.items.map(\.asServerAsset))
             guard let nextString = result.assets.nextPage, let nextPage = Int(nextString) else { break }

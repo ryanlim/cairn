@@ -7,7 +7,7 @@ struct Cairn: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "cairn",
         abstract: "Reconcile a local-photo set against an Immich server, trashing assets that have left the local set.",
-        subcommands: [Verify.self, DryRun.self, Trash.self, Restore.self, DumpServerChecksums.self],
+        subcommands: [Verify.self, DryRun.self, Trash.self, Restore.self, DumpServerChecksums.self, Diagnose.self],
         defaultSubcommand: DryRun.self
     )
 }
@@ -355,5 +355,64 @@ struct Restore: AsyncParsableCommand {
         let summary = try await orch.restore(fromRunId: runId)
         print("\nrestored \(summary.restoredAssetIds.count) asset id(s).")
         print("journal: \(journal)")
+    }
+}
+
+// MARK: - diagnose (observability only — no mutation)
+
+struct Diagnose: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "diagnose",
+        abstract: "Inspect server-side asset state across visibility classes; surface integrity issues (e.g. orphan motion videos)."
+    )
+
+    @OptionGroup var globals: GlobalOptions
+
+    func run() async throws {
+        let client = try loadClient(globals)
+
+        // `locked` requires an elevated-permissions auth flow (PIN/session upgrade) that
+        // our API-key auth doesn't have; it would 401 the whole diagnose. Skip it.
+        let visibilities: [AssetVisibility] = [.timeline, .archive, .hidden]
+        var perClass: [(AssetVisibility, [ServerAsset])] = []
+        for visibility in visibilities {
+            let assets = try await client.listAllAssets(visibility: visibility)
+            perClass.append((visibility, assets))
+        }
+
+        print("=== visibility classes ===")
+        for (vis, assets) in perClass {
+            print("  \(vis.rawValue.padding(toLength: 10, withPad: " ", startingAt: 0)) \(assets.count)")
+        }
+        let total = perClass.reduce(0) { $0 + $1.1.count }
+        print("  -----")
+        print("  total      \(total)")
+
+        // Integrity: every motion video referenced by a still should exist; every
+        // hidden video should be referenced by at least one still.
+        let timelineAssets = perClass.first { $0.0 == .timeline }?.1 ?? []
+        let hiddenAssets = perClass.first { $0.0 == .hidden }?.1 ?? []
+        let hiddenIds = Set(hiddenAssets.map(\.id))
+        let referencedVideoIds = Set(timelineAssets.compactMap(\.livePhotoVideoId))
+
+        let danglingReferences = referencedVideoIds.subtracting(hiddenIds)
+        let orphanedHidden = hiddenIds.subtracting(referencedVideoIds)
+
+        print("")
+        print("=== Live Photo integrity ===")
+        print("  stills referencing a motion video: \(referencedVideoIds.count)")
+        print("  hidden assets in total:           \(hiddenIds.count)")
+        if danglingReferences.isEmpty {
+            print("  dangling livePhotoVideoId references: 0")
+        } else {
+            print("  dangling livePhotoVideoId references: \(danglingReferences.count) — stills point at video UUIDs not present in hidden set")
+            for id in danglingReferences.sorted().prefix(10) { print("    \(id)") }
+        }
+        if orphanedHidden.isEmpty {
+            print("  orphaned hidden assets:               0")
+        } else {
+            print("  orphaned hidden assets:               \(orphanedHidden.count) — hidden assets with no still pointing to them")
+            for id in orphanedHidden.sorted().prefix(10) { print("    \(id)") }
+        }
     }
 }

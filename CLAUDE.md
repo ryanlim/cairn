@@ -35,11 +35,13 @@ All auth via `x-api-key` header.
 - `POST /api/assets/bulk-upload-check` with `{assets:[{id, checksum}]}` → batch SHA1 presence check. `server/src/controllers/asset-media.controller.ts:180–193`.
 - `POST /api/sync/stream` → JSONL change-event stream used by the official mobile app. `server/src/controllers/sync.controller.ts:20–37`. Candidate for steady-state tracking instead of re-pulling metadata.
 
-## Live Photos
+## Live Photos and hidden assets
 
-A Live Photo is one `PHAsset` on iOS but **two Immich assets** linked by `livePhotoVideoId`. Mobile upload path: motion video first to obtain a UUID, then still with `livePhotoVideoId` set (`mobile/lib/services/foreground_upload.service.dart:341–358`).
+A Live Photo is one `PHAsset` on iOS but **two Immich assets**: still (`visibility: timeline`) + motion video (`visibility: hidden`), linked by the still's `livePhotoVideoId` field. `search/metadata` excludes hidden by default, so `listAllAssets()` defaults to returning only timeline-visibility assets.
 
-**Server does NOT cascade trash** through `livePhotoVideoId` (verified empirically 2026-04-21). Deleting only the still leaves the motion video orphaned. `TrashOrchestrator.run` must always include linked video UUIDs in the delete batch — it already does, and tests in `TrashOrchestratorTests.swift` pin that behavior.
+**Server does NOT cascade trash** through `livePhotoVideoId` (verified 2026-04-21). `TrashOrchestrator.run` explicitly includes linked video UUIDs in every delete batch — tests in `TrashOrchestratorTests.swift` (`livePhotoVideoIncluded`) pin this. `locked` visibility needs an elevated-permissions flow our API key doesn't have and 401s; tooling skips it.
+
+Phase 1 vs Phase 2 split on how to handle hidden assets is documented in the plan doc under "Live Photos and hidden assets" — Phase 2 (iOS) will switch to hashing all relevant `PHAssetResource`s and including hidden assets in the server view, which removes the `livePhotoVideoId` special case and makes the pipeline robust to that field being removed. Don't change the exclusion logic in Phase 1 without updating both this note and the plan.
 
 ## Hashing
 

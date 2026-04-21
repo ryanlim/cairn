@@ -24,6 +24,17 @@ public struct ServerAsset: Hashable, Sendable, Codable {
     }
 }
 
+/// Mirrors Immich's `AssetVisibility` enum (`server/src/enum.ts:934`). The
+/// `hidden` case is the one we care about for Live Photos: motion videos are
+/// stored as `hidden` so they don't clutter the timeline. `search/metadata`
+/// excludes hidden assets by default — pass an explicit value to override.
+public enum AssetVisibility: String, Sendable, Codable, CaseIterable {
+    case archive
+    case timeline
+    case hidden
+    case locked
+}
+
 public struct RunID: Hashable, Sendable, Codable, CustomStringConvertible {
     public let value: String
 
