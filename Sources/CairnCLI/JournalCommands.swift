@@ -135,6 +135,9 @@ struct JournalShow: AsyncParsableCommand {
             return ("restoreSucceeded", "\(ids.count) asset(s)  fromRun=\(from)")
         case .restoreFailed(let from, let ids, let msg):
             return ("restoreFailed", "\(ids.count) asset(s)  fromRun=\(from)\nerror: \(msg)")
+        case .assetsExcluded(let cks, let from):
+            let context = from.map { "  fromRun=\($0)" } ?? "  ad-hoc"
+            return ("assetsExcluded", "\(cks.count) checksum(s)\(context)")
         }
     }
 }

@@ -93,4 +93,42 @@ struct ReconciliationEngineTests {
         ))
         #expect(Set(output.deleteCandidates.map(\.id)) == ["s1", "s2"])
     }
+
+    @Test("excluded checksums are filtered out of candidates and reported in excludedCandidateCount")
+    func exclusionFiltersOutCandidates() {
+        let output = ReconciliationEngine.compute(.init(
+            serverAssets: [asset("s1", "A"), asset("s2", "B"), asset("s3", "C")],
+            currentLocalChecksums: [],
+            everSeenChecksums: checksums("A", "B", "C"),
+            excludedChecksums: checksums("B")
+        ))
+        #expect(Set(output.deleteCandidates.map(\.id)) == ["s1", "s3"])
+        #expect(output.excludedCandidateCount == 1)
+    }
+
+    @Test("exclusion has no effect on assets that wouldn't have been candidates anyway")
+    func exclusionDoesNotInflateExcludedCount() {
+        // X is excluded but not in ever-seen, so it was never a candidate. Excluding
+        // it should not bump excludedCandidateCount; that count is for would-be
+        // deletions actually saved by the exclusion list.
+        let output = ReconciliationEngine.compute(.init(
+            serverAssets: [asset("s1", "A"), asset("s2", "X")],
+            currentLocalChecksums: [],
+            everSeenChecksums: checksums("A"),
+            excludedChecksums: checksums("X")
+        ))
+        #expect(Set(output.deleteCandidates.map(\.id)) == ["s1"])
+        #expect(output.excludedCandidateCount == 0)
+    }
+
+    @Test("default excludedChecksums is empty — old call sites continue to work")
+    func defaultExclusionEmpty() {
+        let output = ReconciliationEngine.compute(.init(
+            serverAssets: [asset("s1", "A")],
+            currentLocalChecksums: [],
+            everSeenChecksums: checksums("A")
+        ))
+        #expect(output.deleteCandidates.map(\.id) == ["s1"])
+        #expect(output.excludedCandidateCount == 0)
+    }
 }

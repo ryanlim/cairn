@@ -93,17 +93,23 @@ struct DryRun: AsyncParsableCommand {
     @Option(name: .long, help: "Threshold-percent abort fires only above this absolute candidate count. Lets small libraries delete a few photos at a time without spurious aborts.")
     var minDeleteCountForThreshold: Int = 5
 
+    @Option(name: .long, help: "Path to the persistent exclusion store (JSON). Checksums in this file are protected from trashing on every run.")
+    var exclusionsStore: String = "exclusions.json"
+
     func run() async throws {
         let client = try loadClient(globals)
         let photos = ChecksumFilePhotoEnumerator(filePath: localChecksumsFile)
         let store = JSONFileEverSeenStore(filePath: everSeenStore)
+        let exclusions = JSONFileExclusionStore(filePath: exclusionsStore)
 
         let local = try await photos.currentChecksums()
         let everSeenBefore = try await store.snapshot()
+        let excludedSet = Set(try await exclusions.snapshot().keys)
         let isFirstRun = everSeenBefore.isEmpty
 
         print("local checksums: \(local.count)")
         print("ever-seen (before): \(everSeenBefore.count)\(isFirstRun ? "  [first run]" : "")")
+        if !excludedSet.isEmpty { print("excluded checksums: \(excludedSet.count)") }
         print("fetching server assets…")
 
         let allServer = try await client.listAllAssets()
@@ -112,11 +118,15 @@ struct DryRun: AsyncParsableCommand {
         let result = ReconciliationEngine.compute(.init(
             serverAssets: allServer,
             currentLocalChecksums: local,
-            everSeenChecksums: everSeenBefore
+            everSeenChecksums: everSeenBefore,
+            excludedChecksums: excludedSet
         ))
 
         print("newly-observed local checksums (would be added to ever-seen): \(result.newlyObservedChecksums.count)")
         print("server assets in purview (in ever-seen): \(result.assetsInEverSeen)")
+        if result.excludedCandidateCount > 0 {
+            print("excluded by allowlist (would-be candidates skipped): \(result.excludedCandidateCount)")
+        }
         print("delete candidates: \(result.deleteCandidates.count)")
 
         let safety = SafetyRails.evaluate(
@@ -185,13 +195,18 @@ struct Trash: AsyncParsableCommand {
     @Option(name: .long, help: "Override the run ID (default: timestamped UUID). Useful for resuming or for deterministic tests.")
     var runId: String?
 
+    @Option(name: .long, help: "Path to the persistent exclusion store (JSON). Checksums in this file are protected from trashing on every run.")
+    var exclusionsStore: String = "exclusions.json"
+
     func run() async throws {
         let client = try loadClient(globals)
         let photos = ChecksumFilePhotoEnumerator(filePath: localChecksumsFile)
         let store = JSONFileEverSeenStore(filePath: everSeenStore)
+        let exclusions = JSONFileExclusionStore(filePath: exclusionsStore)
 
         let local = try await photos.currentChecksums()
         let everSeenBefore = try await store.snapshot()
+        let excludedSet = Set(try await exclusions.snapshot().keys)
         let isFirstRun = everSeenBefore.isEmpty
 
         if isFirstRun {
@@ -200,6 +215,7 @@ struct Trash: AsyncParsableCommand {
 
         print("local checksums: \(local.count)")
         print("ever-seen (before): \(everSeenBefore.count)")
+        if !excludedSet.isEmpty { print("excluded checksums: \(excludedSet.count)") }
         print("fetching server assets…")
         let allServer = try await client.listAllAssets()
         print("server assets (excluding trashed): \(allServer.count)")
@@ -207,8 +223,12 @@ struct Trash: AsyncParsableCommand {
         let recon = ReconciliationEngine.compute(.init(
             serverAssets: allServer,
             currentLocalChecksums: local,
-            everSeenChecksums: everSeenBefore
+            everSeenChecksums: everSeenBefore,
+            excludedChecksums: excludedSet
         ))
+        if recon.excludedCandidateCount > 0 {
+            print("excluded by allowlist (would-be candidates skipped): \(recon.excludedCandidateCount)")
+        }
         print("delete candidates: \(recon.deleteCandidates.count)")
 
         let safety = SafetyRails.evaluate(
@@ -251,9 +271,19 @@ struct Trash: AsyncParsableCommand {
             print("\nrun-id: \(resolvedRunId)")
             print("breadcrumb tag will be: \(TagSchema.runTagValue(runId: resolvedRunId))")
             print("journal: \(journal)")
-            print("\nproceed with trashing? [y/N] ", terminator: "")
-            let answer = readLine() ?? ""
-            if answer.lowercased() != "y" && answer.lowercased() != "yes" {
+            // First confirm: intent.
+            print("\nMove \(recon.deleteCandidates.count) assets to trash? [y/N] ", terminator: "")
+            let first = readLine() ?? ""
+            if first.lowercased() != "y" && first.lowercased() != "yes" {
+                print("aborted by user.")
+                throw ExitCode.failure
+            }
+            // Second confirm: dangerous-action acknowledgement, mirrors the iOS
+            // "Yes, trash N" rust-banner pattern. Two-confirm is design-mandated
+            // for live trash (see HANDOFF.md "Two-confirm trash path").
+            print("Yes, trash \(recon.deleteCandidates.count). They'll be recoverable in Immich trash for 30 days. [y/N] ", terminator: "")
+            let second = readLine() ?? ""
+            if second.lowercased() != "y" && second.lowercased() != "yes" {
                 print("aborted by user.")
                 throw ExitCode.failure
             }

@@ -75,6 +75,9 @@ public struct JournalEntry: Codable, Sendable, Equatable {
         case restoreStarted(fromRunId: String, assetIds: [String])
         case restoreSucceeded(fromRunId: String, assetIds: [String])
         case restoreFailed(fromRunId: String, assetIds: [String], message: String)
+        /// User added these checksums to the exclusion list. `fromRunId` is set when
+        /// the exclusion happened from a run-detail view; nil for ad-hoc additions.
+        case assetsExcluded(checksums: [String], fromRunId: String?)
     }
 
     public struct TrashTarget: Codable, Sendable, Equatable {
