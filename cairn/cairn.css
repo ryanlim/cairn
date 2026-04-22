@@ -1,0 +1,554 @@
+/* cairn — design tokens
+   Two-layer system:
+     • Layer 1 (raw palette) is written at runtime from palette.js → --c-* and --n-*
+     • Layer 2 (semantic, defined here) maps UI categories to Layer 1 tokens.
+   Editing a palette swatch repaints every category that points at it.
+*/
+
+:root {
+  /* Radii */
+  --r-sm: 8px;
+  --r-md: 14px;
+  --r-lg: 20px;
+  --r-xl: 28px;
+
+  /* Type */
+  --font-ui: 'Inter Tight', -apple-system, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+  --font-display: 'Inter Tight', -apple-system, system-ui, sans-serif;
+
+  /* ── Layer 1 fallbacks ─ overwritten at runtime by applyPaletteToCSS ─── */
+  --c-destructive: #d52023;
+  --c-danger:      #f94144;
+  --c-warn:        #f3722c;
+  --c-accent:      #f8961e;
+  --c-pending:     #f9c74f;
+  --c-success:     #90be6d;
+  --c-verified:    #46af8f;
+  --c-info:        #478583;
+  --c-muted:       #577590;
+  --c-quiet:       #7890a5;
+
+  --n-ink:       #111111;
+  --n-graphite:  #2a2722;
+  --n-charcoal:  #4a4640;
+  --n-slate:     #76716a;
+  --n-pebble:    #a8a194;
+  --n-sand:      #d6cfc1;
+  --n-linen:     #e8e3d9;
+  --n-paper:     #f2eee7;
+  --n-bone:      #faf8f4;
+  --n-white:     #ffffff;
+
+  /* ── Layer 2: semantic tokens (UI asset categories) ─────────────────── */
+
+  /* Surfaces (backgrounds) */
+  --ui-bg:            var(--n-paper);
+  --ui-surface:       var(--n-bone);
+  --ui-surface-alt:   var(--n-linen);
+  --ui-elevated:      var(--n-white);
+
+  /* Text */
+  --ui-text:          var(--n-graphite);
+  --ui-text-strong:   var(--n-ink);
+  --ui-text-body:     var(--n-charcoal);
+  --ui-text-muted:    var(--n-slate);
+  --ui-text-quiet:    var(--n-pebble);
+  --ui-text-on-fill:  var(--n-bone);
+
+  /* Borders / dividers */
+  --ui-divider:       var(--n-sand);
+  --ui-border:        var(--n-sand);
+  --ui-border-strong: var(--n-pebble);
+
+  /* Primary / accent surfaces */
+  --ui-primary:       var(--c-info);
+  --ui-primary-ink:   var(--n-white);
+  --ui-accent:        var(--c-accent);
+  --ui-accent-ink:    var(--n-ink);
+
+  /* Status surfaces: each has -fill / -soft / -ink */
+  --ui-success:       var(--c-success);
+  --ui-success-soft:  color-mix(in oklab, var(--c-success) 18%, var(--ui-surface));
+  --ui-success-ink:   color-mix(in oklab, var(--c-success) 80%, var(--n-ink) 20%);
+
+  --ui-warn:          var(--c-warn);
+  --ui-warn-soft:     color-mix(in oklab, var(--c-warn) 22%, var(--ui-surface));
+  --ui-warn-ink:      color-mix(in oklab, var(--c-warn) 65%, var(--n-ink) 35%);
+
+  --ui-danger:        var(--c-destructive);
+  --ui-danger-soft:   color-mix(in oklab, var(--c-destructive) 16%, var(--ui-surface));
+  --ui-danger-ink:    color-mix(in oklab, var(--c-destructive) 75%, var(--n-ink) 25%);
+
+  --ui-info:          var(--c-info);
+  --ui-info-soft:     color-mix(in oklab, var(--c-info) 16%, var(--ui-surface));
+  --ui-info-ink:      color-mix(in oklab, var(--c-info) 75%, var(--n-ink) 25%);
+
+  --ui-pending:       var(--c-pending);
+  --ui-pending-soft:  color-mix(in oklab, var(--c-pending) 28%, var(--ui-surface));
+  --ui-pending-ink:   color-mix(in oklab, var(--c-pending) 55%, var(--n-ink) 45%);
+
+  --ui-verified:      var(--c-verified);
+  --ui-verified-soft: color-mix(in oklab, var(--c-verified) 18%, var(--ui-surface));
+  --ui-verified-ink:  color-mix(in oklab, var(--c-verified) 75%, var(--n-ink) 25%);
+
+  --ui-muted:         var(--c-muted);
+  --ui-muted-soft:    color-mix(in oklab, var(--c-muted) 18%, var(--ui-surface));
+  --ui-muted-ink:     color-mix(in oklab, var(--c-muted) 75%, var(--n-ink) 25%);
+
+  /* ── Legacy token shims (kept until screens migrate) ─────────────────── */
+  --stone-0: var(--ui-surface);
+  --stone-1: var(--ui-bg);
+  --stone-2: var(--ui-surface-alt);
+  --stone-3: var(--ui-divider);
+  --stone-4: var(--ui-text-quiet);
+  --stone-5: var(--ui-text-muted);
+  --stone-6: var(--ui-text-body);
+  --stone-7: var(--ui-text);
+
+  --moss:      var(--ui-success);
+  --moss-soft: var(--ui-success-soft);
+  --moss-ink:  var(--ui-success-ink);
+
+  --amber:      var(--ui-warn);
+  --amber-soft: var(--ui-warn-soft);
+  --amber-ink:  var(--ui-warn-ink);
+
+  --rust:      var(--ui-danger);
+  --rust-soft: var(--ui-danger-soft);
+  --rust-ink:  var(--ui-danger-ink);
+
+  --ink-invert: var(--ui-text-on-fill);
+}
+
+/* Dark mode — invert the neutral mapping; accents stay but soft/ink recompute off dark surface */
+.theme-dark {
+  /* Neutral grays — cool, slightly cyan undertone; nothing brown. */
+  --ui-bg:            #141619;
+  --ui-surface:       #1C1F23;
+  --ui-surface-alt:   #23272C;
+  --ui-elevated:      #2B3036;
+
+  --ui-text:          #E6E8EC;
+  --ui-text-strong:   #F5F7FA;
+  --ui-text-body:     #B8BCC3;
+  --ui-text-muted:    #868A91;
+  --ui-text-quiet:    #5E6268;
+  --ui-text-on-fill:  #141619;
+
+  --ui-divider:       #2E3238;
+  --ui-border:        #2E3238;
+  --ui-border-strong: #40454C;
+
+  --ui-primary-ink:   #141619;
+
+  /* recompute status -soft/-ink against the dark surface */
+  --ui-success-soft:  color-mix(in oklab, var(--c-success) 28%, var(--ui-surface));
+  --ui-success-ink:   color-mix(in oklab, var(--c-success) 30%, var(--n-bone) 70%);
+  --ui-warn-soft:     color-mix(in oklab, var(--c-warn) 32%, var(--ui-surface));
+  --ui-warn-ink:      color-mix(in oklab, var(--c-warn) 25%, var(--n-bone) 75%);
+  --ui-danger-soft:   color-mix(in oklab, var(--c-destructive) 30%, var(--ui-surface));
+  --ui-danger-ink:    color-mix(in oklab, var(--c-destructive) 25%, var(--n-bone) 75%);
+  --ui-info-soft:     color-mix(in oklab, var(--c-info) 30%, var(--ui-surface));
+  --ui-info-ink:      color-mix(in oklab, var(--c-info) 25%, var(--n-bone) 75%);
+  --ui-pending-soft:  color-mix(in oklab, var(--c-pending) 28%, var(--ui-surface));
+  --ui-pending-ink:   color-mix(in oklab, var(--c-pending) 35%, var(--n-bone) 65%);
+  --ui-verified-soft: color-mix(in oklab, var(--c-verified) 30%, var(--ui-surface));
+  --ui-verified-ink:  color-mix(in oklab, var(--c-verified) 25%, var(--n-bone) 75%);
+  --ui-muted-soft:    color-mix(in oklab, var(--c-muted) 30%, var(--ui-surface));
+  --ui-muted-ink:     color-mix(in oklab, var(--c-muted) 25%, var(--n-bone) 75%);
+
+  /* Legacy shim re-declarations — var() resolves at its declaration site's
+     scope, so shims set on :root would otherwise stay pinned to the light
+     --ui-* values. Re-binding them here lets any screen still using the
+     old --stone-* / --moss-* / --rust-* / --amber-* names flip with theme. */
+  --stone-0: var(--ui-surface);
+  --stone-1: var(--ui-bg);
+  --stone-2: var(--ui-surface-alt);
+  --stone-3: var(--ui-divider);
+  --stone-4: var(--ui-text-quiet);
+  --stone-5: var(--ui-text-muted);
+  --stone-6: var(--ui-text-body);
+  --stone-7: var(--ui-text);
+
+  --moss:      var(--ui-success);
+  --moss-soft: var(--ui-success-soft);
+  --moss-ink:  var(--ui-success-ink);
+
+  --amber:      var(--ui-warn);
+  --amber-soft: var(--ui-warn-soft);
+  --amber-ink:  var(--ui-warn-ink);
+
+  --rust:      var(--ui-danger);
+  --rust-soft: var(--ui-danger-soft);
+  --rust-ink:  var(--ui-danger-ink);
+
+  --ink-invert: var(--ui-text-on-fill);
+}
+
+/* Reset-ish */
+* { box-sizing: border-box; }
+button { font: inherit; color: inherit; background: none; border: none; cursor: pointer; padding: 0; }
+input, textarea { font: inherit; color: inherit; }
+a { color: inherit; }
+
+.app-root {
+  width: 100%;
+  height: 100%;
+  background: var(--stone-1);
+  color: var(--stone-7);
+  font-family: var(--font-ui);
+  -webkit-font-smoothing: antialiased;
+  letter-spacing: -0.008em;
+}
+
+/* Utility atoms */
+.mono { font-family: var(--font-mono); font-feature-settings: 'ss01', 'tnum'; }
+.tabular { font-variant-numeric: tabular-nums; }
+.uc { text-transform: uppercase; letter-spacing: 0.08em; font-size: 11px; }
+.hair { height: 0.5px; background: var(--stone-3); }
+
+/* Card */
+.card {
+  background: var(--stone-0);
+  border: 0.5px solid var(--stone-3);
+  border-radius: var(--r-lg);
+}
+
+/* Tiny pill / chip */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  background: var(--stone-2);
+  color: var(--stone-6);
+}
+.chip.moss  { background: var(--ui-success-soft);  color: var(--ui-success-ink); }
+.chip.amber { background: var(--ui-warn-soft);     color: var(--ui-warn-ink); }
+.chip.rust  { background: var(--ui-danger-soft);   color: var(--ui-danger-ink); }
+.chip.info  { background: var(--ui-info-soft);     color: var(--ui-info-ink); }
+.chip.accent    { background: color-mix(in oklab, var(--c-accent) 18%, var(--ui-surface)); color: color-mix(in oklab, var(--c-accent) 70%, var(--n-ink) 30%); }
+.chip.pending   { background: var(--ui-pending-soft); color: var(--ui-pending-ink); }
+.chip.verified  { background: var(--ui-verified-soft); color: var(--ui-verified-ink); }
+.chip.muted     { background: var(--ui-muted-soft); color: var(--ui-muted-ink); }
+.chip.danger    { background: color-mix(in oklab, var(--c-danger) 18%, var(--ui-surface)); color: color-mix(in oklab, var(--c-danger) 72%, var(--n-ink) 28%); }
+
+/* Dot indicator */
+.dot {
+  display: inline-block; width: 6px; height: 6px; border-radius: 999px;
+  background: var(--ui-text-quiet);
+}
+.dot.moss     { background: var(--ui-success); }
+.dot.amber    { background: var(--ui-warn); }
+.dot.rust     { background: var(--ui-danger); }
+.dot.danger   { background: var(--c-danger); }
+.dot.accent   { background: var(--c-accent); }
+.dot.pending  { background: var(--c-pending); }
+.dot.verified { background: var(--c-verified); }
+.dot.info     { background: var(--c-info); }
+.dot.muted    { background: var(--c-muted); }
+.dot.quiet    { background: var(--c-quiet); }
+
+/* Buttons */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  height: 44px; padding: 0 18px;
+  border-radius: 12px;
+  font-weight: 500;
+  font-size: 15px;
+  letter-spacing: -0.01em;
+  transition: transform 80ms ease, background 120ms ease, border-color 120ms ease;
+  user-select: none;
+  white-space: nowrap;
+}
+.btn:active { transform: translateY(0.5px); }
+.btn-primary {
+  background: var(--ui-primary);
+  color: var(--ui-primary-ink);
+}
+.btn-primary:hover { filter: brightness(0.95); }
+.btn-secondary {
+  background: var(--stone-0);
+  color: var(--stone-7);
+  border: 0.5px solid var(--stone-3);
+}
+.btn-secondary:hover { background: var(--stone-1); }
+.btn-quiet {
+  background: transparent;
+  color: var(--stone-6);
+}
+.btn-quiet:hover { color: var(--stone-7); }
+.btn-danger {
+  background: var(--ui-danger);
+  color: var(--ui-text-on-fill);
+}
+.btn-accent {
+  background: var(--ui-accent);
+  color: var(--ui-accent-ink);
+}
+.btn-small { height: 32px; font-size: 13px; padding: 0 12px; border-radius: 8px; }
+.btn-block { width: 100%; }
+
+/* Row, list */
+.row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 16px;
+  border-bottom: 0.5px solid var(--stone-3);
+  min-height: 52px;
+}
+.row:last-child { border-bottom: 0; }
+.row-label { color: var(--stone-5); font-size: 15px; }
+.row-value { color: var(--stone-7); font-size: 15px; display: flex; align-items: center; gap: 6px; }
+
+/* Section header */
+.section-header {
+  padding: 10px 20px 6px;
+  color: var(--stone-4);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+}
+
+/* Scrollable content area within device */
+.screen {
+  height: 100%;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: 140px; /* tab bar clearance */
+  background: var(--stone-1);
+}
+.screen::-webkit-scrollbar { width: 0; }
+
+/* Tab bar */
+.tabbar {
+  position: absolute;
+  left: 14px; right: 14px; bottom: 42px;
+  height: 58px;
+  background: color-mix(in oklab, var(--stone-0) 82%, transparent);
+  border: 0.5px solid var(--stone-3);
+  border-radius: 22px;
+  backdrop-filter: blur(20px) saturate(160%);
+  -webkit-backdrop-filter: blur(20px) saturate(160%);
+  display: flex;
+  align-items: center;
+  justify-content: space-around;
+  padding: 0 12px;
+  z-index: 40;
+  box-shadow: 0 6px 28px rgba(0,0,0,0.06), 0 1px 0 rgba(255,255,255,0.5) inset;
+}
+.tabbar-item {
+  flex: 1;
+  height: 46px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 2px;
+  color: var(--stone-4);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  border-radius: 14px;
+}
+.tabbar-item.active { color: var(--ui-primary); }
+.tabbar-item svg { opacity: 0.85; }
+
+/* Screen header (non-iOS-default) */
+.app-header {
+  padding: 64px 20px 8px;
+  display: flex; align-items: flex-end; justify-content: space-between;
+}
+.app-title {
+  font-family: var(--font-display);
+  font-size: 30px;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  line-height: 1;
+  background: linear-gradient(135deg, var(--ui-text) 30%, var(--ui-primary) 120%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: var(--stone-7);
+}
+.app-subtitle {
+  font-size: 13px;
+  color: var(--stone-5);
+  margin-top: 6px;
+}
+
+/* Keyline separator with label */
+.keyline {
+  display: flex; align-items: center; gap: 10px;
+  padding: 22px 20px 10px;
+  color: var(--stone-4);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+}
+.keyline::after {
+  content: ''; flex: 1; height: 0.5px; background: var(--stone-3);
+}
+
+/* Inline code */
+code.inline {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  background: var(--stone-2);
+  padding: 1px 6px;
+  border-radius: 4px;
+  color: var(--stone-6);
+}
+
+/* Modal scrim */
+.scrim {
+  position: absolute; inset: 0;
+  background: rgba(26, 24, 21, 0.38);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  z-index: 100;
+  display: flex; align-items: flex-end; justify-content: center;
+}
+.sheet {
+  width: 100%;
+  background: var(--stone-0);
+  border-top-left-radius: 28px;
+  border-top-right-radius: 28px;
+  padding: 14px 0 34px;
+  max-height: 88%;
+  display: flex; flex-direction: column;
+  animation: sheetIn 260ms cubic-bezier(0.2, 0.9, 0.3, 1) forwards;
+}
+.sheet-grip {
+  width: 40px; height: 4px; border-radius: 2px;
+  background: var(--stone-3);
+  margin: 0 auto 12px;
+}
+
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes slideUp { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+/* sheetIn animates transform only — no opacity — so a paused iframe animation
+   never leaves the sheet invisible. */
+@keyframes sheetIn { from { transform: translateY(20px); } to { transform: translateY(0); } }
+@keyframes fadeInContent { from { transform: translateY(4px); } to { transform: translateY(0); } }
+
+.fade-in { animation: fadeInContent 220ms ease forwards; }
+
+/* The cairn mark — stacked stones */
+.mark {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1.5px;
+}
+.mark .stone {
+  background: currentColor;
+  border-radius: 2px 2px 1px 1px;
+}
+
+/* Stripe placeholder (for thumbnails we don't have) */
+.stripe-thumb {
+  background: repeating-linear-gradient(
+    135deg,
+    var(--stone-2) 0 3px,
+    var(--stone-1) 3px 7px
+  );
+  border: 0.5px solid var(--stone-3);
+  border-radius: 6px;
+}
+
+/* Visually-loud callout */
+.callout {
+  border-radius: var(--r-md);
+  padding: 14px 16px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+.callout-amber { background: var(--amber-soft); color: var(--amber-ink); border: 0.5px solid color-mix(in oklab, var(--amber) 25%, transparent); }
+.callout-moss  { background: var(--moss-soft);  color: var(--moss-ink);  border: 0.5px solid color-mix(in oklab, var(--moss) 25%, transparent); }
+.callout-rust  { background: var(--rust-soft);  color: var(--rust-ink);  border: 0.5px solid color-mix(in oklab, var(--rust) 25%, transparent); }
+
+/* Toggle switch (iOS-like but cairn tones) */
+.toggle {
+  width: 50px; height: 30px; border-radius: 999px;
+  background: var(--stone-3);
+  position: relative; cursor: pointer;
+  transition: background 180ms;
+  flex-shrink: 0;
+}
+.toggle.on { background: var(--ui-success); }
+.toggle::after {
+  content: ''; position: absolute; top: 2px; left: 2px;
+  width: 26px; height: 26px; border-radius: 999px;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.15), 0 3px 8px rgba(0,0,0,0.1);
+  transition: transform 180ms cubic-bezier(0.3, 0.9, 0.3, 1);
+}
+.toggle.on::after { transform: translateX(20px); }
+
+/* Progress bar */
+.progress {
+  height: 4px;
+  background: var(--stone-2);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.progress-fill {
+  height: 100%;
+  background: var(--ui-primary);
+  transition: width 400ms ease;
+}
+
+/* Tweaks panel (cairn-styled) */
+.tweaks-panel {
+  position: absolute;
+  right: 14px;
+  bottom: 94px;
+  width: 260px;
+  background: var(--stone-0);
+  border: 0.5px solid var(--stone-3);
+  border-radius: 18px;
+  padding: 14px;
+  z-index: 200;
+  box-shadow: 0 20px 50px rgba(26,24,21,0.15), 0 4px 12px rgba(26,24,21,0.06);
+  font-family: var(--font-ui);
+  animation: sheetIn 220ms cubic-bezier(0.2, 0.9, 0.3, 1) forwards;
+}
+.tweaks-panel h4 {
+  margin: 0 0 10px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--stone-4);
+}
+.tweaks-group { margin-bottom: 12px; }
+.tweaks-group:last-child { margin-bottom: 0; }
+.tweaks-label {
+  font-size: 11px;
+  color: var(--stone-5);
+  margin-bottom: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+}
+.tweaks-segment {
+  display: flex;
+  background: var(--stone-1);
+  border-radius: 8px;
+  padding: 2px;
+  gap: 2px;
+}
+.tweaks-segment button {
+  flex: 1;
+  height: 26px;
+  border-radius: 6px;
+  font-size: 11px;
+  color: var(--stone-5);
+}
+.tweaks-segment button.active {
+  background: var(--stone-0);
+  color: var(--stone-7);
+  box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+}

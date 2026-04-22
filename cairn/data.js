@@ -1,0 +1,156 @@
+// cairn prototype data — realistic simulated state
+// Pulled from the design doc: indexed assets, journal, tag schema, safety rails.
+
+const LIBRARY_SIZE_DEFAULTS = {
+  small: { local: 843, indexed: 812, server: 1_204, matched: 798, candidates: 3 },
+  medium: { local: 4_216, indexed: 4_189, server: 5_873, matched: 4_102, candidates: 14 },
+  large: { local: 12_487, indexed: 12_431, server: 18_204, matched: 12_104, candidates: 47 },
+};
+
+// Recent journal / run history
+const RUNS = [
+  {
+    id: '2026-04-21T17:57:15Z-034389BC',
+    startedAt: new Date('2026-04-21T17:57:15Z'),
+    durationMs: 4_210,
+    trashed: 14,
+    restored: 0,
+    dryRun: false,
+    status: 'complete',
+    tag: 'cairn/v1/run/2026-04-21T17:57:15Z-034389BC',
+    notes: '14 trashed · 2 live-photo motion videos included',
+  },
+  {
+    id: '2026-04-20T09:12:03Z-034389BC',
+    startedAt: new Date('2026-04-20T09:12:03Z'),
+    durationMs: 3_870,
+    trashed: 2,
+    restored: 0,
+    dryRun: false,
+    status: 'complete',
+    tag: 'cairn/v1/run/2026-04-20T09:12:03Z-034389BC',
+    notes: '2 trashed',
+  },
+  {
+    id: '2026-04-18T22:04:41Z-034389BC',
+    startedAt: new Date('2026-04-18T22:04:41Z'),
+    durationMs: 0,
+    trashed: 0,
+    restored: 0,
+    dryRun: true,
+    status: 'complete',
+    tag: null,
+    notes: 'dry-run · no candidates',
+  },
+  {
+    id: '2026-04-17T08:30:00Z-034389BC',
+    startedAt: new Date('2026-04-17T08:30:00Z'),
+    durationMs: 2_104,
+    trashed: 1,
+    restored: 1,
+    dryRun: false,
+    status: 'complete',
+    tag: 'cairn/v1/run/2026-04-17T08:30:00Z-034389BC',
+    notes: '1 trashed · 1 restored from this run',
+  },
+  {
+    id: '2026-04-15T14:22:11Z-034389BC',
+    startedAt: new Date('2026-04-15T14:22:11Z'),
+    durationMs: 890,
+    trashed: 0,
+    restored: 0,
+    dryRun: false,
+    status: 'aborted',
+    tag: null,
+    notes: 'threshold · 2.3% > 1% cap',
+  },
+];
+
+// Candidate assets for dry-run preview.
+// scene drives the thumbnail composition; kind distinguishes photo/video/live-pair.
+// Padded to 50+ so the "large" library size (47 candidates) has a full grid.
+const SAMPLE_CANDIDATES = [
+  { name: 'IMG_4821.HEIC', kind: 'photo',     date: '2026-04-19', bytes: 2_431_002,  checksum: 'aFk9x2Lp…', scene: 'portrait-dim' },
+  { name: 'IMG_4820.HEIC', kind: 'photo',     date: '2026-04-19', bytes: 2_188_440,  checksum: 'p3Nv8mQw…', scene: 'receipt' },
+  { name: 'IMG_4819.HEIC', kind: 'live-pair', date: '2026-04-19', bytes: 8_104_772,  checksum: 'kR2fYc7t…', scene: 'beach',           paired: true },
+  { name: 'IMG_4818.HEIC', kind: 'photo',     date: '2026-04-19', bytes: 1_940_108,  checksum: 'Hs4uEq1z…', scene: 'meal' },
+  { name: 'IMG_4755.HEIC', kind: 'photo',     date: '2026-04-14', bytes: 3_017_288,  checksum: 'Jv6WxN0o…', scene: 'whiteboard' },
+  { name: 'IMG_4754.HEIC', kind: 'photo',     date: '2026-04-14', bytes: 2_801_101,  checksum: 'dC9yTb8k…', scene: 'whiteboard' },
+  { name: 'IMG_4612.MP4',  kind: 'video',     date: '2026-04-08', bytes: 41_220_990, checksum: 'qE5hZw2a…', scene: 'sunset',          durationSec: 24 },
+  { name: 'IMG_4498.HEIC', kind: 'photo',     date: '2026-04-02', bytes: 2_544_708,  checksum: 'Wb1xSp6j…', scene: 'document' },
+  { name: 'IMG_4497.HEIC', kind: 'photo',     date: '2026-04-02', bytes: 2_490_212,  checksum: 'Nk7UvR3e…', scene: 'document' },
+  { name: 'IMG_4412.HEIC', kind: 'photo',     date: '2026-03-29', bytes: 2_610_880,  checksum: 'gM0oPy4s…', scene: 'landscape' },
+  { name: 'IMG_4399.HEIC', kind: 'photo',     date: '2026-03-27', bytes: 2_104_551,  checksum: 'aL8rFm2v…', scene: 'flora' },
+  { name: 'IMG_4354.HEIC', kind: 'photo',     date: '2026-03-22', bytes: 2_980_334,  checksum: 'yK4tXd9c…', scene: 'portrait-bright' },
+  { name: 'IMG_4302.HEIC', kind: 'live-pair', date: '2026-03-18', bytes: 2_402_991,  checksum: 'bU6wOi5n…', scene: 'pet',             paired: true },
+  { name: 'IMG_4287.HEIC', kind: 'photo',     date: '2026-03-15', bytes: 3_221_044,  checksum: 'Zt9eVq0f…', scene: 'city-night' },
+  { name: 'IMG_4210.HEIC', kind: 'photo',     date: '2026-03-11', bytes: 2_210_004,  checksum: 'Cp3LbX7d…', scene: 'sunset' },
+  { name: 'IMG_4208.HEIC', kind: 'photo',     date: '2026-03-11', bytes: 2_008_112,  checksum: 'Rm9fNh2w…', scene: 'beach' },
+  { name: 'IMG_4201.MP4',  kind: 'video',     date: '2026-03-10', bytes: 18_334_120, checksum: 'wT6jPk4o…', scene: 'pet',             durationSec: 8 },
+  { name: 'IMG_4188.HEIC', kind: 'photo',     date: '2026-03-08', bytes: 2_712_008,  checksum: 'eH8yVr1m…', scene: 'flora' },
+  { name: 'IMG_4150.HEIC', kind: 'photo',     date: '2026-03-04', bytes: 3_104_227,  checksum: 'Au2oBs5l…', scene: 'landscape' },
+  { name: 'IMG_4149.HEIC', kind: 'photo',     date: '2026-03-04', bytes: 2_994_001,  checksum: 'Gw4iDq9c…', scene: 'landscape' },
+  { name: 'IMG_4102.HEIC', kind: 'photo',     date: '2026-02-28', bytes: 2_201_118,  checksum: 'Mn7uKj0v…', scene: 'document' },
+  { name: 'IMG_4077.HEIC', kind: 'live-pair', date: '2026-02-24', bytes: 2_880_440,  checksum: 'Bv5xEt3s…', scene: 'portrait-bright', paired: true },
+  { name: 'IMG_4030.HEIC', kind: 'photo',     date: '2026-02-20', bytes: 2_614_200,  checksum: 'Xr1zHm8p…', scene: 'meal' },
+  { name: 'IMG_4012.HEIC', kind: 'photo',     date: '2026-02-18', bytes: 2_340_009,  checksum: 'Qk6aSc2f…', scene: 'whiteboard' },
+  { name: 'IMG_3988.MP4',  kind: 'video',     date: '2026-02-15', bytes: 62_420_100, checksum: 'Tp3dWb7u…', scene: 'city-night',      durationSec: 41 },
+  { name: 'IMG_3970.HEIC', kind: 'photo',     date: '2026-02-13', bytes: 2_008_442,  checksum: 'Lf9oGv4q…', scene: 'receipt' },
+  { name: 'IMG_3951.HEIC', kind: 'photo',     date: '2026-02-11', bytes: 2_782_100,  checksum: 'Ds2mJy6h…', scene: 'pet' },
+  { name: 'IMG_3920.HEIC', kind: 'photo',     date: '2026-02-08', bytes: 2_990_334,  checksum: 'Yc8tPn0b…', scene: 'portrait-dim' },
+  { name: 'IMG_3899.HEIC', kind: 'photo',     date: '2026-02-05', bytes: 2_112_508,  checksum: 'Vh4wZr5j…', scene: 'flora' },
+  { name: 'IMG_3860.HEIC', kind: 'live-pair', date: '2026-02-01', bytes: 3_014_880,  checksum: 'Eu7kOs1a…', scene: 'meal',            paired: true },
+  { name: 'IMG_3842.HEIC', kind: 'photo',     date: '2026-01-29', bytes: 2_422_110,  checksum: 'Zb0vCx9g…', scene: 'beach' },
+  { name: 'IMG_3820.HEIC', kind: 'photo',     date: '2026-01-26', bytes: 2_660_444,  checksum: 'Nq3fRl8e…', scene: 'landscape' },
+  { name: 'IMG_3798.HEIC', kind: 'photo',     date: '2026-01-23', bytes: 2_304_228,  checksum: 'Xd6hIw2c…', scene: 'city-night' },
+  { name: 'IMG_3771.HEIC', kind: 'photo',     date: '2026-01-20', bytes: 2_880_110,  checksum: 'Km1uFp4y…', scene: 'portrait-bright' },
+  { name: 'IMG_3750.HEIC', kind: 'photo',     date: '2026-01-17', bytes: 2_112_998,  checksum: 'Wj5aQt7r…', scene: 'document' },
+  { name: 'IMG_3728.HEIC', kind: 'photo',     date: '2026-01-14', bytes: 2_560_003,  checksum: 'Hg9iVn3o…', scene: 'receipt' },
+  { name: 'IMG_3701.MP4',  kind: 'video',     date: '2026-01-11', bytes: 28_104_554, checksum: 'Pz2bMx6l…', scene: 'sunset',          durationSec: 12 },
+  { name: 'IMG_3688.HEIC', kind: 'photo',     date: '2026-01-09', bytes: 2_004_111,  checksum: 'Cy7eTj0k…', scene: 'whiteboard' },
+  { name: 'IMG_3670.HEIC', kind: 'photo',     date: '2026-01-07', bytes: 2_420_880,  checksum: 'Ra4sLc8w…', scene: 'flora' },
+  { name: 'IMG_3651.HEIC', kind: 'photo',     date: '2026-01-05', bytes: 2_890_224,  checksum: 'Jt6dEn2u…', scene: 'portrait-dim' },
+  { name: 'IMG_3620.HEIC', kind: 'live-pair', date: '2026-01-02', bytes: 3_222_998,  checksum: 'Fv8pYs5m…', scene: 'pet',             paired: true },
+  { name: 'IMG_3598.HEIC', kind: 'photo',     date: '2025-12-30', bytes: 2_114_001,  checksum: 'Oe3qWx1h…', scene: 'landscape' },
+  { name: 'IMG_3570.HEIC', kind: 'photo',     date: '2025-12-27', bytes: 2_662_720,  checksum: 'Uk0lBg7f…', scene: 'receipt' },
+  { name: 'IMG_3551.HEIC', kind: 'photo',     date: '2025-12-24', bytes: 2_880_109,  checksum: 'Ig5rAm9v…', scene: 'meal' },
+  { name: 'IMG_3530.HEIC', kind: 'photo',     date: '2025-12-21', bytes: 2_014_554,  checksum: 'Sx9nDo4t…', scene: 'city-night' },
+  { name: 'IMG_3502.HEIC', kind: 'photo',     date: '2025-12-18', bytes: 2_440_776,  checksum: 'Qh2cKe6b…', scene: 'portrait-bright' },
+  { name: 'IMG_3480.HEIC', kind: 'photo',     date: '2025-12-15', bytes: 2_720_110,  checksum: 'Bw7mIu3a…', scene: 'beach' },
+  { name: 'IMG_3455.HEIC', kind: 'photo',     date: '2025-12-12', bytes: 2_108_442,  checksum: 'Ln4vRc0p…', scene: 'document' },
+  { name: 'IMG_3430.HEIC', kind: 'photo',     date: '2025-12-09', bytes: 2_944_008,  checksum: 'Tp8yFh5o…', scene: 'flora' },
+  { name: 'IMG_3410.HEIC', kind: 'photo',     date: '2025-12-06', bytes: 2_312_770,  checksum: 'Mz1bJx2q…', scene: 'sunset' },
+];
+
+// Journal tail (matches the JSONL format from CLI)
+const JOURNAL_TAIL = [
+  { t: '17:57:15.102', ev: 'run.start',    msg: 'run_id=2026-04-21T17:57:15Z-034389BC' },
+  { t: '17:57:15.240', ev: 'server.pull',  msg: 'fetched 1204 assets in 138ms' },
+  { t: '17:57:15.312', ev: 'reconcile',    msg: '14 candidates · 0.66% of matched (4102)' },
+  { t: '17:57:15.318', ev: 'safety.ok',    msg: 'percent 0.66 ≤ 1.00 cap · floor 5 met' },
+  { t: '17:57:15.402', ev: 'tag.create',   msg: 'cairn/v1/run/…' },
+  { t: '17:57:15.604', ev: 'tag.attach',   msg: 'attached 14 assets to breadcrumb tag' },
+  { t: '17:57:15.790', ev: 'delete.batch', msg: 'DELETE /api/assets · 14 ids · force=false' },
+  { t: '17:57:19.325', ev: 'run.complete', msg: 'trashed=14 failed=0 dur=4.21s' },
+];
+
+const SETTINGS_DEFAULTS = {
+  serverUrl: 'https://immich.home.arpa',
+  apiKey: 'f7d8c2bXqE9mP4sT1vL6wA3zRjHnH3k',
+  apiKeyTail: '••••••••••••nH3k',
+  maxDeletePercent: 1,
+  minDeleteFloor: 5,
+  dryRunByDefault: false,
+  notifyOnAbort: true,
+  verboseLogging: false,
+  photosAccess: 'full',
+  bgRefresh: true,
+};
+
+window.CAIRN_DATA = {
+  LIBRARY_SIZE_DEFAULTS,
+  RUNS,
+  SAMPLE_CANDIDATES,
+  JOURNAL_TAIL,
+  SETTINGS_DEFAULTS,
+};

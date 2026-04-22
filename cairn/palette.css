@@ -1,0 +1,21 @@
+/* cairn — custom palette (user-provided)
+   Accents only. Layer-2 semantic tokens (--ui-*) live in cairn.css and
+   reference these via --c-*, which are written at runtime from palette.js.
+   Editing a swatch in the Palette screen repaints every category bound
+   to that role automatically — including dark mode, which just recomputes
+   soft/ink tokens against the dark surface in cairn.css.
+*/
+
+:root {
+  /* Raw palette (stable names, purely documentary — runtime overrides these) */
+  --flag-red:       #d52023;
+  --strawberry:     #f94144;
+  --tangerine:      #f3722c;
+  --carrot:         #f8961e;
+  --tuscan-sun:     #f9c74f;
+  --willow:         #90be6d;
+  --seaweed:        #46af8f;
+  --dark-cyan:      #478583;
+  --blue-slate:     #577590;
+  --air-force:      #7890a5;
+}

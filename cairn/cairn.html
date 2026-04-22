@@ -1,0 +1,307 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>cairn — iOS prototype</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="cairn.css?v=3"/>
+  <link rel="stylesheet" href="palette.css?v=3"/>
+  <style>
+    html, body { margin: 0; height: 100%; background: #E8E3D9; font-family: 'Inter Tight', system-ui, sans-serif; overflow: hidden; }
+    body.theme-dark { background: #100E0B; }
+    .stage {
+      height: 100%; width: 100%;
+      display: flex; align-items: center; justify-content: center;
+      padding: 20px;
+      background:
+        radial-gradient(circle at 20% 10%, rgba(255,255,255,0.4), transparent 40%),
+        radial-gradient(circle at 80% 90%, rgba(168, 161, 148, 0.12), transparent 50%),
+        var(--stage-bg, #E8E3D9);
+    }
+    body.theme-dark .stage {
+      --stage-bg: #100E0B;
+      background:
+        radial-gradient(circle at 20% 10%, rgba(255,255,255,0.04), transparent 40%),
+        radial-gradient(circle at 80% 90%, rgba(120, 113, 100, 0.08), transparent 50%),
+        var(--stage-bg);
+    }
+  </style>
+</head>
+<body>
+  <div id="root" class="stage"></div>
+
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+  <script src="data.js"></script>
+  <script src="palette.js"></script>
+  <script type="text/babel" src="ios-frame.jsx"></script>
+  <script type="text/babel" src="icons.jsx"></script>
+  <script type="text/babel" src="parts.jsx"></script>
+  <script type="text/babel" src="thumb.jsx"></script>
+  <script type="text/babel" src="toast.jsx"></script>
+  <script type="text/babel" src="screens/status.jsx"></script>
+  <script type="text/babel" src="screens/runs.jsx"></script>
+  <script type="text/babel" src="screens/run-detail.jsx"></script>
+  <script type="text/babel" src="screens/settings.jsx"></script>
+  <script type="text/babel" src="screens/excluded.jsx"></script>
+  <script type="text/babel" src="screens/palette.jsx?v=2"></script>
+  <script type="text/babel" src="screens/setup.jsx"></script>
+  <script type="text/babel" src="screens/dryrun.jsx"></script>
+
+  <script type="text/babel">
+    const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
+      "appState": "steady",
+      "theme": "dark",
+      "librarySize": "medium",
+      "degraded": "none",
+      "deviceFrame": true,
+      "emptyHistory": false
+    }/*EDITMODE-END*/;
+
+    function useStoredTweaks() {
+      const [t, setT] = React.useState(() => {
+        try {
+          const s = localStorage.getItem('cairn.tweaks');
+          if (s) return { ...TWEAK_DEFAULTS, ...JSON.parse(s) };
+        } catch(e) {}
+        return TWEAK_DEFAULTS;
+      });
+      const update = (patch) => {
+        const next = { ...t, ...patch };
+        setT(next);
+        try { localStorage.setItem('cairn.tweaks', JSON.stringify(next)); } catch(e) {}
+        try { window.parent.postMessage({ type: '__edit_mode_set_keys', edits: patch }, '*'); } catch(e) {}
+      };
+      return [t, update];
+    }
+
+    function App() {
+      const [tweaks, setTweaks] = useStoredTweaks();
+      const [editMode, setEditMode] = React.useState(false);
+      const [tab, setTab] = React.useState('status');
+      const [dryRunOpen, setDryRunOpen] = React.useState(false);
+      const [openRun, setOpenRun] = React.useState(null);
+      const [settings, setSettings] = React.useState(window.CAIRN_DATA.SETTINGS_DEFAULTS);
+
+      // Allowlist — filenames protected from future runs. Seeded with two
+      // sample entries so the Excluded screen has visible content on first
+      // load; users can clear them via the Excluded screen.
+      const [excluded, setExcluded]         = React.useState(() => new Set(['IMG_4201.MP4', 'IMG_3988.MP4']));
+      const [excludeMeta, setExcludeMeta]   = React.useState(() => ({
+        'IMG_4201.MP4': { runId: '2026-04-17T08:30:00Z-034389BC' },
+        'IMG_3988.MP4': { runId: '2026-04-15T14:22:11Z-034389BC' },
+      }));
+      // Sub-route within Settings for the Excluded screen
+      const [settingsRoute, setSettingsRoute] = React.useState('root'); // root | excluded
+
+      const excludeNames = (names, meta = {}) => {
+        setExcluded(prev => {
+          const next = new Set(prev);
+          names.forEach(n => next.add(n));
+          return next;
+        });
+        setExcludeMeta(prev => {
+          const next = { ...prev };
+          names.forEach(n => { next[n] = { ...meta }; });
+          return next;
+        });
+      };
+      const unexcludeNames = (names) => {
+        setExcluded(prev => {
+          const next = new Set(prev);
+          names.forEach(n => next.delete(n));
+          return next;
+        });
+        setExcludeMeta(prev => {
+          const next = { ...prev };
+          names.forEach(n => { delete next[n]; });
+          return next;
+        });
+      };
+
+      window.__setTab = setTab;
+
+      // Edit mode wiring
+      React.useEffect(() => {
+        const onMsg = (e) => {
+          if (!e.data) return;
+          if (e.data.type === '__activate_edit_mode') setEditMode(true);
+          if (e.data.type === '__deactivate_edit_mode') setEditMode(false);
+        };
+        window.addEventListener('message', onMsg);
+        try { window.parent.postMessage({ type: '__edit_mode_available' }, '*'); } catch(e) {}
+        return () => window.removeEventListener('message', onMsg);
+      }, []);
+
+      // Reset Settings sub-route when leaving the Settings tab, so coming
+      // back always lands at the root list instead of a deep screen.
+      React.useEffect(() => {
+        if (tab !== 'settings' && settingsRoute !== 'root') setSettingsRoute('root');
+      }, [tab]);
+
+      // Apply theme to body
+      React.useEffect(() => {
+        document.body.classList.toggle('theme-dark', tweaks.theme === 'dark');
+      }, [tweaks.theme]);
+
+      const state = tweaks.appState; // setup | dryrun | steady | threshold
+
+      let screen;
+      if (state === 'setup') {
+        screen = <SetupScreen onDone={() => setTweaks({ appState: 'dryrun' })}/>;
+      } else {
+        if (tab === 'status') {
+          screen = <StatusScreen
+            state={state}
+            degraded={tweaks.degraded}
+            data={window.CAIRN_DATA}
+            settings={settings}
+            libSize={tweaks.librarySize}
+            onStartSync={() => setDryRunOpen(true)}
+            onOpenRun={setOpenRun}
+          />;
+        } else if (tab === 'runs') {
+          screen = <RunsScreen onOpenRun={setOpenRun} empty={tweaks.emptyHistory}/>;
+        } else {
+          if (settingsRoute === 'excluded') {
+            screen = <ExcludedScreen
+              excluded={excluded}
+              excludeMeta={excludeMeta}
+              onUnexclude={unexcludeNames}
+              onBack={() => setSettingsRoute('root')}
+            />;
+          } else if (settingsRoute === 'palette') {
+            screen = <PaletteScreen onBack={() => setSettingsRoute('root')}/>;
+          } else {
+            screen = <SettingsScreen
+              settings={settings}
+              onSettingsChange={setSettings}
+              libSize={tweaks.librarySize}
+              onLibChange={(v) => setTweaks({ librarySize: v })}
+              excludedCount={excluded.size}
+              onOpenExcluded={() => setSettingsRoute('excluded')}
+              onOpenPalette={() => setSettingsRoute('palette')}
+            />;
+          }
+        }
+      }
+
+      const content = (
+        <div className={`app-root ${tweaks.theme === 'dark' ? 'theme-dark' : ''}`} style={{ position: 'relative', height: '100%' }}>
+          {screen}
+          {state !== 'setup' && <TabBar active={tab} onChange={setTab}/>}
+          {dryRunOpen && (
+            <DryRunSheet
+              data={window.CAIRN_DATA}
+              libSize={tweaks.librarySize}
+              settings={settings}
+              forceTripped={state === 'threshold'}
+              onClose={() => setDryRunOpen(false)}
+              onConfirm={() => setTweaks({ appState: 'steady' })}
+            />
+          )}
+          {openRun && <RunDetailSheet
+            run={openRun}
+            onClose={() => setOpenRun(null)}
+            excluded={excluded}
+            settings={settings}
+            onExclude={excludeNames}
+            onUnexclude={unexcludeNames}
+          />}
+          <Toast/>
+        </div>
+      );
+
+      return (
+        <>
+          {tweaks.deviceFrame ? (
+            <IOSDevice width={402} height={874} dark={tweaks.theme === 'dark'}>
+              {content}
+            </IOSDevice>
+          ) : (
+            <div style={{ width: 402, height: 874, borderRadius: 28, overflow: 'hidden', boxShadow: '0 40px 80px rgba(0,0,0,0.18)' }}>
+              {content}
+            </div>
+          )}
+          {editMode && <TweaksPanel tweaks={tweaks} setTweaks={setTweaks}/>}
+        </>
+      );
+    }
+
+    function TweaksPanel({ tweaks, setTweaks }) {
+      const Seg = ({ k, options }) => (
+        <div className="tweaks-segment">
+          {options.map(o => (
+            <button
+              key={o.v}
+              className={tweaks[k] === o.v ? 'active' : ''}
+              onClick={() => setTweaks({ [k]: o.v })}>
+              {o.l}
+            </button>
+          ))}
+        </div>
+      );
+      return (
+        <div className="tweaks-panel">
+          <h4>Tweaks</h4>
+          <div className="tweaks-group">
+            <div className="tweaks-label">App state</div>
+            <Seg k="appState" options={[
+              { v: 'setup', l: 'Setup' },
+              { v: 'dryrun', l: 'Dry-run' },
+              { v: 'steady', l: 'Steady' },
+              { v: 'threshold', l: 'Warn' },
+            ]}/>
+          </div>
+          <div className="tweaks-group">
+            <div className="tweaks-label">Theme</div>
+            <Seg k="theme" options={[
+              { v: 'light', l: 'Light' },
+              { v: 'dark', l: 'Dark' },
+            ]}/>
+          </div>
+          <div className="tweaks-group">
+            <div className="tweaks-label">Library size</div>
+            <Seg k="librarySize" options={[
+              { v: 'small', l: 'Small' },
+              { v: 'medium', l: 'Medium' },
+              { v: 'large', l: 'Large' },
+            ]}/>
+          </div>
+          <div className="tweaks-group">
+            <div className="tweaks-label">Degraded</div>
+            <Seg k="degraded" options={[
+              { v: 'none', l: 'None' },
+              { v: 'server-down', l: 'Server' },
+              { v: 'auth-stale', l: 'Auth' },
+              { v: 'photos-limited', l: 'Photos' },
+              { v: 'tiny-library', l: 'Tiny lib' },
+            ]}/>
+          </div>
+          <div className="tweaks-group">
+            <div className="tweaks-label">Frame</div>
+            <Seg k="deviceFrame" options={[
+              { v: true, l: 'Bezel' },
+              { v: false, l: 'Bare' },
+            ]}/>
+          </div>
+          <div className="tweaks-group">
+            <div className="tweaks-label">History</div>
+            <Seg k="emptyHistory" options={[
+              { v: false, l: 'Populated' },
+              { v: true,  l: 'Empty' },
+            ]}/>
+          </div>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+  </script>
+</body>
+</html>
