@@ -128,6 +128,112 @@ where `<run_id>` = `<iso-8601 timestamp>-<short device id>`. Example: `cairn/v1/
 
 **API key scope:** writing tags needs `tag.create` + `tag.asset`; the `history` subcommand additionally needs `tag.read` to list runs from the server.
 
+## Confirmed-deletion signal (Wave 4)
+
+The default reconciliation strategy interprets "checksum is in ever-seen but no longer in `PHAsset.fetchAssets()`" as a deletion candidate. That's a *negative* signal — we infer intent from absence — and it has known failure modes:
+
+- **iCloud sync degradation.** Photos drop out of local enumeration over time; each individual sync is under the threshold rail; cumulatively, the library could be silently emptied.
+- **Account changes / partial restores.** A library that shrinks to a non-empty subset can slip under the threshold rail.
+- **"Remove from this iPhone" with iCloud Photo Library.** This evicts the PHAsset from local enumeration without the user's intent being "delete from server."
+
+> **Important note on iCloud Optimized Storage:** an *optimized* asset (where iOS has evicted the original to iCloud, keeping only a thumbnail on device) **still appears in `PHAsset.fetchAssets()`**. PhotoKit transparently downloads the original on demand if `isNetworkAccessAllowed = true`, which our `PhotoKitPhotoEnumerator` sets. So Optimize Storage is not a correctness issue — but first-sync hashing pays a network cost for every iCloud-only asset. See "Performance estimates" below.
+
+### The positive signal: Recently Deleted
+
+iOS exposes the Recently Deleted album to apps with Full Photos access:
+
+```swift
+PHAssetCollection.fetchAssetCollections(
+    with: .smartAlbum,
+    subtype: .smartAlbumRecentlyDeleted,
+    options: nil
+)
+```
+
+A checksum that has appeared in this album is *positive proof* of user-initiated deletion intent. Wave 4 introduces a `ConfirmedDeletedStore` (parallel to `EverSeenStore`) that accumulates these checksums.
+
+### Hybrid model with strictness modes
+
+A new `CairnSettings.deletionStrictness` setting:
+
+- **`.strict`** (recommended default for cautious users):
+  - Candidates whose checksums are in `ConfirmedDeletedStore` flow through the normal trash pipeline.
+  - Candidates discovered by the diff but **not** in `ConfirmedDeletedStore` are held in a "pending review" state — surfaced in the UI as a Run-detail-style view where the user manually approves or skips each.
+- **`.trusting`**:
+  - Current behavior. Any diff-discovered candidate is eligible. Faster iteration, more risk.
+
+Either mode keeps the existing safety rails (percent threshold, count floor, empty-local guard).
+
+### Scan cadence and observation strategy
+
+Hybrid of scheduled and reactive:
+
+- **Scheduled scan** (configurable cadence; default daily): on every `BGAppRefreshTask` and on app foreground, enumerate Recently Deleted and hash anything not yet in `ConfirmedDeletedStore`. Recently Deleted is small (≤30 days of deletions, usually low hundreds), so the scan is cheap. Scanning more often than iOS's 30-day auto-purge guarantees we never miss a user-initiated deletion to the auto-purge window.
+- **Reactive observation**: register a `PHPhotoLibraryChangeObserver` while the app is in memory. When PhotoKit reports an asset moved into Recently Deleted, schedule an immediate confirmed-deleted update. Belt-and-suspenders with the scheduled scan, not load-bearing.
+- **Restore handling**: `ConfirmedDeletedStore` is append-only ("ever-seen in Recently Deleted"). If the user restores a photo from Recently Deleted, its checksum stays in current-local — the reconciliation diff filter excludes it from candidates regardless of whether it's still in confirmed-deleted. The diff is the gate; confirmed-deleted being a stale "yes" doesn't matter.
+- **Re-deletion handling**: works correctly via the same mechanism — checksum re-enters Recently Deleted, current-local drops it again, candidate re-emerges.
+
+### User-facing messaging (in the spirit of onboarding tone)
+
+This is the kind of caveat that needs to be communicated honestly without alarm. Suggested copy seeds:
+
+- **Onboarding (after Photos permission, before first dry-run):**
+  > "cairn watches your Photos library and your Recently Deleted album. When you delete a photo, cairn confirms it via Recently Deleted before trashing the matching photo on your Immich server. This is the most reliable signal we have, but it has a 30-day window — if you don't open cairn for a month, it falls back to a more conservative inference. You can pick how strict cairn is in Settings."
+- **Strict mode setting tooltip:**
+  > "cairn only trashes server photos that we positively saw in your Recently Deleted album. Anything else gets held for your review. Use this if you want maximum safety, especially with iCloud Photo Library or iCloud-Optimized Storage."
+- **Trusting mode setting tooltip:**
+  > "cairn trashes any server photo that's no longer on your device, even if we didn't see it in Recently Deleted. Faster, but vulnerable to iCloud sync hiccups and library restores."
+- **Pending-review banner on Home:**
+  > "We saw N photos vanish from your library but couldn't confirm you deleted them. Tap to review."
+
+These are starting points. Final copy should go through Claude Design alongside the existing microcopy.
+
+### Acknowledged limitations
+
+cairn is operating outside the bounds of what the Immich team designed for. Some failure modes can't be eliminated:
+
+- A user who never opens cairn for >30 days AND uses iCloud sync that breaks during that window: confirmed-deleted gives no positive signal, and the diff is potentially noisy. Strict mode degrades to "everything goes to pending review" — annoying but safe.
+- A user who genuinely wants to use cairn to clean up after a major library reorganization can override. That's fine — the rails are calibrated to err on the side of inaction; the user can always raise the threshold or accept candidates manually.
+
+The honest framing for users: cairn is the best inference we can build on top of the iOS Photos API, with multiple layered safety nets. It is not a guarantee. The 30-day Immich trash window remains the ultimate insurance.
+
+## Performance estimates (first-sync hashing)
+
+The first-ever cairn sync hashes every asset in the user's Photos library to seed `EverSeenStore`. This is one-time but can be slow on large libraries with iCloud-Optimized Storage.
+
+**Order-of-magnitude estimates** (mixed library, ~80% photos / ~20% videos):
+
+| Library size | Fully local | iCloud-Optimized on WiFi |
+|---|---|---|
+| 5,000 | ~5–10 min | ~30–60 min |
+| 25,000 | ~30–60 min | ~3–5 hr |
+| 50,000 | ~1–2 hr | ~6–12 hr (overnight) |
+
+**Bottlenecks:**
+- SHA1 itself is hardware-accelerated on Apple silicon (~3–5 GB/s) — never the limit.
+- iPhone NAND read: ~100–300 MB/s effective. Average HEIC ~3 MB → ~10–30 ms each.
+- iCloud download: network-bound. ~5 MB photo on 50 Mbps WiFi → ~800 ms each.
+
+**Empirical baseline (macOS, NVMe SSD, no iCloud)**, measured 2026-04-21 with the production `Hashing` module path (`FileHandle` → 1 MB chunks → `Insecure.SHA1` → base64):
+
+| Synthetic asset | Per-file | Throughput |
+|---|---|---|
+| 3 MB HEIC × 100 | ~1.2 ms | ~2.4 GB/s |
+| 8 MB HEIC × 50 | ~3.4 ms | ~2.2 GB/s |
+| 30 MB video × 20 | ~12.7 ms | ~2.2 GB/s |
+
+This says: **the SHA1 + disk-read pipeline is essentially never the bottleneck on local data.** iPhone NAND is roughly 5–10× slower than Mac NVMe, so expect ~200–500 MB/s on device — still fast enough that 5,000 fully-local photos hash in under two minutes. The 5–10 minute estimate above includes PhotoKit overhead, async/await scheduling, and per-asset enumeration cost.
+
+**iCloud download is the actual long pole.** A user with iCloud Optimized Storage and a 50,000-asset library on a typical home WiFi will see hours, not minutes. The benchmark mode mentioned below should report local-vs-iCloud breakdown so users understand which regime they're in.
+
+**Methodology for getting real numbers:**
+1. In-app benchmark mode that runs the existing `Hashing` module over the whole library and reports total time + per-file p50/p95/p99 + local-vs-iCloud breakdown.
+2. Run on a few representative devices in beta.
+3. Replace the table above with measured curves.
+
+**Onboarding implication:** the first-sync wizard should be honest:
+> "First sync may take anywhere from a few minutes to a few hours depending on your library size and whether you use iCloud-Optimized Storage. Plug in and use WiFi if you can — the sync resumes if interrupted, and after this it'll be fast."
+
 ## Safety rails
 
 Roughly in order of importance:

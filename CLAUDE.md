@@ -53,6 +53,22 @@ Every trash run writes `cairn/v1/run/<run_id>` as a tag on Immich. One tag per r
 
 API key scopes: `tag.create` + `tag.asset` to write; `tag.read` additionally to list runs via `cairn history`.
 
+## Confirmed-deletion signal (Wave 4)
+
+The default reconciliation strategy uses a *negative* signal — "checksum is in ever-seen but no longer in current-local → delete candidate." Vulnerable to iCloud sync degradation, account changes, partial library restores, and "Remove from this iPhone" with iCloud Photo Library. Safety rails catch the catastrophic versions; gradual cases can slip through.
+
+Wave 4 introduces a *positive* signal: a `ConfirmedDeletedStore` (parallel to `EverSeenStore`) that accumulates checksums observed in iOS's Recently Deleted album. Scheduled scan (default daily) + reactive `PHPhotoLibraryChangeObserver` keep it current.
+
+A new `CairnSettings.deletionStrictness`:
+- `.strict` (recommended) — only confirmed-deleted candidates trash; diff-discovered-but-not-confirmed candidates land in pending-review for manual approval.
+- `.trusting` — current behavior.
+
+Append-only semantics (matches ever-seen). The diff's `not in current-local` clause handles user-initiated restores correctly — confirmed-deleted being a stale "yes" doesn't cause harm.
+
+iCloud-Optimized assets are **not** affected by the confirmed-deleted question — they still appear in `PHAsset.fetchAssets()` and our enumerator downloads on demand via `isNetworkAccessAllowed = true`. First-sync hashing pays a network cost; not a correctness issue.
+
+Full design (including UX copy guidance and failure-mode analysis) lives in the plan doc's "Confirmed-deletion signal (Wave 4)" section. Do not implement Wave 4 without re-reading that section — the strictness modes and pending-review state interact with the existing safety rails and journal events in specific ways.
+
 ## Live Photos and hidden assets
 
 A Live Photo is one `PHAsset` on iOS but **two Immich assets**: still (`visibility: timeline`) + motion video (`visibility: hidden`), linked by the still's `livePhotoVideoId` field. `search/metadata` excludes hidden by default, so `listAllAssets()` defaults to returning only timeline-visibility assets.
