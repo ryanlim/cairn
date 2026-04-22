@@ -1,0 +1,12 @@
+# Appfile for cairn iOS
+# Documentation: https://docs.fastlane.tools/advanced/Appfile/
+
+# App identifier (bundle ID). Must match PRODUCT_BUNDLE_IDENTIFIER in
+# project.yml and the app record in App Store Connect.
+app_identifier("app.cairn.ios")
+
+# Apple ID associated with the developer account that ships cairn.
+apple_id("egrahamlarue@gmail.com")
+
+# Apple Developer Team ID — same one used for ReferenceFrame.
+team_id("7VBG686USB")

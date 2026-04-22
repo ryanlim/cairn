@@ -1,0 +1,162 @@
+# Fastfile for cairn iOS
+# Adapted from the ReferenceFrame setup; this version is pure SwiftUI/SPM
+# (no Flutter, no CocoaPods) and uses XcodeGen to generate the project from
+# project.yml.
+#
+# Documentation: https://docs.fastlane.tools
+
+# update_fastlane
+
+default_platform(:ios)
+
+platform :ios do
+  # ============================================================================
+  # CONFIGURATION
+  # ============================================================================
+
+  APP_IDENTIFIER = "app.cairn.ios"
+
+  # XcodeGen produces these alongside this Fastfile's parent dir.
+  XCODE_PROJECT = "Cairn.xcodeproj"
+  SCHEME        = "Cairn"
+  PROJECT_YML   = "../project.yml"
+
+  OUTPUT_DIRECTORY = "../build/ios"
+
+  # ============================================================================
+  # LANES
+  # ============================================================================
+
+  desc "Regenerate Cairn.xcodeproj from project.yml (requires xcodegen)"
+  lane :generate do
+    sh("which xcodegen > /dev/null || (echo 'install xcodegen: brew install xcodegen' && exit 1)")
+    sh("cd .. && xcodegen generate")
+  end
+
+  desc "Bump CFBundleVersion based on TestFlight latest"
+  lane :bump_build do
+    api_key = app_store_connect_api_key(
+      key_id:        ENV["APP_STORE_CONNECT_API_KEY_KEY_ID"],
+      issuer_id:     ENV["APP_STORE_CONNECT_API_KEY_ISSUER_ID"],
+      key_filepath:  ENV["APP_STORE_CONNECT_API_KEY_KEY_FILEPATH"]
+    )
+
+    latest = latest_testflight_build_number(
+      api_key:           api_key,
+      app_identifier:    APP_IDENTIFIER,
+      initial_build_number: 0
+    )
+    new_build = latest + 1
+
+    # Edit the build number in project.yml so XcodeGen propagates it on the
+    # next `make generate`. Keeping it in YAML (not the .xcodeproj) means
+    # version bumps survive project regeneration.
+    yml = File.read(PROJECT_YML)
+    bumped = yml.sub(/CFBundleVersion: "\d+"/, %Q{CFBundleVersion: "#{new_build}"})
+    File.write(PROJECT_YML, bumped)
+    UI.success "✅ Bumped CFBundleVersion to #{new_build} in project.yml"
+
+    # Re-run XcodeGen so the generated project picks up the new value before
+    # any subsequent build lane reads from it.
+    generate
+  end
+
+  desc "Run all Swift Package tests"
+  lane :test do
+    # CairnCore + CairnIOSCore unit tests — runs on the Mac, no simulator.
+    sh("cd ../.. && swift test")
+  end
+
+  desc "Build a release IPA"
+  lane :build do
+    generate
+
+    # Use Fastlane's gym (wraps xcodebuild + signing). Output lands in
+    # OUTPUT_DIRECTORY relative to the iOS/ directory (the parent of fastlane/).
+    build_app(
+      project:         "../#{XCODE_PROJECT}",
+      scheme:          SCHEME,
+      configuration:   "Release",
+      output_directory: OUTPUT_DIRECTORY,
+      output_name:     "Cairn.ipa",
+      clean:           true,
+      export_method:   "app-store",
+      include_bitcode: false,
+      include_symbols: true
+    )
+    UI.success "✅ IPA built at #{OUTPUT_DIRECTORY}/Cairn.ipa"
+  end
+
+  desc "Run tests + bump build + build the IPA"
+  lane :build_ipa do
+    test
+    bump_build
+    build
+  end
+
+  desc "Upload to TestFlight"
+  lane :beta do
+    api_key = app_store_connect_api_key(
+      key_id:       ENV["APP_STORE_CONNECT_API_KEY_KEY_ID"],
+      issuer_id:    ENV["APP_STORE_CONNECT_API_KEY_ISSUER_ID"],
+      key_filepath: ENV["APP_STORE_CONNECT_API_KEY_KEY_FILEPATH"]
+    )
+
+    build_ipa
+
+    upload_to_testflight(
+      api_key: api_key,
+      ipa: "#{OUTPUT_DIRECTORY}/Cairn.ipa",
+      skip_waiting_for_build_processing: false,
+      distribute_external: false,
+      notify_external_testers: false,
+      changelog: "Bug fixes and improvements"
+    )
+    UI.success "🚀 Uploaded to TestFlight"
+  end
+
+  desc "Upload to App Store"
+  lane :release do
+    api_key = app_store_connect_api_key(
+      key_id:       ENV["APP_STORE_CONNECT_API_KEY_KEY_ID"],
+      issuer_id:    ENV["APP_STORE_CONNECT_API_KEY_ISSUER_ID"],
+      key_filepath: ENV["APP_STORE_CONNECT_API_KEY_KEY_FILEPATH"]
+    )
+
+    build_ipa
+
+    upload_to_app_store(
+      api_key:                          api_key,
+      force:                            true,
+      skip_metadata:                    false,
+      skip_screenshots:                 true,    # screenshots managed manually for now
+      precheck_include_in_app_purchases: false,
+      ipa:                              "#{OUTPUT_DIRECTORY}/Cairn.ipa",
+      submit_for_review:                false,
+      automatic_release:                false,
+      submission_information: {
+        add_id_info_uses_idfa: false
+      }
+    )
+    UI.success "🎉 Uploaded to App Store Connect"
+    UI.important "⚠️  Submit for review in App Store Connect when ready."
+  end
+
+  desc "Setup certificates and provisioning profiles via match"
+  lane :setup_certificates do
+    match(type: "appstore", app_identifier: APP_IDENTIFIER, readonly: false)
+  end
+
+  desc "Sync certificates (readonly — for CI / fresh machines)"
+  lane :sync_certificates do
+    match(type: "appstore", app_identifier: APP_IDENTIFIER, readonly: true)
+  end
+
+  # ============================================================================
+  # ERROR HANDLING
+  # ============================================================================
+
+  error do |lane, exception|
+    UI.error "❌ Error in lane #{lane}: #{exception.message}"
+  end
+end

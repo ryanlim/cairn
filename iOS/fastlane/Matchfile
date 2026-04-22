@@ -1,0 +1,18 @@
+# Matchfile — certificate + provisioning profile management.
+# Documentation: https://docs.fastlane.tools/actions/match/
+
+# Private git repo URL where match stores the encrypted certs. Set this
+# once before running `fastlane setup_certificates` for the first time.
+# git_url("https://github.com/your-org/apple-certificates")
+
+app_identifier(["app.cairn.ios"])
+
+type("appstore")
+
+team_id("7VBG686USB")
+
+storage_mode("git")
+
+# In CI: readonly(true) prevents fastlane from creating new certs.
+# Locally: leave false so the first `setup_certificates` can create them.
+# readonly(true)
