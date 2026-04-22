@@ -130,5 +130,72 @@ struct ReconciliationEngineTests {
         ))
         #expect(output.deleteCandidates.map(\.id) == ["s1"])
         #expect(output.excludedCandidateCount == 0)
+        #expect(output.pendingReviewCandidates.isEmpty)
+    }
+
+    @Test("strict mode: only candidates with confirmed-deleted checksums end up in deleteCandidates; rest are pending")
+    func strictModePartitionsCandidates() {
+        let output = ReconciliationEngine.compute(.init(
+            serverAssets: [asset("s1", "A"), asset("s2", "B"), asset("s3", "C")],
+            currentLocalChecksums: [],
+            everSeenChecksums: checksums("A", "B", "C"),
+            confirmedDeletedChecksums: checksums("A", "B"),
+            strictness: .strict
+        ))
+        #expect(Set(output.deleteCandidates.map(\.id)) == ["s1", "s2"])
+        #expect(output.pendingReviewCandidates.map(\.id) == ["s3"])
+    }
+
+    @Test("strict mode with empty confirmed-deleted set holds every candidate for review")
+    func strictModeEmptyConfirmedHoldsEverything() {
+        let output = ReconciliationEngine.compute(.init(
+            serverAssets: [asset("s1", "A"), asset("s2", "B")],
+            currentLocalChecksums: [],
+            everSeenChecksums: checksums("A", "B"),
+            confirmedDeletedChecksums: [],
+            strictness: .strict
+        ))
+        #expect(output.deleteCandidates.isEmpty)
+        #expect(Set(output.pendingReviewCandidates.map(\.id)) == ["s1", "s2"])
+    }
+
+    @Test("trusting mode ignores confirmed-deleted: every diff candidate is eligible")
+    func trustingModeIgnoresConfirmed() {
+        let output = ReconciliationEngine.compute(.init(
+            serverAssets: [asset("s1", "A"), asset("s2", "B")],
+            currentLocalChecksums: [],
+            everSeenChecksums: checksums("A", "B"),
+            confirmedDeletedChecksums: [],
+            strictness: .trusting
+        ))
+        #expect(Set(output.deleteCandidates.map(\.id)) == ["s1", "s2"])
+        #expect(output.pendingReviewCandidates.isEmpty)
+    }
+
+    @Test("strict + exclusion: excluded candidates are dropped before the strictness gate, never appear in pending-review either")
+    func strictAndExclusionInteraction() {
+        let output = ReconciliationEngine.compute(.init(
+            serverAssets: [asset("s1", "A"), asset("s2", "B"), asset("s3", "C")],
+            currentLocalChecksums: [],
+            everSeenChecksums: checksums("A", "B", "C"),
+            excludedChecksums: checksums("B"),       // user said: never trash this one
+            confirmedDeletedChecksums: checksums("A"), // user deleted A; C status unknown
+            strictness: .strict
+        ))
+        #expect(output.deleteCandidates.map(\.id) == ["s1"])         // confirmed
+        #expect(output.pendingReviewCandidates.map(\.id) == ["s3"])  // unconfirmed
+        #expect(output.excludedCandidateCount == 1)                  // s2 protected
+    }
+
+    @Test("default strictness is .trusting — preserves existing behavior of older call sites")
+    func defaultStrictnessIsTrusting() {
+        // Build the input via the convenience init that doesn't pass strictness.
+        let output = ReconciliationEngine.compute(.init(
+            serverAssets: [asset("s1", "A")],
+            currentLocalChecksums: [],
+            everSeenChecksums: checksums("A")
+        ))
+        #expect(output.deleteCandidates.map(\.id) == ["s1"])
+        #expect(output.pendingReviewCandidates.isEmpty)
     }
 }

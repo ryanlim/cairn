@@ -135,7 +135,7 @@ public enum JournalReader {
                 for target in targets where target.livePhotoVideoId != nil {
                     livePhotoVideoPairCount += 1
                 }
-            case .tagApplied, .restoreStarted, .assetsExcluded:
+            case .tagApplied, .restoreStarted, .assetsExcluded, .pendingReview:
                 break
             }
         }

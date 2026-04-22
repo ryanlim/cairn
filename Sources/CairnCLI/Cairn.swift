@@ -96,20 +96,44 @@ struct DryRun: AsyncParsableCommand {
     @Option(name: .long, help: "Path to the persistent exclusion store (JSON). Checksums in this file are protected from trashing on every run.")
     var exclusionsStore: String = "exclusions.json"
 
+    @Option(name: .long, help: "Path to the persistent confirmed-deleted store (JSON). Wave 4: append-only set of checksums positively observed in iOS Recently Deleted.")
+    var confirmedDeletedStore: String = "confirmed-deleted.json"
+
+    @Option(name: .long, help: "Optional file of base64 SHA1 checksums representing assets currently in iOS Recently Deleted. Unioned into the confirmed-deleted store on this run.")
+    var recentlyDeletedChecksumsFile: String?
+
+    @Option(name: .long, help: "Deletion strictness: strict (only confirmed-deleted candidates trash; rest go to pending review) or trusting (any diff candidate eligible). Default: strict.")
+    var strictness: DeletionStrictness = .strict
+
     func run() async throws {
         let client = try loadClient(globals)
-        let photos = ChecksumFilePhotoEnumerator(filePath: localChecksumsFile)
+        let photos = ChecksumFilePhotoEnumerator(
+            filePath: localChecksumsFile,
+            recentlyDeletedFilePath: recentlyDeletedChecksumsFile
+        )
         let store = JSONFileEverSeenStore(filePath: everSeenStore)
         let exclusions = JSONFileExclusionStore(filePath: exclusionsStore)
+        let confirmed = JSONFileConfirmedDeletedStore(filePath: confirmedDeletedStore)
 
         let local = try await photos.currentChecksums()
+        let confirmedBefore = try await confirmed.snapshot()
+        // Refresh confirmed-deleted with anything currently in Recently Deleted.
+        let recentlyDeleted = try await photos.recentlyDeletedChecksums()
+        let newlyConfirmed = recentlyDeleted.subtracting(confirmedBefore)
+        if !newlyConfirmed.isEmpty {
+            try await confirmed.union(newlyConfirmed)
+        }
+
         let everSeenBefore = try await store.snapshot()
         let excludedSet = Set(try await exclusions.snapshot().keys)
+        let confirmedSet = try await confirmed.snapshot()
         let isFirstRun = everSeenBefore.isEmpty
 
         print("local checksums: \(local.count)")
         print("ever-seen (before): \(everSeenBefore.count)\(isFirstRun ? "  [first run]" : "")")
         if !excludedSet.isEmpty { print("excluded checksums: \(excludedSet.count)") }
+        print("confirmed-deleted: \(confirmedSet.count)\(newlyConfirmed.isEmpty ? "" : "  (+\(newlyConfirmed.count) from this scan)")")
+        print("strictness: \(strictness.rawValue)")
         print("fetching server assets…")
 
         let allServer = try await client.listAllAssets()
@@ -119,7 +143,9 @@ struct DryRun: AsyncParsableCommand {
             serverAssets: allServer,
             currentLocalChecksums: local,
             everSeenChecksums: everSeenBefore,
-            excludedChecksums: excludedSet
+            excludedChecksums: excludedSet,
+            confirmedDeletedChecksums: confirmedSet,
+            strictness: strictness
         ))
 
         print("newly-observed local checksums (would be added to ever-seen): \(result.newlyObservedChecksums.count)")
@@ -128,6 +154,9 @@ struct DryRun: AsyncParsableCommand {
             print("excluded by allowlist (would-be candidates skipped): \(result.excludedCandidateCount)")
         }
         print("delete candidates: \(result.deleteCandidates.count)")
+        if !result.pendingReviewCandidates.isEmpty {
+            print("pending review (strict-mode holdback, not yet confirmed deleted): \(result.pendingReviewCandidates.count)")
+        }
 
         let safety = SafetyRails.evaluate(
             reconciliation: result,
@@ -149,8 +178,15 @@ struct DryRun: AsyncParsableCommand {
         }
 
         if !result.deleteCandidates.isEmpty {
-            print("\nfirst up to 20 candidates:")
+            print("\nfirst up to 20 confirmed-deletion candidates:")
             for asset in result.deleteCandidates.prefix(20) {
+                let live = asset.livePhotoVideoId.map { " (livePhotoVideo: \($0))" } ?? ""
+                print("  \(asset.id)  \(asset.checksum)\(live)")
+            }
+        }
+        if !result.pendingReviewCandidates.isEmpty {
+            print("\nfirst up to 20 pending-review candidates (would need manual approval in strict mode):")
+            for asset in result.pendingReviewCandidates.prefix(20) {
                 let live = asset.livePhotoVideoId.map { " (livePhotoVideo: \($0))" } ?? ""
                 print("  \(asset.id)  \(asset.checksum)\(live)")
             }
@@ -161,8 +197,12 @@ struct DryRun: AsyncParsableCommand {
         try await store.union(local)
         let everSeenAfter = try await store.snapshot()
         print("ever-seen (after): \(everSeenAfter.count)  → \(everSeenStore)")
+        let confirmedAfter = try await confirmed.snapshot()
+        print("confirmed-deleted (after): \(confirmedAfter.count)  → \(confirmedDeletedStore)")
     }
 }
+
+extension DeletionStrictness: ExpressibleByArgument {}
 
 // MARK: - trash (the destructive path)
 
@@ -198,15 +238,36 @@ struct Trash: AsyncParsableCommand {
     @Option(name: .long, help: "Path to the persistent exclusion store (JSON). Checksums in this file are protected from trashing on every run.")
     var exclusionsStore: String = "exclusions.json"
 
+    @Option(name: .long, help: "Path to the persistent confirmed-deleted store (JSON). Wave 4: append-only set of checksums positively observed in iOS Recently Deleted.")
+    var confirmedDeletedStore: String = "confirmed-deleted.json"
+
+    @Option(name: .long, help: "Optional file of base64 SHA1 checksums representing assets currently in iOS Recently Deleted. Unioned into the confirmed-deleted store on this run.")
+    var recentlyDeletedChecksumsFile: String?
+
+    @Option(name: .long, help: "Deletion strictness: strict (only confirmed-deleted candidates trash; rest go to pending review) or trusting (any diff candidate eligible). Default: strict.")
+    var strictness: DeletionStrictness = .strict
+
     func run() async throws {
         let client = try loadClient(globals)
-        let photos = ChecksumFilePhotoEnumerator(filePath: localChecksumsFile)
+        let photos = ChecksumFilePhotoEnumerator(
+            filePath: localChecksumsFile,
+            recentlyDeletedFilePath: recentlyDeletedChecksumsFile
+        )
         let store = JSONFileEverSeenStore(filePath: everSeenStore)
         let exclusions = JSONFileExclusionStore(filePath: exclusionsStore)
+        let confirmed = JSONFileConfirmedDeletedStore(filePath: confirmedDeletedStore)
 
         let local = try await photos.currentChecksums()
+        let confirmedBefore = try await confirmed.snapshot()
+        let recentlyDeleted = try await photos.recentlyDeletedChecksums()
+        let newlyConfirmed = recentlyDeleted.subtracting(confirmedBefore)
+        if !newlyConfirmed.isEmpty {
+            try await confirmed.union(newlyConfirmed)
+        }
+
         let everSeenBefore = try await store.snapshot()
         let excludedSet = Set(try await exclusions.snapshot().keys)
+        let confirmedSet = try await confirmed.snapshot()
         let isFirstRun = everSeenBefore.isEmpty
 
         if isFirstRun {
@@ -216,6 +277,8 @@ struct Trash: AsyncParsableCommand {
         print("local checksums: \(local.count)")
         print("ever-seen (before): \(everSeenBefore.count)")
         if !excludedSet.isEmpty { print("excluded checksums: \(excludedSet.count)") }
+        print("confirmed-deleted: \(confirmedSet.count)\(newlyConfirmed.isEmpty ? "" : "  (+\(newlyConfirmed.count) from this scan)")")
+        print("strictness: \(strictness.rawValue)")
         print("fetching server assets…")
         let allServer = try await client.listAllAssets()
         print("server assets (excluding trashed): \(allServer.count)")
@@ -224,12 +287,17 @@ struct Trash: AsyncParsableCommand {
             serverAssets: allServer,
             currentLocalChecksums: local,
             everSeenChecksums: everSeenBefore,
-            excludedChecksums: excludedSet
+            excludedChecksums: excludedSet,
+            confirmedDeletedChecksums: confirmedSet,
+            strictness: strictness
         ))
         if recon.excludedCandidateCount > 0 {
             print("excluded by allowlist (would-be candidates skipped): \(recon.excludedCandidateCount)")
         }
         print("delete candidates: \(recon.deleteCandidates.count)")
+        if !recon.pendingReviewCandidates.isEmpty {
+            print("pending review (strict-mode holdback, not yet confirmed deleted): \(recon.pendingReviewCandidates.count)")
+        }
 
         let safety = SafetyRails.evaluate(
             reconciliation: recon,
@@ -251,12 +319,30 @@ struct Trash: AsyncParsableCommand {
             throw ExitCode.failure
         }
 
-        if recon.deleteCandidates.isEmpty {
-            print("nothing to do.")
-            return
+        let resolvedRunId = runId ?? "\(ISO8601DateFormatter().string(from: Date()))-\(UUID().uuidString.prefix(8))"
+        let journalActor = DeletionJournal(path: URL(fileURLWithPath: journal))
+
+        // Journal pending-review holdback even if we have nothing to trash —
+        // the user / iOS app needs to know these assets are awaiting approval.
+        if !recon.pendingReviewCandidates.isEmpty {
+            try await journalActor.append(.init(
+                runId: resolvedRunId,
+                event: .pendingReview(
+                    assetIds: recon.pendingReviewCandidates.map(\.id),
+                    checksums: recon.pendingReviewCandidates.map(\.checksum.base64)
+                )
+            ))
+            print("\njournaled pending-review event for \(recon.pendingReviewCandidates.count) asset(s) under run-id \(resolvedRunId).")
         }
 
-        let resolvedRunId = runId ?? "\(ISO8601DateFormatter().string(from: Date()))-\(UUID().uuidString.prefix(8))"
+        if recon.deleteCandidates.isEmpty {
+            if recon.pendingReviewCandidates.isEmpty {
+                print("nothing to do.")
+            } else {
+                print("nothing eligible to trash (pending-review only). Approve via the iOS app or rerun with --strictness trusting.")
+            }
+            return
+        }
 
         print("\nfirst up to 20 candidates:")
         for asset in recon.deleteCandidates.prefix(20) {
@@ -289,7 +375,6 @@ struct Trash: AsyncParsableCommand {
             }
         }
 
-        let journalActor = DeletionJournal(path: URL(fileURLWithPath: journal))
         let orchestrator = TrashOrchestrator(writer: client, journal: journalActor)
         let summary = try await orchestrator.run(
             runId: resolvedRunId,

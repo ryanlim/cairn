@@ -78,6 +78,10 @@ public struct JournalEntry: Codable, Sendable, Equatable {
         /// User added these checksums to the exclusion list. `fromRunId` is set when
         /// the exclusion happened from a run-detail view; nil for ad-hoc additions.
         case assetsExcluded(checksums: [String], fromRunId: String?)
+        /// In `.strict` mode, candidates whose checksums were not in the
+        /// confirmed-deleted set are held for the user's manual review rather
+        /// than trashed. Records the held set for forensics.
+        case pendingReview(assetIds: [String], checksums: [String])
     }
 
     public struct TrashTarget: Codable, Sendable, Equatable {

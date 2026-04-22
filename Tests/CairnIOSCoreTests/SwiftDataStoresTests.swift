@@ -189,3 +189,44 @@ struct SwiftDataExclusionStoreTests {
         #expect(try await reader.snapshot()[ck("X")] == m)
     }
 }
+
+// MARK: - SwiftDataConfirmedDeletedStore
+
+@Suite("SwiftDataConfirmedDeletedStore")
+struct SwiftDataConfirmedDeletedStoreTests {
+    @Test("empty container snapshot is empty")
+    func emptySnapshot() async throws {
+        let container = try makeContainer()
+        let store = SwiftDataConfirmedDeletedStore(container: container)
+        #expect(try await store.snapshot().isEmpty)
+    }
+
+    @Test("union + snapshot roundtrip")
+    func unionRoundTrip() async throws {
+        let container = try makeContainer()
+        let store = SwiftDataConfirmedDeletedStore(container: container)
+        try await store.union(cks("A", "B"))
+        try await store.union(cks("B", "C"))
+        #expect(try await store.snapshot() == cks("A", "B", "C"))
+    }
+
+    @Test("union with overlapping checksums is idempotent")
+    func unionIsIdempotent() async throws {
+        let container = try makeContainer()
+        let store = SwiftDataConfirmedDeletedStore(container: container)
+        try await store.union(cks("A", "B"))
+        try await store.union(cks("A", "B"))
+        let snap = try await store.snapshot()
+        #expect(snap == cks("A", "B"))
+        #expect(snap.count == 2)
+    }
+
+    @Test("two stores sharing a container see each other's writes")
+    func sharedContainerVisibility() async throws {
+        let container = try makeContainer()
+        let writer = SwiftDataConfirmedDeletedStore(container: container)
+        let reader = SwiftDataConfirmedDeletedStore(container: container)
+        try await writer.union(cks("A", "B"))
+        #expect(try await reader.snapshot() == cks("A", "B"))
+    }
+}

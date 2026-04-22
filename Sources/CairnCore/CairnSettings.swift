@@ -36,23 +36,50 @@ public struct CairnSettings: Sendable, Codable, Equatable {
     /// can leak checksums into support bundles users share.
     public var verboseLogging: Bool
 
+    /// How aggressively cairn acts on deletion candidates. See the plan
+    /// doc's "Confirmed-deletion signal (Wave 4)" section for the full
+    /// rationale.
+    public var deletionStrictness: DeletionStrictness
+
     public init(
         maxDeletePercent: Double = 1.0,
         minDeleteFloor: Int = 5,
         dryRunByDefault: Bool = false,
         notifyOnAbort: Bool = true,
-        verboseLogging: Bool = false
+        verboseLogging: Bool = false,
+        deletionStrictness: DeletionStrictness = .strict
     ) {
         self.maxDeletePercent = maxDeletePercent
         self.minDeleteFloor = minDeleteFloor
         self.dryRunByDefault = dryRunByDefault
         self.notifyOnAbort = notifyOnAbort
         self.verboseLogging = verboseLogging
+        self.deletionStrictness = deletionStrictness
     }
 
     /// The factory defaults. Kept as a single constant so tests and the
     /// "reset to defaults" UI path reference the same source of truth.
     public static let defaults: CairnSettings = CairnSettings()
+}
+
+/// How aggressively cairn translates "no longer in the local library"
+/// into "trash on the server."
+///
+/// `.strict` requires a positive deletion signal — the checksum has been
+/// observed in iOS's Recently Deleted album — before any candidate is
+/// trashed. Diff-discovered candidates that lack the positive signal are
+/// held in a "pending review" set the user manually approves or skips.
+/// This is the safe default and the right choice for any user with iCloud
+/// Photo Library, iCloud-Optimized Storage, or a possibility of partial
+/// library restores.
+///
+/// `.trusting` skips the confirmed-deletion gate. Any diff-discovered
+/// candidate flows through the normal trash pipeline. Faster operationally
+/// but vulnerable to gradual library-loss failure modes (sync degradation,
+/// "Remove from this iPhone," partial restores).
+public enum DeletionStrictness: String, Sendable, Codable, Equatable, CaseIterable {
+    case strict
+    case trusting
 }
 
 /// Narrow protocol over settings persistence. The iOS target may back

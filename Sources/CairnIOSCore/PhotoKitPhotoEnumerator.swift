@@ -127,6 +127,59 @@ public struct PhotoKitPhotoEnumerator: PhotoEnumerator {
         return checksums
     }
 
+    /// Wave 4 positive-deletion signal: enumerate iOS's Recently Deleted
+    /// album and return checksums for every asset (and paired motion video)
+    /// in it. Photos in this album are positively user-deleted and pending
+    /// the system's 30-day auto-purge. A scheduled scan calls this on each
+    /// run so that confirmed-deleted state captures every deletion before
+    /// the auto-purge window closes.
+    ///
+    /// **iOS-only.** `PHAssetCollectionSubtype.smartAlbumRecentlyDeleted`
+    /// is not available on macOS. On macOS this returns an empty set so
+    /// the rest of the pipeline degrades cleanly to "no positive
+    /// confirmation available" — strict-mode reconciliation will hold
+    /// every diff candidate for review, which is the safe outcome.
+    public func recentlyDeletedChecksums() async throws -> Set<Checksum> {
+        #if os(iOS)
+        let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        guard status == .authorized else {
+            throw Error.notAuthorized(status)
+        }
+
+        // Recently Deleted is exposed as a smart album. With Full Photos
+        // access the user's own deletions are visible here regardless of
+        // the typical fetchAssets visibility rules.
+        let collections = PHAssetCollection.fetchAssetCollections(
+            with: .smartAlbum,
+            subtype: .smartAlbumRecentlyDeleted,
+            options: nil
+        )
+        guard let trash = collections.firstObject else { return [] }
+
+        let result = PHAsset.fetchAssets(in: trash, options: nil)
+        var assets: [PHAsset] = []
+        assets.reserveCapacity(result.count)
+        result.enumerateObjects { asset, _, _ in assets.append(asset) }
+
+        var checksums = Set<Checksum>()
+        for asset in assets {
+            let resources = Self.resourcesToHash(for: asset)
+            // Don't throw on resource-less trashed assets — Recently Deleted
+            // can contain odd partial states. Just skip; the scheduled scan
+            // will see them again on the next pass if they re-acquire
+            // resources, and worst case the diff catches them via the
+            // negative signal anyway.
+            for resource in resources {
+                let checksum = try await Self.hash(resource: resource, assetLocalIdentifier: asset.localIdentifier)
+                checksums.insert(checksum)
+            }
+        }
+        return checksums
+        #else
+        return []
+        #endif
+    }
+
     // MARK: - Internal hashing
 
     /// Hash a single `PHAssetResource` by streaming its bytes through

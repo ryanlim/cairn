@@ -138,6 +138,8 @@ struct JournalShow: AsyncParsableCommand {
         case .assetsExcluded(let cks, let from):
             let context = from.map { "  fromRun=\($0)" } ?? "  ad-hoc"
             return ("assetsExcluded", "\(cks.count) checksum(s)\(context)")
+        case .pendingReview(let assetIds, let cks):
+            return ("pendingReview", "\(assetIds.count) asset(s) held for manual approval (strict-mode); \(cks.count) checksum(s)")
         }
     }
 }

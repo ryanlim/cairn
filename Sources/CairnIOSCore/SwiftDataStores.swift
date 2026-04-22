@@ -50,15 +50,26 @@ final class StoredExclusion {
     }
 }
 
+/// SwiftData row for `ConfirmedDeletedStore`. One row per checksum that
+/// has been observed in iOS's Recently Deleted album. Same `.unique`-on-
+/// `base64` pattern as `StoredEverSeenChecksum`.
+@Model
+final class StoredConfirmedDeletedChecksum {
+    @Attribute(.unique) var base64: String
+
+    init(base64: String) {
+        self.base64 = base64
+    }
+}
+
 // MARK: - Container helper
 
 /// Factory for the shared `ModelContainer` that backs the iOS app's
-/// SwiftData stores. Both `SwiftDataEverSeenStore` and
-/// `SwiftDataExclusionStore` are expected to be constructed from the same
-/// container so they end up writing to one underlying SQLite file owned by
-/// the app.
+/// SwiftData stores. The four `SwiftData*Store` actors are expected to be
+/// constructed from the same container so they end up writing to one
+/// underlying SQLite file owned by the app.
 public enum CairnSwiftDataContainer {
-    /// Build a `ModelContainer` over both `@Model` types in this file.
+    /// Build a `ModelContainer` over every `@Model` type in this file.
     ///
     /// - Parameters:
     ///   - url: Optional explicit on-disk location for the SQLite store.
@@ -73,6 +84,7 @@ public enum CairnSwiftDataContainer {
         let schema = Schema([
             StoredEverSeenChecksum.self,
             StoredExclusion.self,
+            StoredConfirmedDeletedChecksum.self,
         ])
         let configuration: ModelConfiguration
         if inMemory {
@@ -237,5 +249,52 @@ public actor SwiftDataExclusionStore: ExclusionStore {
         }
         guard changed else { return }
         try context.save()
+    }
+}
+
+// MARK: - SwiftDataConfirmedDeletedStore
+
+/// SwiftData-backed `ConfirmedDeletedStore`. Mirrors `SwiftDataEverSeenStore`
+/// in shape — append-only set of base64 checksums, dedup at the schema level
+/// via a unique attribute. See `SwiftDataEverSeenStore` for the rationale on
+/// plain-actor-vs-`@ModelActor`.
+public actor SwiftDataConfirmedDeletedStore: ConfirmedDeletedStore {
+    private let container: ModelContainer
+    private let context: ModelContext
+
+    public init(container: ModelContainer) {
+        self.container = container
+        self.context = ModelContext(container)
+    }
+
+    public func snapshot() async throws -> Set<Checksum> {
+        let descriptor = FetchDescriptor<StoredConfirmedDeletedChecksum>()
+        let rows = try context.fetch(descriptor)
+        var out: Set<Checksum> = []
+        out.reserveCapacity(rows.count)
+        for row in rows {
+            out.insert(Checksum(base64: row.base64))
+        }
+        return out
+    }
+
+    public func union(_ additions: Set<Checksum>) async throws {
+        guard !additions.isEmpty else { return }
+        let existing = try snapshotBase64Set()
+        for checksum in additions where !existing.contains(checksum.base64) {
+            context.insert(StoredConfirmedDeletedChecksum(base64: checksum.base64))
+        }
+        try context.save()
+    }
+
+    private func snapshotBase64Set() throws -> Set<String> {
+        let descriptor = FetchDescriptor<StoredConfirmedDeletedChecksum>()
+        let rows = try context.fetch(descriptor)
+        var out: Set<String> = []
+        out.reserveCapacity(rows.count)
+        for row in rows {
+            out.insert(row.base64)
+        }
+        return out
     }
 }

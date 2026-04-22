@@ -13,6 +13,15 @@ struct CairnSettingsTests {
         #expect(d.dryRunByDefault == false)
         #expect(d.notifyOnAbort == true)
         #expect(d.verboseLogging == false)
+        #expect(d.deletionStrictness == .strict)
+    }
+
+    @Test("DeletionStrictness encodes as its raw string for stable on-disk format")
+    func strictnessRawValueIsStable() throws {
+        let strict = try JSONEncoder().encode(DeletionStrictness.strict)
+        let trusting = try JSONEncoder().encode(DeletionStrictness.trusting)
+        #expect(String(data: strict, encoding: .utf8) == #""strict""#)
+        #expect(String(data: trusting, encoding: .utf8) == #""trusting""#)
     }
 }
 
