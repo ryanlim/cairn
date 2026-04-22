@@ -87,6 +87,35 @@ make sync-certs     # subsequent times / CI — pulls existing certs read-only
 - **Background refresh schedule, scene phases, app-lifecycle hooks:** edit `App/CairnApp.swift`.
 - **Bundle ID, version, Info.plist keys, capabilities:** edit `project.yml` then `make generate`.
 
+## Known gotchas
+
+### Bundler version mismatch
+
+Symptom: `bundle install` errors with
+
+> The running version of Bundler (4.0.6) does not match the version of the specification installed for it (4.0.8). This can be caused by reinstalling Ruby without removing previous installation, leaving around an upgraded default version of Bundler. Reinstalling Ruby from scratch should fix the problem.
+
+This happens when the system Ruby has been reinstalled but old gem specs hang around with a newer Bundler dependency than what's currently active. Non-destructive fix:
+
+```sh
+gem install bundler -v 4.0.8        # match the version the spec expects (use the version from the error)
+# or
+gem install bundler                  # update to whatever's latest
+```
+
+Then re-run `make install`. The Makefile's `install` target now runs `gem install bundler --conservative` first to pre-empt this in fresh setups.
+
+### `bundle install --path` is gone
+
+If you see `The --path flag has been removed because it relied on being remembered across bundler invocations`, the new pattern is:
+
+```sh
+bundle config set --local path 'vendor/bundle'
+bundle install
+```
+
+The Makefile already does this.
+
 ## Why XcodeGen?
 
 Xcode `.xcodeproj` files are notoriously merge-unfriendly XML-ish blobs. XcodeGen reduces project state to a YAML file that's diffable, code-reviewable, and survives regeneration cleanly. The cost is one extra step (`make generate`) when you change project settings; the benefit is that you never lose 15 minutes to a `pbxproj` merge conflict.

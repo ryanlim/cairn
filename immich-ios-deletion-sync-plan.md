@@ -1,5 +1,93 @@
 # Minimal iOS Immich Deletion-Sync App — Plan
 
+## Current state and next steps (read first)
+
+> Snapshot taken 2026-04-21 to give a fresh Claude session full context.
+> Repo root: `/Users/graham/code/cairn/` (renamed from `immich_delete_prototype/`).
+
+### What's done
+
+| Layer | Status | Notes |
+|---|---|---|
+| `CairnCore` (multi-platform logic) | ✓ done | 1,741 LoC. ReconciliationEngine, SafetyRails, ExclusionStore, ConfirmedDeletedStore, EverSeenStore, SettingsStore, SecretStore, PhotoEnumerator (protocols), Hashing, ImmichClient, TrashOrchestrator, RestoreOrchestrator, DeletionJournal, JournalReader, TagSchema. |
+| `CairnIOSCore` iOS impls | ✓ done | 872 LoC. PhotoKitPhotoEnumerator, KeychainSecretStore, SwiftDataEverSeenStore + SwiftDataExclusionStore + SwiftDataConfirmedDeletedStore, UserDefaultsSettingsStore. |
+| `CairnIOSCore/UI` SwiftUI | ✓ done | 5,756 LoC. Foundations (palette/tokens/primitives/fixtures), 7 screens (Status/DryRun/RunDetail/Runs/Excluded/Settings/Setup), `CairnAppRoot` + `CairnAppModel`. |
+| `CairnCLI` | ✓ done | 870 LoC. verify / dry-run / trash / restore / journal / history / diagnose subcommands, fully validated end-to-end against a real Immich. |
+| Tests | ✓ done | 155 passing across 25 suites. |
+| iOS app shell | ✓ scaffolded | `iOS/` dir with XcodeGen `project.yml`, Fastlane lanes (matching the user's ReferenceFrame pattern), `App/CairnApp.swift`, `App/AppDependencies.swift`. The `.xcodeproj` itself has not yet been generated on the user's Mac — see "Open work" below. |
+
+### What's NOT done (concrete next steps, in order)
+
+1. **Resolve `iOS/` Bundler version mismatch.** Running Bundler 4.0.6 but a gemspec is installed for 4.0.8. Symptom: `bundle install` errors with "running version of Bundler does not match the version of the specification". Fix:
+   ```sh
+   gem install bundler -v 4.0.8        # match the spec exactly
+   # or
+   gem update bundler                   # update to whatever's latest
+   ```
+   Document in `iOS/README.md` "Known gotchas".
+2. **Generate the Xcode project.** `cd iOS && make install && make generate && open Cairn.xcodeproj`. In Xcode: select `Cairn` target → Signing & Capabilities → set Team. Build to simulator (`Cmd-R`) to verify everything compiles end-to-end. **First time only.**
+3. **Wire the cached-reconciliation flow** in `iOS/App/AppDependencies.swift`. The `requestSync` closure currently computes the `ReconciliationOutput` and discards it. Needs:
+   - Add a property on `CairnAppModel` to hold the most recent `ReconciliationOutput` (delete candidates + pending review + assetsInPurview).
+   - `requestSync` writes that property + sets `presentedSheet = .dryRun(...)`.
+   - `confirmTrash` reads the cached candidates and calls `TrashOrchestrator(writer: client, journal: journal).run(...)`.
+   - `presentRunDetail` queries the journal + server (`assetsForTag`) for that run's tagged assets to populate real data, replacing the fixture fallback.
+4. **Filename → checksum lookup in `exclude` action.** The current `AppDependencies.exclude` closure constructs `Checksum(base64: filename)` which is wrong. Wire it to look up actual checksums via the cached candidates from the most recent run.
+5. **Real Immich thumbnail loading.** `MockAssetThumb` is a deterministic gradient placeholder. Replace with `AsyncImage` keyed off `ImmichClient.thumbnailURL(for:assetId:)` — the client doesn't yet have that helper, add it. URL shape: `<baseURL>/api/assets/<id>/thumbnail`.
+6. **App icon.** Drop a 1024×1024 PNG into `iOS/App/Assets.xcassets/AppIcon.appiconset/`. Xcode complains at archive time without it.
+7. **First on-device test** to validate PhotoKit enumeration, BGAppRefreshTask, and the actual end-to-end deletion flow against the user's Immich.
+8. **First TestFlight build** via `make beta`. Requires:
+   - App Store Connect API key env vars (see `iOS/README.md`).
+   - Fastlane match repo URL set in `iOS/fastlane/Matchfile`.
+   - Apple Developer team configured (already in `Appfile`: `7VBG686USB`).
+
+### Things deferred (real, but not blocking v1)
+
+- Snapshot tests for SwiftUI screens (would need a third-party preview-snapshot library; adds a dep).
+- A `PHPhotoLibraryChangeObserver`-based reactive update path. Currently we rely on the periodic BGAppRefreshTask scan plus foreground refreshes.
+- Privacy policy page (required for App Store submission; mostly boilerplate for "data never leaves your devices").
+- App Store metadata + screenshots.
+- The palette editor screen from the prototype (HANDOFF marks it second-class; deferred).
+
+### Operational quick reference
+
+```sh
+# Swift package (CairnCore + CairnIOSCore + CairnCLI)
+swift build
+swift test                       # 155 tests
+swift run cairn --help
+
+# iOS app
+cd iOS
+make install                     # one-time on each Mac
+make generate                    # regenerate .xcodeproj after editing project.yml
+make open                        # generate + open in Xcode
+make test                        # swift test from inside iOS/
+make build                       # release IPA via fastlane
+make beta                        # bump build, build IPA, upload to TestFlight
+make release                     # bump build, build IPA, upload to App Store
+```
+
+CLI auth: `.env` file in CWD with `IMMICH_URL` and `IMMICH_API_KEY` (gitignored). Never echo `.env` contents to tool output.
+
+### Important historical context
+
+- Started as `immich_delete_prototype/`; renamed to `cairn/` 2026-04-21.
+- Several false starts on naming: `ImmichReap` → `Danglewrangler` / `DanglingModifier` → `cairn`. The legacy first-real-trash run on the user's Immich test account left a tag `immich-reap/run/2026-04-21T00:30:52Z-18A5327F` — harmless, deletable from Immich UI.
+- Wave 4 (confirmed-deletion signal) was added after the user noted that "missing from PHAsset" misclassifies iCloud-sync-degradation as user-deletion. Major safety improvement; changes the strictness-mode default to `.strict`.
+- Original LoC plan was "1,000–2,000 lines of Swift." We're at ~7,000 of iOS-bound code — see "Portability" section below for accounting.
+
+### Lessons / gotchas worth remembering
+
+- The Immich `/server/ping` endpoint returns `text/html`; sending `Accept: application/json` triggers HTTP 406. Don't add an Accept header in `ImmichClient`.
+- `IMMICH_URL` may or may not include `/api`. `ImmichClient.normalize` handles both.
+- `search/metadata` excludes `visibility: hidden` by default, which hides Live Photo motion videos. `assetsForTag` iterates non-locked visibilities to surface them.
+- `PHAssetCollectionSubtype.smartAlbumRecentlyDeleted` is iOS-only. `PhotoKitPhotoEnumerator.recentlyDeletedChecksums` returns empty on macOS for graceful degradation.
+- `RunSummary` init takes `durationMs` and `notes` (added Wave 1) — older callers will fail. Always include them.
+- The Claude Code harness's "is git repo" check is cached at session start; running `git init` mid-session leaves Agent worktree isolation unavailable until next session. Bug report saved at `notes/claude-code-bug-worktree-isolation.md`.
+- Server **does NOT cascade trash** through `livePhotoVideoId`. `TrashOrchestrator.run` explicitly includes linked motion-video UUIDs in every delete batch.
+
+---
+
 ## Goal and scope
 
 A small iOS app that detects photos deleted from the iOS Photos library which were previously uploaded to an Immich server, and trashes the corresponding server assets. Nothing else.

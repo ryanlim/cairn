@@ -11,7 +11,13 @@ help:           ## Show this help.
 
 install:       ## Install dependencies (xcodegen + fastlane gems).
 	@which xcodegen > /dev/null || brew install xcodegen
-	bundle install --path vendor/bundle
+	@# Bundler version drift: if the running `bundle` doesn't match the
+	@# version embedded in installed gemspecs, `bundle install` errors with
+	@# "running version of Bundler does not match the version of the
+	@# specification installed for it." Update bundler first to dodge this.
+	gem install bundler --no-document --conservative
+	bundle config set --local path 'vendor/bundle'
+	bundle install
 
 generate:      ## Regenerate Cairn.xcodeproj from project.yml.
 	xcodegen generate
