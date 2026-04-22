@@ -189,22 +189,37 @@ product UI.
   Immich's thumbnail endpoint for server-side. Keep the 76px square
   tile size in the dry-run grid; it's tuned for the iPhone SE width.
 - **Hashing / diff.** `IndexingStep` fakes three phases with timeouts.
-  Real implementation:
-  - Phase 1: iterate `PHAsset.fetchAssets`, compute a stable content ID
-    (Apple's `localIdentifier` plus `modificationDate`, or a perceptual
-    hash if you want cross-device resilience — design doc should be
-    consulted).
-  - Phase 2: `GET /api/assets?limit=*` paginated, pull `checksum` field.
-  - Phase 3: diff the two sets → candidate list.
-- **API calls.** All journal entries are made-up. Real endpoints per
-  Immich's OpenAPI spec (as of this writing):
-  - `POST /api/tags` (create)
-  - `PUT /api/tags/:id/assets` (attach)
-  - `DELETE /api/assets` with `{ids: [...], force: false}` (trash)
-  - `POST /api/assets/restore` (undo trash within 30 days)
+  Real implementation (already designed in `CairnCore`):
+  - Phase 1: iterate `PHAsset.fetchAssets`, hash each via
+    `CryptoKit.Insecure.SHA1` over the primary `PHAssetResource`'s bytes
+    (and the `pairedVideo` resource for Live Photos). The result is a
+    base64 SHA1 — same format Immich stores. See
+    `Sources/CairnCore/Hashing.swift`.
+  - Phase 2: `POST /api/search/metadata` paginated, pull `checksum` field
+    from each item. The `/api/assets?limit=*` route this brief originally
+    referenced was deprecated; the modern endpoint is search/metadata.
+    Note that it excludes `visibility: hidden` by default — see
+    `Sources/CairnCore/ImmichClient.swift` `assetsForTag` for the
+    iterate-all-visibilities pattern when you need hidden motion videos
+    too.
+  - Phase 3: diff via `ReconciliationEngine.compute(...)` in
+    `Sources/CairnCore/ReconciliationEngine.swift`. Already implemented;
+    iOS just supplies inputs.
+- **API calls.** All journal entries are made-up. Real endpoints (verified
+  against an Immich instance, Apr 2026):
+  - `POST /api/tags` — upsert by name (create-or-return-existing).
+  - `PUT /api/tags/assets` — bulk-tag (note path: plural assets, no tag
+    ID in URL; tag IDs in body).
+  - `DELETE /api/assets` with `{ids: [...], force: false}` — trash.
+  - `POST /api/trash/restore/assets` with `{ids: [...]}` — undo trash
+    within the server's retention window. (Brief originally said
+    `/api/assets/restore`; that is **not** the real path.)
+  All four are wrapped in `Sources/CairnCore/ImmichClient.swift`; the
+  iOS layer should call those methods rather than reimplementing HTTP.
 - **Server verification.** Onboarding step 0 ("1,204 assets visible to
-  this key") is hardcoded. Real: hit `/api/assets?limit=1` with the
-  key, read the `count` header or paginate to count.
+  this key") is hardcoded. Real: call `ImmichClient.listAllAssets()` and
+  use its `.count`. This also exercises the API key, which is what
+  matters for the verify step (ping is unauthenticated).
 - **Restore.** Currently a toast. Real call per above, then update the
   run's local state to reflect the restored-count.
 - **Open in Immich.** Toast only. Real: universal link to
