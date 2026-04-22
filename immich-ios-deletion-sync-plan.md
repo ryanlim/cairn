@@ -188,6 +188,14 @@ This is the kind of caveat that needs to be communicated honestly without alarm.
 
 These are starting points. Final copy should go through Claude Design alongside the existing microcopy.
 
+### Android portability note
+
+The Wave 4 strategy translates well to Android (MediaStore exposes a trash via `IS_TRASHED`, `ContentObserver` is the equivalent of `PHPhotoLibraryChangeObserver`, `WorkManager` replaces `BackgroundTasks`). One asymmetry that matters for defaults:
+
+**Google Photos's "Free up space" actually removes local copies from MediaStore** — unlike iOS's iCloud Optimized Storage, which leaves the `PHAsset` enumerable. On Android, cairn's reconciliation diff would see those as "deletions." Free-up-space removals don't pass through the trash, so they'd correctly land in pending-review under `.strict` mode — but `.trusting` mode would silently trash them.
+
+Therefore, on Android: `.strict` mode shouldn't be merely the recommended default — it's effectively required for safety. Document this as a hard constraint when an Android port is started.
+
 ### Acknowledged limitations
 
 cairn is operating outside the bounds of what the Immich team designed for. Some failure modes can't be eliminated:
