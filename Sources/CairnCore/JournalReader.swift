@@ -11,6 +11,31 @@ public struct RunSummary: Sendable, Equatable {
     public let status: Status
     public let trashedCount: Int
     public let restoredCount: Int
+    /// Milliseconds between `firstTimestamp` and `lastTimestamp`.
+    public let durationMs: Int
+    /// Short human-readable summary derived from the run's events. Powers the
+    /// CLI `journal list` notes column and the iOS History screen.
+    public let notes: String
+
+    public init(
+        runId: String,
+        firstTimestamp: Date,
+        lastTimestamp: Date,
+        status: Status,
+        trashedCount: Int,
+        restoredCount: Int,
+        durationMs: Int,
+        notes: String
+    ) {
+        self.runId = runId
+        self.firstTimestamp = firstTimestamp
+        self.lastTimestamp = lastTimestamp
+        self.status = status
+        self.trashedCount = trashedCount
+        self.restoredCount = restoredCount
+        self.durationMs = durationMs
+        self.notes = notes
+    }
 
     public enum Status: String, Sendable, Equatable {
         /// The trashed assets for this run have been put back.
@@ -69,27 +94,48 @@ public enum JournalReader {
         var sawRunStarted = false
         var sawRunCompleted = false
         var dryRun = false
+        var firstRunStartedCandidateCount: Int? = nil
+        var firstAbortReason: String? = nil
+        var firstTrashFailedMessage: String? = nil
+        var firstRestoreFailedMessage: String? = nil
+        var livePhotoVideoPairCount = 0
 
         for entry in sorted {
             switch entry.event {
-            case .runStarted(let isDry, _, _):
+            case .runStarted(let isDry, let candidateCount, _):
                 sawRunStarted = true
                 dryRun = isDry
+                if firstRunStartedCandidateCount == nil {
+                    firstRunStartedCandidateCount = candidateCount
+                }
             case .runCompleted:
                 sawRunCompleted = true
-            case .runAborted:
+            case .runAborted(let reason):
                 sawAborted = true
+                if firstAbortReason == nil {
+                    firstAbortReason = reason
+                }
             case .trashSucceeded(let ids):
                 sawTrashSucceeded = true
                 trashedCount = ids.count
-            case .trashFailed:
+            case .trashFailed(_, let message):
                 sawTrashFailed = true
+                if firstTrashFailedMessage == nil {
+                    firstTrashFailedMessage = message
+                }
             case .restoreSucceeded(_, let ids):
                 sawRestoreSucceeded = true
                 restoredCount = ids.count
-            case .restoreFailed:
+            case .restoreFailed(_, _, let message):
                 sawRestoreFailed = true
-            case .planningTrash, .tagApplied, .restoreStarted:
+                if firstRestoreFailedMessage == nil {
+                    firstRestoreFailedMessage = message
+                }
+            case .planningTrash(let targets):
+                for target in targets where target.livePhotoVideoId != nil {
+                    livePhotoVideoPairCount += 1
+                }
+            case .tagApplied, .restoreStarted:
                 break
             }
         }
@@ -105,13 +151,92 @@ public enum JournalReader {
             return .inProgress
         }()
 
-        return RunSummary(
-            runId: runId,
-            firstTimestamp: sorted.first!.timestamp,
-            lastTimestamp: sorted.last!.timestamp,
+        let firstTimestamp = sorted.first!.timestamp
+        let lastTimestamp = sorted.last!.timestamp
+        let durationMs = Int((lastTimestamp.timeIntervalSince(firstTimestamp) * 1000).rounded())
+
+        let notes = buildNotes(
             status: status,
             trashedCount: trashedCount,
-            restoredCount: restoredCount
+            restoredCount: restoredCount,
+            livePhotoVideoPairCount: livePhotoVideoPairCount,
+            firstRunStartedCandidateCount: firstRunStartedCandidateCount,
+            firstAbortReason: firstAbortReason,
+            firstTrashFailedMessage: firstTrashFailedMessage,
+            firstRestoreFailedMessage: firstRestoreFailedMessage,
+            sawRunStarted: sawRunStarted
         )
+
+        return RunSummary(
+            runId: runId,
+            firstTimestamp: firstTimestamp,
+            lastTimestamp: lastTimestamp,
+            status: status,
+            trashedCount: trashedCount,
+            restoredCount: restoredCount,
+            durationMs: durationMs,
+            notes: notes
+        )
+    }
+
+    private static func buildNotes(
+        status: RunSummary.Status,
+        trashedCount: Int,
+        restoredCount: Int,
+        livePhotoVideoPairCount: Int,
+        firstRunStartedCandidateCount: Int?,
+        firstAbortReason: String?,
+        firstTrashFailedMessage: String?,
+        firstRestoreFailedMessage: String?,
+        sawRunStarted: Bool
+    ) -> String {
+        let separator = " · "
+        switch status {
+        case .trashed:
+            var fragments = ["\(trashedCount) trashed"]
+            if livePhotoVideoPairCount > 0 {
+                fragments.append("\(livePhotoVideoPairCount) live-photo videos included")
+            }
+            return fragments.joined(separator: separator).lowercased()
+        case .restored:
+            return "\(restoredCount) restored from this run".lowercased()
+        case .trashFailed:
+            var fragments = ["trash failed"]
+            if let msg = firstTrashFailedMessage, !msg.isEmpty {
+                fragments.append(truncateFailureMessage(msg))
+            }
+            return fragments.joined(separator: separator).lowercased()
+        case .restoreFailed:
+            var fragments = ["restore failed"]
+            if let msg = firstRestoreFailedMessage, !msg.isEmpty {
+                fragments.append(truncateFailureMessage(msg))
+            }
+            return fragments.joined(separator: separator).lowercased()
+        case .dryRun:
+            let n = firstRunStartedCandidateCount ?? 0
+            if n == 0 {
+                return "dry-run · no candidates"
+            } else {
+                return "dry-run · \(n) candidates"
+            }
+        case .aborted:
+            let reason = firstAbortReason ?? ""
+            return "aborted · \(reason)".lowercased()
+        case .inProgress:
+            if sawRunStarted, let n = firstRunStartedCandidateCount {
+                return "in-progress · \(n) candidates"
+            }
+            return "in-progress"
+        }
+    }
+
+    /// Truncate a failure message to the first sentence (text before first ".")
+    /// or the first 60 characters, whichever comes first.
+    private static func truncateFailureMessage(_ message: String) -> String {
+        let sixtyLimit = message.prefix(60)
+        if let dotIndex = sixtyLimit.firstIndex(of: ".") {
+            return String(sixtyLimit[..<dotIndex])
+        }
+        return String(sixtyLimit)
     }
 }

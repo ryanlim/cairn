@@ -105,4 +105,80 @@ struct JournalReaderTests {
         #expect(aEntries.count == 2)
         #expect(aEntries.map(\.runId) == ["A", "A"])
     }
+
+    @Test("trashed with live-photo pair produces the paired-video note")
+    func trashedWithLivePhotoNote() {
+        let target = JournalEntry.TrashTarget(
+            assetId: "still-1",
+            checksum: "c1",
+            livePhotoVideoId: "video-1"
+        )
+        let es = [
+            entry("R1", "2026-04-21T00:00:00Z", .runStarted(dryRun: false, candidateCount: 1, assetsInPurview: 100)),
+            entry("R1", "2026-04-21T00:00:01Z", .planningTrash(targets: [target])),
+            entry("R1", "2026-04-21T00:00:02Z", .trashSucceeded(assetIds: ["still-1", "video-1"])),
+            entry("R1", "2026-04-21T00:00:03Z", .runCompleted(deletedCount: 2)),
+        ]
+        let s = JournalReader.summarize(es)[0]
+        #expect(s.status == .trashed)
+        #expect(s.notes.contains("live-photo videos included"))
+        #expect(s.notes.contains("1 live-photo videos included"))
+    }
+
+    @Test("restored run shows restored count, not trashed count")
+    func restoredNoteShowsRestoredCount() {
+        let es = [
+            entry("R1", "2026-04-21T00:00:00Z", .runStarted(dryRun: false, candidateCount: 2, assetsInPurview: 100)),
+            entry("R1", "2026-04-21T00:00:01Z", .trashSucceeded(assetIds: ["a", "b"])),
+            entry("R1", "2026-04-21T00:00:02Z", .runCompleted(deletedCount: 2)),
+            entry("R1", "2026-04-21T01:00:00Z", .restoreSucceeded(fromRunId: "R1", assetIds: ["a", "b"])),
+        ]
+        let s = JournalReader.summarize(es)[0]
+        #expect(s.status == .restored)
+        #expect(s.notes.contains("2 restored"))
+        #expect(!s.notes.contains("trashed"))
+    }
+
+    @Test("dry-run with candidates produces the right note")
+    func dryRunWithCandidatesNote() {
+        let es = [
+            entry("D", "2026-04-21T00:00:00Z", .runStarted(dryRun: true, candidateCount: 5, assetsInPurview: 100)),
+            entry("D", "2026-04-21T00:00:01Z", .runCompleted(deletedCount: 0)),
+        ]
+        let s = JournalReader.summarize(es)[0]
+        #expect(s.notes == "dry-run · 5 candidates")
+    }
+
+    @Test("dry-run with no candidates says 'no candidates'")
+    func dryRunNoCandidatesNote() {
+        let es = [
+            entry("D", "2026-04-21T00:00:00Z", .runStarted(dryRun: true, candidateCount: 0, assetsInPurview: 100)),
+            entry("D", "2026-04-21T00:00:01Z", .runCompleted(deletedCount: 0)),
+        ]
+        let s = JournalReader.summarize(es)[0]
+        #expect(s.notes == "dry-run · no candidates")
+    }
+
+    @Test("aborted run includes the abort reason")
+    func abortedNoteIncludesReason() {
+        let es = [
+            entry("A", "2026-04-21T00:00:00Z", .runStarted(dryRun: false, candidateCount: 50, assetsInPurview: 100)),
+            entry("A", "2026-04-21T00:00:01Z", .runAborted(reason: "threshold · 2.3% > 1% cap")),
+        ]
+        let s = JournalReader.summarize(es)[0]
+        #expect(s.status == .aborted)
+        #expect(s.notes.contains("threshold · 2.3% > 1% cap"))
+        #expect(s.notes.hasPrefix("aborted · "))
+    }
+
+    @Test("durationMs is last timestamp minus first, in ms")
+    func durationMsBasic() {
+        let es = [
+            entry("R1", "2026-04-21T00:00:00Z", .runStarted(dryRun: false, candidateCount: 1, assetsInPurview: 100)),
+            entry("R1", "2026-04-21T00:00:03Z", .trashSucceeded(assetIds: ["a"])),
+            entry("R1", "2026-04-21T00:00:05Z", .runCompleted(deletedCount: 1)),
+        ]
+        let s = JournalReader.summarize(es)[0]
+        #expect(s.durationMs == 5000)
+    }
 }
