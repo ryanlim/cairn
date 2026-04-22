@@ -1,0 +1,450 @@
+import SwiftUI
+
+/// The full history list. Mirrors the prototype's `screens/runs.jsx`.
+///
+/// Surfaces (top-to-bottom):
+///   1. AppHeader — "Runs" with subtitle showing total count + last-run age
+///   2. Day-grouped list of runs in reverse chronological order
+///        - Each day section is wrapped in a `KeylineSection`
+///        - Inside each day: a `CairnCard` containing one `RunListRow` per run
+///   3. Empty state (when `runs.isEmpty`):
+///        - Dashed-bordered icon tile
+///        - Headline + explainer paragraph
+///        - "A run includes" detail card with four bulleted lines
+///        - Primary CTA: "Start a sync from Status"
+///
+/// Tapping a row calls `onOpenRun(run)`. The detail sheet itself is owned
+/// by the parent (this screen never presents it directly), which keeps
+/// navigation policy out of the leaf view.
+///
+/// The `now` parameter is injected so that #Preview blocks render a stable
+/// "today/yesterday/Apr 15" grouping. Reading `Date()` from inside the body
+/// would make previews jitter every time Xcode rebuilt them, and would
+/// also break snapshot tests.
+///
+/// Microcopy is verbatim from the prototype. See HANDOFF.md "Keep these
+/// copies verbatim" — the empty-state explainer in particular is
+/// load-bearing (it teaches the user what a "run" is before they have one
+/// to inspect).
+public struct RunsScreen: View {
+
+    public let runs: [CairnFixtures.RunFixture]
+    public let now: Date
+    public let onOpenRun: (CairnFixtures.RunFixture) -> Void
+    public let onStartSync: () -> Void
+
+    @Environment(\.cairnTokens) private var t
+
+    /// Default `now` matches the prototype's pinned clock in
+    /// `parts.jsx::relTime` so the hand-off design and ported screen show
+    /// the same relative timestamps when reviewed side-by-side.
+    public static let previewNow: Date = {
+        ISO8601DateFormatter().date(from: "2026-04-21T18:30:00Z") ?? Date()
+    }()
+
+    public init(
+        runs: [CairnFixtures.RunFixture] = CairnFixtures.runs,
+        now: Date = RunsScreen.previewNow,
+        onOpenRun: @escaping (CairnFixtures.RunFixture) -> Void = { _ in },
+        onStartSync: @escaping () -> Void = {}
+    ) {
+        self.runs = runs
+        self.now = now
+        self.onOpenRun = onOpenRun
+        self.onStartSync = onStartSync
+    }
+
+    public var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                if runs.isEmpty {
+                    emptyState
+                } else {
+                    populated
+                }
+                Spacer(minLength: 24)
+            }
+        }
+        .background(t.bg)
+    }
+
+    // MARK: - Populated
+
+    private var populated: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Subtitle copy from screens/runs.jsx:83 — "<n> total · last <relTime>".
+            AppHeader(
+                title: "Runs",
+                subtitle: "\(runs.count) total · last \(CairnTimeHelpers.relativeTime(sortedRuns.first?.startedAt ?? now, now: now))"
+            )
+
+            ForEach(dayGroups, id: \.dayKey) { group in
+                KeylineSection(group.label)
+                CairnCard {
+                    VStack(spacing: 0) {
+                        ForEach(Array(group.runs.enumerated()), id: \.element.id) { idx, run in
+                            RunListRow(run: run, now: now, onOpen: { onOpenRun(run) })
+                            if idx < group.runs.count - 1 {
+                                RowDivider()
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Reverse-chronological so the most-recent run is first; matches the
+    /// prototype's implicit ordering (`RUNS` is already sorted that way).
+    private var sortedRuns: [CairnFixtures.RunFixture] {
+        runs.sorted { $0.startedAt > $1.startedAt }
+    }
+
+    private struct DayGroup {
+        let dayKey: Date     // start-of-day for stable identity
+        let label: String    // "Today" / "Yesterday" / "Mon, April 15"
+        let runs: [CairnFixtures.RunFixture]
+    }
+
+    private var dayGroups: [DayGroup] {
+        let cal = Calendar.current
+        var bucketed: [Date: [CairnFixtures.RunFixture]] = [:]
+        for run in sortedRuns {
+            let day = cal.startOfDay(for: run.startedAt)
+            bucketed[day, default: []].append(run)
+        }
+        return bucketed.keys
+            .sorted(by: >)
+            .map { day in
+                DayGroup(
+                    dayKey: day,
+                    label: Self.dayLabel(day, now: now, calendar: cal),
+                    runs: bucketed[day] ?? []
+                )
+            }
+    }
+
+    /// "Today" / "Yesterday" / "Mon, April 15" — mirrors prototype
+    /// `screens/runs.jsx:86` (`fmtDate({ weekday: 'short', month: 'long',
+    /// day: 'numeric' })`) but adds Today/Yesterday affordances since the
+    /// prototype's date string is already implicitly "today" or
+    /// "yesterday" most of the time.
+    private static func dayLabel(_ day: Date, now: Date, calendar: Calendar) -> String {
+        if calendar.isDate(day, inSameDayAs: now) { return "Today" }
+        if let yesterday = calendar.date(byAdding: .day, value: -1, to: now),
+           calendar.isDate(day, inSameDayAs: yesterday) { return "Yesterday" }
+        let f = DateFormatter()
+        f.dateFormat = "EEE, MMMM d"
+        return f.string(from: day)
+    }
+
+    // MARK: - Empty state
+
+    /// Verbatim copy from screens/runs.jsx:13–69. The four detail bullets
+    /// and the primary CTA label are load-bearing — they teach the user
+    /// what a "run" actually contains before they have one to look at.
+    private var emptyState: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            AppHeader(title: "Runs", subtitle: "No runs yet")
+
+            VStack(spacing: 0) {
+                // Dashed icon tile.
+                ZStack {
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .strokeBorder(t.divider, style: StrokeStyle(lineWidth: 0.5, dash: [3, 3]))
+                        .background(
+                            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                .fill(t.surfaceAlt)
+                        )
+                        .frame(width: 64, height: 64)
+                    Image(systemName: "list.bullet")
+                        .font(.system(size: 22, weight: .regular))
+                        .foregroundStyle(t.textMuted)
+                }
+                .padding(.bottom, 18)
+
+                // Headline (verbatim, screens/runs.jsx:28).
+                Text("Nothing to replay yet.")
+                    .font(.system(size: 18, weight: .semibold))
+                    .tracking(-0.27)
+                    .foregroundStyle(t.text)
+                    .padding(.bottom, 6)
+
+                // Explainer (verbatim, screens/runs.jsx:31).
+                Text("Every sync — dry-run, aborted, or trashed — lands here with the exact filenames touched and the API calls made. You can restore any trashed batch as long as Immich still has it.")
+                    .font(.system(size: 13))
+                    .foregroundStyle(t.textMuted)
+                    .multilineTextAlignment(.center)
+                    .lineSpacing(2)
+                    .frame(maxWidth: 300)
+                    .padding(.bottom, 20)
+
+                // "A run includes" detail card.
+                runIncludesCard
+                    .padding(.bottom, 16)
+
+                // CTA (verbatim, screens/runs.jsx:67).
+                Button(action: onStartSync) {
+                    Text("Start a sync from Status")
+                        .font(.system(size: 16, weight: .semibold))
+                        .frame(minWidth: 200)
+                        .padding(.vertical, 14)
+                        .padding(.horizontal, 18)
+                        .foregroundStyle(t.primaryInk)
+                        .background(t.primary)
+                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                }
+                .buttonStyle(.plain)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 24)
+            .padding(.vertical, 30)
+        }
+    }
+
+    private var runIncludesCard: some View {
+        // Lines copied verbatim from screens/runs.jsx:38–43.
+        let lines = [
+            "Thumbnails + filenames of every candidate",
+            "Safety-rail outcome (pass or tripped)",
+            "Raw journal of every Immich API call",
+            "One-tap restore for trashed assets",
+        ]
+        return VStack(alignment: .leading, spacing: 0) {
+            Text("A run includes".uppercased())
+                .font(.system(size: 11, weight: .semibold))
+                .tracking(0.88)
+                .foregroundStyle(t.textHint)
+                .padding(.bottom, 10)
+
+            ForEach(Array(lines.enumerated()), id: \.offset) { idx, line in
+                HStack(alignment: .top, spacing: 10) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 3, style: .continuous)
+                            .fill(t.surfaceAlt)
+                            .frame(width: 14, height: 14)
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundStyle(t.textMuted)
+                    }
+                    .padding(.top, 2)
+
+                    Text(line)
+                        .font(.system(size: 12.5))
+                        .foregroundStyle(t.textBody)
+                        .lineSpacing(2)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    Spacer(minLength: 0)
+                }
+                .padding(.vertical, 6)
+                .overlay(
+                    Rectangle()
+                        .fill(idx == 0 ? Color.clear : t.divider)
+                        .frame(height: 0.5),
+                    alignment: .top
+                )
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: 320)
+        .background(t.surface)
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(t.divider, lineWidth: 0.5)
+        )
+    }
+}
+
+// MARK: - Row
+
+/// One run line inside the day-grouped list.
+///
+/// Modeled on `StatusScreen.RunRow` but lives here because that one is
+/// `private` to its file. Visually richer than the Status variant: the
+/// Runs list is the user's reference for *what a run did*, so we surface
+/// the breadcrumb tag value as a muted secondary line and (when present)
+/// a "N restored" pill.
+private struct RunListRow: View {
+    let run: CairnFixtures.RunFixture
+    let now: Date
+    let onOpen: () -> Void
+
+    @Environment(\.cairnTokens) private var t
+
+    var body: some View {
+        Button(action: onOpen) {
+            HStack(alignment: .top, spacing: 12) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .fill(iconBg)
+                        .frame(width: 30, height: 30)
+                    Image(systemName: iconName)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(iconInk)
+                }
+                .padding(.top, 1)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 8) {
+                        StatusPill(label: pillLabel, tone: pillTone)
+                        Text("\(countLabel)")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(t.textBody)
+                        if run.restored > 0 {
+                            StatusPill(label: "\(run.restored) restored", tone: .neutral)
+                        }
+                    }
+                    HStack(spacing: 4) {
+                        Text(CairnTimeHelpers.relativeTime(run.startedAt, now: now))
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(t.textHint)
+                        Text("·")
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(t.textHint)
+                        Text(timeOfDay)
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(t.textHint)
+                    }
+                    if let tag = run.tag {
+                        Text(tag)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(t.textHint)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                }
+
+                Spacer(minLength: 0)
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(t.textHint)
+                    .padding(.top, 6)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var pillLabel: String {
+        if run.status == .aborted { return "aborted" }
+        if run.dryRun { return "dry-run" }
+        if run.restored > 0 && run.trashed == 0 { return "restored" }
+        return "trashed"
+    }
+
+    private var pillTone: PillTone {
+        if run.status == .aborted { return .danger }
+        if run.dryRun { return .info }
+        return .verified
+    }
+
+    private var countLabel: String {
+        if run.status == .aborted { return "0 trashed" }
+        if run.dryRun { return "0 trashed" }
+        if run.trashed == 0 { return "no changes" }
+        return "\(run.trashed) trashed"
+    }
+
+    private var iconName: String {
+        if run.status == .aborted { return "exclamationmark.triangle.fill" }
+        if run.dryRun { return "eye" }
+        return "trash"
+    }
+
+    private var iconBg: Color {
+        if run.status == .aborted { return t.dangerSoft }
+        if run.dryRun { return t.infoSoft }
+        return t.verifiedSoft
+    }
+
+    private var iconInk: Color {
+        if run.status == .aborted { return t.dangerInk }
+        if run.dryRun { return t.infoInk }
+        return t.verifiedInk
+    }
+
+    private var timeOfDay: String {
+        let f = DateFormatter()
+        f.dateFormat = "h:mm a"
+        return f.string(from: run.startedAt)
+    }
+}
+
+// MARK: - Pill
+
+private enum PillTone {
+    case verified, danger, pending, info, neutral
+}
+
+private struct StatusPill: View {
+    let label: String
+    let tone: PillTone
+
+    @Environment(\.cairnTokens) private var t
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Circle()
+                .fill(inkColor.opacity(0.85))
+                .frame(width: 5, height: 5)
+            Text(label)
+                .font(.system(size: 10.5, weight: .semibold))
+                .tracking(0.2)
+        }
+        .padding(.horizontal, 7)
+        .padding(.vertical, 3)
+        .foregroundStyle(inkColor)
+        .background(softColor)
+        .clipShape(Capsule())
+    }
+
+    private var softColor: Color {
+        switch tone {
+        case .verified: t.verifiedSoft
+        case .danger:   t.dangerSoft
+        case .pending:  t.pendingSoft
+        case .info:     t.infoSoft
+        case .neutral:  t.surfaceAlt
+        }
+    }
+    private var inkColor: Color {
+        switch tone {
+        case .verified: t.verifiedInk
+        case .danger:   t.dangerInk
+        case .pending:  t.pendingInk
+        case .info:     t.infoInk
+        case .neutral:  t.textBody
+        }
+    }
+}
+
+// MARK: - Preview
+
+#if DEBUG
+#Preview("Runs — populated") {
+    RunsScreen()
+        .cairnTheme()
+}
+
+#Preview("Runs — empty") {
+    RunsScreen(runs: [])
+        .cairnTheme()
+}
+
+#Preview("Runs — dark") {
+    RunsScreen()
+        .cairnTheme()
+        .preferredColorScheme(.dark)
+}
+
+#Preview("Runs — empty, dark") {
+    RunsScreen(runs: [])
+        .cairnTheme()
+        .preferredColorScheme(.dark)
+}
+#endif
