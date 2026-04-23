@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel in-flight runs for the same PR/branch when a new push lands.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: swift build + swift test
+    # macos-14 ships the Xcode 16 / Swift 6 toolchain that cairn targets.
+    # macos-latest drifts; pin deliberately so the matrix is reproducible.
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        # The runner image bundles multiple Xcode versions; select the one
+        # that maps to Swift 6. Update when GitHub retires 16.x.
+        run: sudo xcode-select -switch /Applications/Xcode_16.app
+
+      - name: Show toolchain
+        run: |
+          swift --version
+          xcodebuild -version
+
+      - name: swift build
+        run: swift build
+
+      - name: swift test
+        # --parallel speeds the SPM test suite up; there's no test that
+        # depends on shared mutable state on disk at the package level.
+        run: swift test --parallel

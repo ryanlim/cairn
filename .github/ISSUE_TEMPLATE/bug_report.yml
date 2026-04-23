@@ -1,0 +1,73 @@
+name: Bug report
+description: Something isn't working as expected.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time. The more specific you can be about versions and reproduction steps, the faster this gets resolved.
+
+        **If this is a security issue** (unintended asset destruction, credential leakage, etc.), please use a private security advisory instead: `Security` tab → `Report a vulnerability`.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: One or two sentences on what's wrong.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Exact steps, in order. Include CLI commands if relevant.
+      placeholder: |
+        1. Run `cairn dry-run --local-checksums-file ever.txt`
+        2. Notice that …
+        3. Expected …, actual …
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected vs. actual
+      description: What did you expect to happen, and what actually happened?
+    validations:
+      required: true
+  - type: input
+    id: cairn-version
+    attributes:
+      label: cairn version
+      description: |
+        For the iOS app: Settings → (scroll to footer) shows the version.
+        For the CLI: `swift run cairn --version` or the commit SHA you built from.
+      placeholder: 0.1.0 or <commit-sha>
+    validations:
+      required: true
+  - type: input
+    id: ios-version
+    attributes:
+      label: iOS version (if iOS app)
+      description: e.g. iOS 18.2. Skip if you're using the CLI only.
+      placeholder: "18.2"
+  - type: input
+    id: immich-version
+    attributes:
+      label: Immich server version
+      description: |
+        Visible in the Immich web UI → Admin → System Info, or via the server's release tag.
+      placeholder: "v1.120.0"
+    validations:
+      required: true
+  - type: textarea
+    id: journal
+    attributes:
+      label: Relevant journal entries (optional)
+      description: |
+        If reproducible, paste relevant lines from the deletion journal (CLI: `swift run cairn journal show --run-id <id>`; iOS: Status → Journal tail).
+        Redact checksums / asset IDs if you'd like — they're SHA1s and UUIDs, but still your data.
+      render: text
+  - type: textarea
+    id: additional
+    attributes:
+      label: Anything else
+      description: Screenshots, logs, theories, related issues, whatever's useful.

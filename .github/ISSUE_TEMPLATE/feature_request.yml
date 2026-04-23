@@ -1,0 +1,35 @@
+name: Feature request
+description: Suggest a change or addition.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        cairn is deliberately narrow: reconcile iPhone deletions against an Immich server, safely. Requests that expand the product beyond that scope (uploads, viewing, albums, AI, etc.) will likely be declined — see the README "Why" section. Within scope, here's the shape we want to see.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: |
+        Describe the situation where cairn falls short today. Include what you tried.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: |
+        What should cairn do differently? New command / setting / UI? Behavior change to an existing one?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: |
+        Other ways to solve this, including "don't do it in cairn, do it in Immich / a different tool." What's wrong with those?
+  - type: textarea
+    id: additional
+    attributes:
+      label: Anything else
+      description: Links, prior art, related issues.
