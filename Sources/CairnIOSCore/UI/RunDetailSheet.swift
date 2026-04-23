@@ -38,21 +38,45 @@ public struct RunDetailSheet: View {
 
     public let run: CairnFixtures.RunFixture
     public let assets: [CairnFixtures.CandidateFixture]
+    /// Checksums currently in the host's `ExclusionStore`. Drives the
+    /// per-tile "already protected" badge and toggles the selection
+    /// action bar's button between "Exclude N" and "Unexclude N" so
+    /// reversing a mistaken exclusion doesn't require a hunt through
+    /// Settings → Excluded assets.
+    public let excludedChecksums: Set<String>
     public let onClose: () -> Void
-    public let onExclude: ([String]) -> Void
-    public let onRestore: ([String]) -> Void
+    /// Dispatches the user's exclude selection. Host is expected to
+    /// read `.checksum` from each candidate (the `ExclusionStore` is
+    /// checksum-keyed). `.name` / `.assetId` are also available for
+    /// the journal event / UI feedback.
+    public let onExclude: ([CairnFixtures.CandidateFixture]) -> Void
+    /// Dispatches the user's un-exclude selection. Mirror of
+    /// `onExclude`; host pulls `.checksum` and hands it to
+    /// `ExclusionStore.remove(_:)`. Reverses a mistaken exclude
+    /// without a trip to Settings.
+    public let onUnexclude: ([CairnFixtures.CandidateFixture]) -> Void
+    /// Dispatches the user's restore selection. Host is expected to
+    /// read `.assetId` from each candidate and pass that set to
+    /// `RestoreOrchestrator.restore(fromRunId:assetIds:)` — an empty
+    /// or nil set there means "restore the whole run," which is NOT
+    /// what the user asked for when they made a partial selection.
+    public let onRestore: ([CairnFixtures.CandidateFixture]) -> Void
 
     public init(
         run: CairnFixtures.RunFixture = CairnFixtures.runs[0],
         assets: [CairnFixtures.CandidateFixture] = Array(CairnFixtures.candidates.prefix(14)),
+        excludedChecksums: Set<String> = [],
         onClose: @escaping () -> Void = {},
-        onExclude: @escaping ([String]) -> Void = { _ in },
-        onRestore: @escaping ([String]) -> Void = { _ in }
+        onExclude: @escaping ([CairnFixtures.CandidateFixture]) -> Void = { _ in },
+        onUnexclude: @escaping ([CairnFixtures.CandidateFixture]) -> Void = { _ in },
+        onRestore: @escaping ([CairnFixtures.CandidateFixture]) -> Void = { _ in }
     ) {
         self.run = run
         self.assets = assets
+        self.excludedChecksums = excludedChecksums
         self.onClose = onClose
         self.onExclude = onExclude
+        self.onUnexclude = onUnexclude
         self.onRestore = onRestore
     }
 
@@ -72,6 +96,7 @@ public struct RunDetailSheet: View {
     @State private var justExcluded: Int? = nil        // count flash · 2.4s
 
     @Environment(\.cairnTokens) private var t
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     // MARK: - Derived
 
@@ -89,13 +114,43 @@ public struct RunDetailSheet: View {
         !selectableAssets.isEmpty && selectableAssets.allSatisfy { selected.contains($0.name) }
     }
 
-    /// Restore is only meaningful on completed trash runs; dry-runs and
-    /// aborted runs never moved anything to trash. (from screens/run-detail.jsx::canRestore)
+    /// Restore is only meaningful on completed trash runs that
+    /// haven't already been fully restored. Dry-runs and aborted
+    /// runs never moved anything to trash; `.restored` runs were
+    /// already undone (double-restoring is a no-op on the server
+    /// but confuses the UI with phantom progress).
+    /// (from screens/run-detail.jsx::canRestore, extended for the
+    /// `.restored` state.)
     private var canRestore: Bool {
-        run.trashed > 0 && !run.dryRun && run.status != .aborted
+        run.trashed > 0 && !run.dryRun && run.status != .aborted && run.status != .restored
     }
 
     private var hasSelection: Bool { !selected.isEmpty }
+
+    /// A candidate is "effectively excluded" if its checksum is in
+    /// either the persisted store (`excludedChecksums`) or the
+    /// in-session set (`excludedLocal`, keyed by name), so the
+    /// button label flips immediately after a tap rather than
+    /// waiting for the next host refresh.
+    private func isEffectivelyExcluded(_ asset: CairnFixtures.CandidateFixture) -> Bool {
+        if excludedLocal.contains(asset.name) { return true }
+        if let c = asset.checksum, excludedChecksums.contains(c) { return true }
+        return false
+    }
+
+    /// Selected candidates that aren't yet excluded. When non-empty,
+    /// the selection-bar button is "Exclude".
+    private var selectedNotYetExcluded: [CairnFixtures.CandidateFixture] {
+        assets.filter { selected.contains($0.name) && !isEffectivelyExcluded($0) }
+    }
+
+    /// Selected candidates that ARE currently excluded. When the
+    /// entire selection is already excluded, the button flips to
+    /// "Unexclude" so the user can reverse a prior tap without a
+    /// trip through Settings.
+    private var selectedAlreadyExcluded: [CairnFixtures.CandidateFixture] {
+        assets.filter { selected.contains($0.name) && isEffectivelyExcluded($0) }
+    }
 
     /// Live-photo expansion: each selected `live-pair` asset implicitly
     /// pulls its paired motion video on the server. We surface the real
@@ -112,33 +167,30 @@ public struct RunDetailSheet: View {
 
     private var runKind: String {
         if run.status == .aborted { return "Aborted run" }
+        if run.status == .restored { return "Restored run" }
         if run.dryRun { return "Dry-run" }
         return "Trash run"
     }
 
     private var headerTitle: String {
         if run.status == .aborted { return "Stopped by safety rail" }
+        if run.status == .restored {
+            let suffix = run.restored == 1 ? "" : "s"
+            return "\(run.restored) asset\(suffix) restored"
+        }
         if run.dryRun { return "Preview only — nothing touched" }
         let suffix = run.trashed == 1 ? "" : "s"
-        return "\(run.trashed) asset\(suffix) trashed"
+        return "\(run.trashed) asset\(suffix) moved to Trash"
     }
 
     // MARK: - Body
 
     public var body: some View {
-        ZStack {
-            t.text.opacity(0.45).ignoresSafeArea()
-                .onTapGesture { onClose() }
-            VStack(spacing: 0) {
-                Spacer(minLength: 24)
-                sheet
-            }
-        }
-    }
-
-    private var sheet: some View {
+        // Native iOS sheet — standard grabber, drag-to-dismiss, and
+        // detent resizing come for free from `.presentationDetents`
+        // + `.presentationDragIndicator(.visible)`. No custom
+        // overlay shape or gesture plumbing needed.
         VStack(spacing: 0) {
-            grip
             header
             metaChips
             if run.status == .aborted { abortedCallout }
@@ -152,18 +204,21 @@ public struct RunDetailSheet: View {
             footer
         }
         .background(t.surface)
-        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .cairnBannerAnimation(value: flashKey)
+        .cairnBannerAnimation(value: hasSelection)
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+        .presentationBackground(t.surface)
+    }
+
+    /// Stable equatable key that toggles whenever a flash callout
+    /// enters or leaves, so the parent spring animation fires in
+    /// sync with the `.cairnBanner` transitions on the flashes.
+    private var flashKey: [Int] {
+        [justRestored ?? -1, justExcluded ?? -1]
     }
 
     // MARK: - Header
-
-    private var grip: some View {
-        Capsule()
-            .fill(t.divider)
-            .frame(width: 40, height: 5)
-            .padding(.top, 8)
-            .padding(.bottom, 4)
-    }
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -179,6 +234,7 @@ public struct RunDetailSheet: View {
                         .foregroundStyle(t.textMuted)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Close")
             }
             .padding(.bottom, 4)
 
@@ -194,7 +250,7 @@ public struct RunDetailSheet: View {
                 .padding(.top, 4)
         }
         .padding(.horizontal, 20)
-        .padding(.top, 2)
+        .padding(.top, 20)
         .padding(.bottom, 10)
     }
 
@@ -238,7 +294,7 @@ public struct RunDetailSheet: View {
         Callout(.danger, icon: "exclamationmark.triangle") {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Percent threshold exceeded").fontWeight(.semibold)
-                Text("2.3% of matched assets would have been trashed. Your cap is 1.0%. Nothing was touched.")
+                Text("2.3% of matched assets would have moved to Immich's Trash. Your cap is 1.0%. Nothing was touched.")
                     .opacity(0.9)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -253,14 +309,14 @@ public struct RunDetailSheet: View {
         Callout(.verified, icon: "checkmark.circle") {
             VStack(alignment: .leading, spacing: 2) {
                 Text("\(count) restored").fontWeight(.semibold)
-                Text("Moved out of Immich trash, back to active library.")
+                Text("Moved out of Immich's Trash, back to your active library.")
                     .opacity(0.85)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(.horizontal, 16)
         .padding(.bottom, 10)
-        .transition(.opacity)
+        .transition(.cairnBanner)
     }
 
     private func justExcludedFlash(count: Int) -> some View {
@@ -278,7 +334,7 @@ public struct RunDetailSheet: View {
         }
         .padding(.horizontal, 16)
         .padding(.bottom, 10)
-        .transition(.opacity)
+        .transition(.cairnBanner)
     }
 
     // MARK: - Filter + select-all
@@ -289,6 +345,7 @@ public struct RunDetailSheet: View {
                 Image(systemName: "magnifyingglass")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(t.textHint)
+                    .accessibilityHidden(true)
                 TextField("", text: $filter, prompt:
                     Text("Filter by filename…")
                         .font(.system(size: 12, design: .monospaced))
@@ -308,6 +365,7 @@ public struct RunDetailSheet: View {
                             .foregroundStyle(t.textHint)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel("Clear filter")
                 }
             }
             .padding(.horizontal, 10)
@@ -408,7 +466,7 @@ public struct RunDetailSheet: View {
                                 asset: a,
                                 isSelected: selected.contains(a.name),
                                 isRestored: restored.contains(a.name),
-                                isExcluded: excludedLocal.contains(a.name),
+                                isExcluded: isEffectivelyExcluded(a),
                                 onTap: { toggle(a.name) }
                             )
                         }
@@ -462,7 +520,7 @@ public struct RunDetailSheet: View {
                     .lineSpacing(2)
                     .fixedSize(horizontal: false, vertical: true)
                 // from screens/run-detail.jsx — keep verbatim
-                Text("Find these in Immich's Tags view. Assets stay in trash for 30 days.")
+                Text("Find these in Immich's Tags view. Assets stay in Trash for 30 days.")
                     .font(.system(size: 12))
                     .foregroundStyle(t.textMuted)
                     .fixedSize(horizontal: false, vertical: true)
@@ -490,12 +548,15 @@ public struct RunDetailSheet: View {
                 pairedCount: pairedInSelection,
                 expandedCount: expandedCount,
                 canRestore: canRestore,
+                allSelectedExcluded: hasSelection && selectedNotYetExcluded.isEmpty,
                 onClear: { selected.removeAll() },
                 onExclude: doExclude,
+                onUnexclude: doUnexclude,
                 onOpen: doOpenInImmich,
                 onCopy: doCopy,
                 onRestore: doRestore
             )
+            .transition(.cairnBannerBottom)
         } else if canRestore {
             HStack(spacing: 10) {
                 Button(action: onClose) {
@@ -564,27 +625,39 @@ public struct RunDetailSheet: View {
     }
 
     private func doRestore() {
-        let names = Array(selected)
-        guard !names.isEmpty else { return }
+        let picks = assets.filter { selected.contains($0.name) }
+        guard !picks.isEmpty else { return }
         // Optimistic local state — surface the greyed-out treatment now
         // rather than waiting for the parent to round-trip a refresh.
-        for n in names { restored.insert(n) }
+        for p in picks { restored.insert(p.name) }
         selected.removeAll()
-        let count = names.count
-        withAnimation(.easeInOut(duration: 0.18)) { justRestored = count }
+        let count = picks.count
+        withAnimation(reduceMotion ? .none : .easeInOut(duration: 0.18)) { justRestored = count }
         scheduleClearFlash(restoredCount: count)
-        onRestore(names)
+        onRestore(picks)
     }
 
     private func doExclude() {
-        let names = Array(selected)
-        guard !names.isEmpty else { return }
-        for n in names { excludedLocal.insert(n) }
+        let picks = selectedNotYetExcluded
+        guard !picks.isEmpty else { return }
+        for p in picks { excludedLocal.insert(p.name) }
         selected.removeAll()
-        let count = names.count
-        withAnimation(.easeInOut(duration: 0.18)) { justExcluded = count }
+        let count = picks.count
+        withAnimation(reduceMotion ? .none : .easeInOut(duration: 0.18)) { justExcluded = count }
         scheduleClearFlash(excludedCount: count)
-        onExclude(names)
+        onExclude(picks)
+    }
+
+    private func doUnexclude() {
+        let picks = selectedAlreadyExcluded
+        guard !picks.isEmpty else { return }
+        // Strip from the in-session set so the button flips back to
+        // "Exclude" immediately if the user re-selects the same row.
+        // Persisted state clears when the host-provided
+        // `excludedChecksums` refreshes on next render.
+        for p in picks { excludedLocal.remove(p.name) }
+        selected.removeAll()
+        onUnexclude(picks)
     }
 
     private func doCopy() {
@@ -606,7 +679,7 @@ public struct RunDetailSheet: View {
         let token = restoredCount ?? excludedCount ?? 0
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 2_400_000_000)
-            withAnimation(.easeInOut(duration: 0.18)) {
+            withAnimation(reduceMotion ? .none : .easeInOut(duration: 0.18)) {
                 if restoredCount != nil, justRestored == token { justRestored = nil }
                 if excludedCount != nil, justExcluded == token { justExcluded = nil }
             }
@@ -631,7 +704,7 @@ private struct AssetTile: View {
         Button(action: onTap) {
             VStack(spacing: 4) {
                 ZStack(alignment: .topLeading) {
-                    MockAssetThumb(filename: asset.name, size: 76, isLivePair: asset.isLivePair)
+                    ImmichAssetThumb(assetId: asset.assetId, filename: asset.name, size: 76, isLivePair: asset.isLivePair)
                         .opacity(isRestored ? 0.45 : 1.0)
                         .overlay(
                             RoundedRectangle(cornerRadius: 6, style: .continuous)
@@ -645,6 +718,19 @@ private struct AssetTile: View {
                                 .foregroundStyle(t.primaryInk)
                         }
                         .padding(4)
+                    } else if isExcluded {
+                        // Discoverable "already excluded" badge —
+                        // top-right shield so the user can see which
+                        // tiles are in the exclusion store at a glance,
+                        // without having to tap first to find out.
+                        ZStack {
+                            Circle().fill(t.infoSoft).frame(width: 18, height: 18)
+                            Image(systemName: "shield.fill")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundStyle(t.infoInk)
+                        }
+                        .padding(4)
+                        .frame(maxWidth: .infinity, alignment: .topTrailing)
                     }
                 }
                 Text(stripExtension(asset.name))
@@ -690,8 +776,13 @@ private struct SelectionActionBar: View {
     let pairedCount: Int
     let expandedCount: Int
     let canRestore: Bool
+    /// True when every selected asset is already in the exclusion
+    /// store. The action button flips to "Unexclude" so the user
+    /// can reverse a mistaken exclude without leaving the sheet.
+    let allSelectedExcluded: Bool
     let onClear: () -> Void
     let onExclude: () -> Void
+    let onUnexclude: () -> Void
     let onOpen: () -> Void
     let onCopy: () -> Void
     let onRestore: () -> Void
@@ -751,13 +842,16 @@ private struct SelectionActionBar: View {
 
     private var actionGrid: some View {
         HStack(spacing: 6) {
-            // When Restore is available, Exclude is a secondary tone.
-            // Otherwise Exclude becomes primary.
+            // Exclude ↔ Unexclude. When every selected asset is already
+            // in the exclusion store, the label flips and the action
+            // reverses. Mixed selections (some excluded, some not) fall
+            // back to "Exclude" and operate on the not-yet-excluded
+            // subset — the host-side `doExclude` handles the filter.
             ActionButton(
-                icon: "shield",
-                label: "Exclude",
+                icon: allSelectedExcluded ? "shield.slash" : "shield",
+                label: allSelectedExcluded ? "Unexclude" : "Exclude",
                 isPrimary: !canRestore,
-                action: onExclude
+                action: allSelectedExcluded ? onUnexclude : onExclude
             )
             ActionButton(icon: "link", label: "Open", isPrimary: false, action: onOpen)
             ActionButton(icon: "doc.on.doc", label: "Copy", isPrimary: false, action: onCopy)

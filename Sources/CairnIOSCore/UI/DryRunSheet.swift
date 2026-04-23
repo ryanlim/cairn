@@ -26,7 +26,6 @@ public struct DryRunSheet: View {
     public let library: CairnFixtures.LibrarySize
     public let maxDeletePercent: Double
     public let minDeleteFloor: Int
-    public let dryRunByDefault: Bool
     public let forceTripped: Bool
     public let onClose: () -> Void
     public let onConfirm: () -> Void
@@ -41,7 +40,6 @@ public struct DryRunSheet: View {
         library: CairnFixtures.LibrarySize = CairnFixtures.medium,
         maxDeletePercent: Double = 1.0,
         minDeleteFloor: Int = 5,
-        dryRunByDefault: Bool = false,
         forceTripped: Bool = false,
         onClose: @escaping () -> Void = {},
         onConfirm: @escaping () -> Void = {}
@@ -50,7 +48,6 @@ public struct DryRunSheet: View {
         self.library = library
         self.maxDeletePercent = maxDeletePercent
         self.minDeleteFloor = minDeleteFloor
-        self.dryRunByDefault = dryRunByDefault
         self.forceTripped = forceTripped
         self.onClose = onClose
         self.onConfirm = onConfirm
@@ -89,30 +86,27 @@ public struct DryRunSheet: View {
     }
 
     public var body: some View {
-        ZStack {
-            t.text.opacity(0.45).ignoresSafeArea()
-            VStack(spacing: 0) {
-                Spacer(minLength: 24)
-                sheet
+        // Native iOS sheet — `.presentationDetents` +
+        // `.presentationDragIndicator(.visible)` give us the
+        // standard grabber, swipe-down-to-dismiss, and resizable
+        // heights without bespoke gesture plumbing.
+        Group {
+            switch phase {
+            case .review, .confirming:
+                reviewSheet
+            case .running, .done:
+                terminalSheet
             }
         }
-    }
-
-    @ViewBuilder
-    private var sheet: some View {
-        switch phase {
-        case .review, .confirming:
-            reviewSheet
-        case .running, .done:
-            terminalSheet
-        }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+        .presentationBackground(t.surface)
     }
 
     // MARK: - Review
 
     private var reviewSheet: some View {
         VStack(spacing: 0) {
-            grip
             header
             if tripped { trippedBanner }
             summaryStrip
@@ -122,18 +116,13 @@ public struct DryRunSheet: View {
             actionsBar
         }
         .background(t.surface)
-        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-        .padding(.horizontal, 0)
-    }
-
-    private var grip: some View {
-        Capsule().fill(t.divider).frame(width: 40, height: 5).padding(.top, 8).padding(.bottom, 4)
+        .cairnBannerAnimation(value: tripped)
     }
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                ModeChip(dryRun: dryRunByDefault, tripped: tripped)
+                ModeChip(tripped: tripped)
                 Spacer()
                 Button(action: onClose) {
                     Image(systemName: "xmark")
@@ -141,6 +130,7 @@ public struct DryRunSheet: View {
                         .foregroundStyle(t.textMuted)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Close")
             }
             Text(headerTitle)
                 .font(.system(size: 22, weight: .semibold))
@@ -153,22 +143,18 @@ public struct DryRunSheet: View {
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.horizontal, 20)
-        .padding(.top, 2)
+        .padding(.top, 20)
         .padding(.bottom, 12)
     }
 
     private var headerTitle: String {
         if tripped { return "\(candidates.count) candidates is above your cap" }
-        if dryRunByDefault { return "\(candidates.count) would move to trash" }
         return "Trash \(candidates.count) on Immich?"
     }
 
     private var headerSubtitle: String {
         if tripped { return "Nothing was touched. Review the photos before deciding." }
-        if dryRunByDefault {
-            return "\(CairnTimeHelpers.formatBytes(totalBytes)) · preview only, nothing will be touched on your server"
-        }
-        return "\(CairnTimeHelpers.formatBytes(totalBytes)) · stays in Immich trash for 30 days"
+        return "\(CairnTimeHelpers.formatBytes(totalBytes)) · stays in Immich's Trash for 30 days"
     }
 
     private var trippedBanner: some View {
@@ -184,6 +170,7 @@ public struct DryRunSheet: View {
         }
         .padding(.horizontal, 16)
         .padding(.bottom, 12)
+        .transition(.cairnBanner)
     }
 
     private var summaryStrip: some View {
@@ -233,7 +220,7 @@ public struct DryRunSheet: View {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 78), spacing: 6)], spacing: 6) {
                     ForEach(sorted) { c in
                         VStack(spacing: 4) {
-                            MockAssetThumb(filename: c.name, size: 76, isLivePair: c.isLivePair)
+                            ImmichAssetThumb(assetId: c.assetId, filename: c.name, size: 76, isLivePair: c.isLivePair)
                             Text(c.name.replacingOccurrences(of: ".HEIC", with: "").replacingOccurrences(of: ".MP4", with: ""))
                                 .font(.system(size: 9.5, design: .monospaced))
                                 .foregroundStyle(t.textMuted)
@@ -300,19 +287,11 @@ public struct DryRunSheet: View {
         HStack(spacing: 10) {
             ActionButton(label: "Not now", role: .secondary, action: onClose)
                 .frame(maxWidth: .infinity)
-            if dryRunByDefault {
-                ActionButton(label: "Log dry-run", icon: "eye", role: .primary) {
-                    runIt()
-                }
-                .frame(maxWidth: .infinity)
-                .frame(maxWidth: .infinity)
-            } else {
-                ActionButton(label: "Move \(candidates.count) to trash", icon: "trash", role: .danger) {
-                    phase = .confirming
-                }
-                .frame(maxWidth: .infinity)
-                .frame(maxWidth: .infinity)
+            ActionButton(label: "Move \(candidates.count) to Trash", icon: "trash", role: .danger) {
+                phase = .confirming
             }
+            .frame(maxWidth: .infinity)
+            .frame(maxWidth: .infinity)
         }
     }
 
@@ -336,15 +315,15 @@ public struct DryRunSheet: View {
             Callout(.danger, icon: "exclamationmark.triangle") {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Confirm once more").fontWeight(.semibold)
-                    (Text("cairn will tag ") + Text("cairn/v1/run/…").font(.system(size: 11.5, design: .monospaced))
-                        + Text(" then move \(candidates.count) asset\(candidates.count == 1 ? "" : "s") to Immich trash."))
+                    (Text.cairnWord + Text(" will tag ") + Text("cairn/v1/run/…").font(.system(size: 11.5, design: .monospaced))
+                        + Text(" then move \(candidates.count) asset\(candidates.count == 1 ? "" : "s") to Immich's Trash."))
                         .opacity(0.9).fixedSize(horizontal: false, vertical: true)
                 }
             }
             HStack(spacing: 10) {
                 ActionButton(label: "Back", role: .secondary) { phase = .review }
                     .frame(maxWidth: .infinity)
-                ActionButton(label: "Yes, trash \(candidates.count)", role: .danger) {
+                ActionButton(label: "Yes, move \(candidates.count) to Trash", role: .danger) {
                     runIt()
                 }
                 .frame(maxWidth: .infinity)
@@ -357,7 +336,6 @@ public struct DryRunSheet: View {
 
     private var terminalSheet: some View {
         VStack(spacing: 0) {
-            grip
             VStack(spacing: 14) {
                 if phase == .running {
                     runningContent
@@ -370,7 +348,6 @@ public struct DryRunSheet: View {
             .padding(.bottom, 24)
         }
         .background(t.surface)
-        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
     }
 
     private var runningContent: some View {
@@ -379,13 +356,11 @@ public struct DryRunSheet: View {
                 Circle().fill(t.surfaceAlt).frame(width: 48, height: 48)
                 ProgressView().tint(t.textBody)
             }
-            Text(dryRunByDefault ? "Recording preview" : "Tagging and trashing")
+            Text("Tagging and moving to Trash")
                 .font(.system(size: 20, weight: .semibold))
                 .tracking(-0.3)
                 .foregroundStyle(t.text)
-            Text(dryRunByDefault
-                 ? "Nothing touched · \(candidates.count) assets noted"
-                 : "Writing breadcrumb · \(candidates.count) assets")
+            Text("Writing breadcrumb · \(candidates.count) assets")
                 .font(.system(size: 13))
                 .foregroundStyle(t.textMuted)
         }
@@ -394,19 +369,17 @@ public struct DryRunSheet: View {
     private var doneContent: some View {
         VStack(spacing: 14) {
             ZStack {
-                Circle().fill(dryRunByDefault ? t.infoSoft : t.verifiedSoft)
+                Circle().fill(t.verifiedSoft)
                     .frame(width: 48, height: 48)
-                Image(systemName: dryRunByDefault ? "eye" : "checkmark")
+                Image(systemName: "checkmark")
                     .font(.system(size: 22, weight: .semibold))
-                    .foregroundStyle(dryRunByDefault ? t.infoInk : t.verifiedInk)
+                    .foregroundStyle(t.verifiedInk)
             }
-            Text(dryRunByDefault ? "\(candidates.count) preview logged" : "\(candidates.count) moved to trash")
+            Text("\(candidates.count) moved to Trash")
                 .font(.system(size: 20, weight: .semibold))
                 .tracking(-0.3)
                 .foregroundStyle(t.text)
-            (dryRunByDefault
-                ? Text("Nothing touched on server. Turn off ") + Text("Dry-run by default").foregroundStyle(t.text) + Text(" in Settings to actually trash.")
-                : Text("Tagged ") + Text("cairn/v1/run/…").font(.system(size: 11.5, design: .monospaced)) + Text(". Recoverable in Immich trash for 30 days."))
+            (Text("Tagged ") + Text("cairn/v1/run/…").font(.system(size: 11.5, design: .monospaced)) + Text(". Recoverable in Immich's Trash for 30 days."))
                 .font(.system(size: 13))
                 .foregroundStyle(t.textMuted)
                 .multilineTextAlignment(.center)
@@ -433,7 +406,6 @@ public struct DryRunSheet: View {
 // MARK: - Sub-views
 
 private struct ModeChip: View {
-    let dryRun: Bool
     let tripped: Bool
 
     @Environment(\.cairnTokens) private var t
@@ -441,8 +413,7 @@ private struct ModeChip: View {
     var body: some View {
         let (label, soft, ink): (String, Color, Color) = {
             if tripped { return ("Tripped · review needed", t.dangerSoft, t.dangerInk) }
-            if dryRun { return ("Dry-run mode", t.infoSoft, t.infoInk) }
-            return ("Live · will trash", t.dangerSoft.mix(with: t.danger, amount: 0.30), t.dangerInk)
+            return ("Live · moves to Trash", t.dangerSoft.mix(with: t.danger, amount: 0.30), t.dangerInk)
         }()
         return Text(label.uppercased())
             .font(.system(size: 10, weight: .semibold))
@@ -576,13 +547,8 @@ private struct ActionButton: View {
 // MARK: - Preview
 
 #if DEBUG
-#Preview("DryRun — review (live mode)") {
+#Preview("DryRun — review") {
     DryRunSheet()
-        .cairnTheme()
-}
-
-#Preview("DryRun — review (dry-run mode)") {
-    DryRunSheet(dryRunByDefault: true)
         .cairnTheme()
 }
 

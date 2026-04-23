@@ -33,10 +33,13 @@ public final class CairnAppModel {
     /// The Immich server URL (without scheme — display-friendly, e.g. "photos.example.com").
     public var serverHost: String
 
-    /// Raw API key, only readable from Settings → Reveal. Otherwise the
-    /// `apiKeyMasked` form is shown. Set this *only* immediately before
-    /// the user reveals; otherwise leave empty so it's not sitting in
-    /// memory longer than necessary.
+    /// Raw API key — populated at bootstrap (from Keychain) and after
+    /// a successful onboarding verify. Drives the Settings → Reveal
+    /// and Copy actions. An empty string means "not signed in yet";
+    /// Sign-out clears it back to empty alongside the Keychain wipe.
+    /// The raw key also lives inside `ImmichClient` for the life of
+    /// the session, so keeping it on the model doesn't materially
+    /// widen the in-memory exposure.
     public var apiKey: String
 
     /// Masked form for default display (e.g. "••••••••••nH3k").
@@ -48,11 +51,193 @@ public final class CairnAppModel {
 
     public var library: CairnFixtures.LibrarySize
     public var runs: [CairnFixtures.RunFixture]
+    /// Per-run asset breakdown, keyed on `runId`. Populated alongside
+    /// `runs` from the journal's `planningTrash` events so
+    /// `RunDetailSheet` renders real thumbnails (via asset UUIDs)
+    /// rather than placeholder fixtures.
+    public var runAssets: [String: [CairnFixtures.CandidateFixture]] = [:]
     public var journalTail: [CairnFixtures.JournalTailEntry]
     public var settings: CairnSettings
     public var excludedEntries: [ExcludedScreenEntry]
+    /// Base64 SHA1 checksums currently in the `ExclusionStore`.
+    /// Populated at bootstrap and after every exclude / unexclude
+    /// action, so UI surfaces (RunDetailSheet's per-tile shield badge
+    /// and "Exclude ↔ Unexclude" toggle) can reflect live state
+    /// without each view doing its own store round-trip.
+    public var excludedChecksums: Set<String> = []
     public var appState: StatusScreen.AppState
     public var degraded: StatusScreen.Degraded
+
+    // MARK: - Live reconciliation result
+
+    /// Most recent result from `actions.requestSync`. `nil` until the first
+    /// sync has completed. Screens that render fixtures in preview should
+    /// fall back when this is `nil` and `actions == .preview` so the #Preview
+    /// blocks keep working without real data.
+    public var reconciliation: LiveReconciliation?
+
+    /// Snapshot of what `requestSync` produced. Intentionally mirrors the
+    /// `ReconciliationOutput` shape but holds only what the UI needs — the
+    /// three candidate buckets in display order, plus the timestamps and
+    /// quarantine context needed to render countdowns on the pending-review
+    /// surface.
+    public struct LiveReconciliation: Sendable, Equatable {
+        public let deleteCandidates: [ServerAsset]
+        public let pendingReviewCandidates: [ServerAsset]
+        public let heldByQuarantineCandidates: [ServerAsset]
+        /// `confirmedAt` timestamp per held candidate checksum. Lets the
+        /// pending-review screen render per-item "eligible in N days"
+        /// without a second round trip.
+        public let confirmedDeletedAt: [Checksum: Date]
+        /// Quarantine window that was in effect when this reconciliation
+        /// ran. Locked in at the time of compute so UI countdowns don't
+        /// drift if the user changes settings mid-review.
+        public let quarantineDays: Int
+        public let computedAt: Date
+
+        public init(
+            deleteCandidates: [ServerAsset],
+            pendingReviewCandidates: [ServerAsset],
+            heldByQuarantineCandidates: [ServerAsset],
+            confirmedDeletedAt: [Checksum: Date] = [:],
+            quarantineDays: Int = 14,
+            computedAt: Date = Date()
+        ) {
+            self.deleteCandidates = deleteCandidates
+            self.pendingReviewCandidates = pendingReviewCandidates
+            self.heldByQuarantineCandidates = heldByQuarantineCandidates
+            self.confirmedDeletedAt = confirmedDeletedAt
+            self.quarantineDays = quarantineDays
+            self.computedAt = computedAt
+        }
+    }
+
+    /// Count of newly-confirmed-deleted checksums from the most recent
+    /// scan. Used by the mass-offload banner: when a single scan returns
+    /// an unusually large burst (e.g. ≥ `Self.massOffloadThreshold`), the
+    /// banner surfaces so the user can decide between "review these" and
+    /// "bulk-exclude — I intended to offload."
+    public var lastScanBurstCount: Int = 0
+
+    /// Threshold above which `lastScanBurstCount` triggers the mass-offload
+    /// banner. Hard-coded for now; a settings-driven tuning knob could
+    /// replace this if field data suggests 50 is wrong.
+    public static let massOffloadThreshold: Int = 50
+
+    /// True when the last scan's burst was big enough to suggest a mass
+    /// offload rather than piecemeal deletion.
+    public var lastScanLooksLikeMassOffload: Bool {
+        lastScanBurstCount >= Self.massOffloadThreshold
+    }
+
+    /// Human-readable error from the most recent failed action. When set,
+    /// `CairnAppRoot` presents an alert. Cleared to `nil` when the user
+    /// dismisses it. Use for transient, user-fixable failures (Photos
+    /// permission, network, auth expired) — not for programmatic error
+    /// handling.
+    public var lastError: String?
+
+    /// Transient banner surfaced on Status after a sync completes. Only
+    /// set when the outcome is worth surfacing — typically "nothing to
+    /// sync, library is up-to-date." `CairnAppRoot` auto-clears after a
+    /// few seconds (see `SyncToast.autoDismissSeconds`). Kept separate
+    /// from `lastError` because success and failure need distinct tones.
+    public var syncToast: SyncToast?
+
+    public enum SyncToast: Sendable, Equatable {
+        /// Review & Sync ran and found no work. Renders as a verified-tone
+        /// Callout on Status with the hashed/total stats inline.
+        case upToDate(indexed: Int, total: Int)
+        /// Deletion journal file deleted from disk. Confirmation toast
+        /// after the "Clear journal" action.
+        case journalCleared
+        /// Index-wiping completed (`Reset index` action).
+        case indexReset
+        /// Rescan queued — token + defer queue cleared, user is
+        /// routed back to the initial-scan screen.
+        case rescanQueued
+
+        public static let autoDismissSeconds: TimeInterval = 4
+    }
+
+    /// `true` while a sync is mid-flight. Drives spinner state on the
+    /// Status screen's "Review & sync" button so taps don't feel dead.
+    public var isSyncing: Bool = false
+
+    /// Hashing progress during a sync. `nil` outside sync. The
+    /// full-enumeration path (first-run, token expired) populates this;
+    /// incremental syncs skip it since they're already fast.
+    public var syncProgress: SyncProgress?
+
+    /// Latched `true` once the auto-sync on first landing has been
+    /// triggered for this app session. Kept on the model (not as a
+    /// `@State` on CairnAppRoot) so a navigation that temporarily swaps
+    /// the view identity — e.g. visiting the Excluded sub-route and
+    /// returning — doesn't re-fire the sync. Reset only by an explicit
+    /// sign-out flow.
+    public var didAutoSyncThisSession: Bool = false
+
+    /// `true` once a full-library enumeration has completed at least
+    /// once on this install — equivalent to "a `PHPersistentChangeToken`
+    /// is stashed on disk." Gates the `InitialScanScreen` takeover: when
+    /// `false`, we show a dedicated full-screen progress UI instead of
+    /// the main tabs, because the main tabs' counts are meaningless
+    /// until we've indexed the library. Seeded from `tokenStore` at
+    /// bootstrap; flipped `true` by the first successful
+    /// `performLiveReconciliation`.
+    public var hasCompletedInitialScan: Bool = false
+
+    /// User dismissed the InitialScanScreen to browse the main tabs
+    /// before kicking off the indexing. Status shows a persistent
+    /// "Initial scan pending" banner in this state; tapping it routes
+    /// back to the scan screen and (optionally) starts the scan.
+    /// Resets to `false` on sign-out so the fresh-install flow picks
+    /// up from the start for new credentials.
+    public var hasDismissedInitialScan: Bool = false
+
+    /// Non-nil when a scan is paused: the elapsed work time captured
+    /// at cancel, frozen so the UI shows "244 of 500 · 12s" rather
+    /// than a ticking timer against a frozen `syncStartedAt` (which
+    /// would drift with wall-clock time). Resume clears this and
+    /// shifts `syncStartedAt` forward so the timer picks up
+    /// continuously from where it was interrupted.
+    public var pausedSyncElapsedSeconds: Double?
+
+    /// Summary of the deferred-hash queue (items skipped by the soft
+    /// limit, awaiting a background drain or a manual "Hash now"
+    /// tap). Populated after each sync. `nil` means not yet queried;
+    /// `.empty` means queried and nothing queued.
+    public var deferredQueue: DeferredQueueSummary = .empty
+
+    public struct DeferredQueueSummary: Sendable, Equatable {
+        public var count: Int
+        /// Summed `sizeBytes` for `.tooLarge` entries. Entries whose
+        /// size is unknown (e.g. `.timedOut`) don't contribute, but
+        /// the count still reflects the full queue.
+        public var totalKnownBytes: Int64
+
+        public static let empty = DeferredQueueSummary(count: 0, totalKnownBytes: 0)
+
+        public init(count: Int, totalKnownBytes: Int64) {
+            self.count = count
+            self.totalKnownBytes = totalKnownBytes
+        }
+    }
+
+    /// Wall-clock time the current sync started. `nil` when idle. Drives
+    /// the "Elapsed" display on `InitialScanScreen` and is the basis for
+    /// ETA computation (remaining ≈ elapsed * (total - done) / done).
+    public var syncStartedAt: Date?
+
+    public struct SyncProgress: Sendable, Equatable {
+        public let hashed: Int
+        public let total: Int
+
+        public init(hashed: Int, total: Int) {
+            self.hashed = hashed
+            self.total = total
+        }
+    }
 
     // MARK: - Navigation / sheet state
 
@@ -63,11 +248,13 @@ public final class CairnAppModel {
     public enum PresentedSheet: Identifiable, Sendable {
         case dryRun(forceTripped: Bool)
         case runDetail(CairnFixtures.RunFixture, assets: [CairnFixtures.CandidateFixture])
+        case pendingReview
 
         public var id: String {
             switch self {
             case .dryRun: "dry-run"
             case .runDetail(let r, _): "run-detail-\(r.id)"
+            case .pendingReview: "pending-review"
             }
         }
     }
@@ -79,7 +266,14 @@ public final class CairnAppModel {
 
     // MARK: - Host-supplied actions
 
-    public let actions: CairnAppActions
+    /// `var` rather than `let` so the host can swap the bundle once
+    /// credentials are available. Initial value is the no-op preview
+    /// default; `AppDependencies.rewireActions()` replaces it with real
+    /// closures that talk to `ImmichClient`, `TrashOrchestrator`, etc.
+    /// A stale `let` version of this was the source of a subtle bug
+    /// where onboarding's `verifyServer` vacuously returned success
+    /// without ever contacting Immich.
+    public var actions: CairnAppActions
 
     // MARK: - Init
 
@@ -89,13 +283,14 @@ public final class CairnAppModel {
         apiKey: String = "",
         apiKeyMasked: String = "••••••••••",
         connectionStatus: SettingsScreen.ConnectionStatus = .healthy(latencyMs: 42),
-        library: CairnFixtures.LibrarySize = CairnFixtures.medium,
-        runs: [CairnFixtures.RunFixture] = CairnFixtures.runs,
-        journalTail: [CairnFixtures.JournalTailEntry] = CairnFixtures.journalTail,
+        library: CairnFixtures.LibrarySize = .empty,
+        runs: [CairnFixtures.RunFixture] = [],
+        journalTail: [CairnFixtures.JournalTailEntry] = [],
         settings: CairnSettings = .defaults,
         excludedEntries: [ExcludedScreenEntry] = [],
         appState: StatusScreen.AppState = .steady,
         degraded: StatusScreen.Degraded = .none,
+        reconciliation: LiveReconciliation? = nil,
         actions: CairnAppActions = .preview
     ) {
         self.needsOnboarding = needsOnboarding
@@ -110,6 +305,7 @@ public final class CairnAppModel {
         self.excludedEntries = excludedEntries
         self.appState = appState
         self.degraded = degraded
+        self.reconciliation = reconciliation
         self.actions = actions
     }
 
@@ -124,9 +320,15 @@ public final class CairnAppModel {
         degraded: StatusScreen.Degraded = .none,
         library: CairnFixtures.LibrarySize = CairnFixtures.medium
     ) -> CairnAppModel {
+        // Previews get the full fixture data — runs, journal tail, library
+        // — so every screen renders something meaningful without needing a
+        // live host. Production `CairnAppModel`s start empty; fixtures only
+        // flow in through this factory.
         CairnAppModel(
             needsOnboarding: needsOnboarding,
             library: library,
+            runs: CairnFixtures.runs,
+            journalTail: CairnFixtures.journalTail,
             appState: appState,
             degraded: degraded
         )
@@ -151,14 +353,43 @@ public struct CairnAppActions: Sendable {
     /// User confirmed trashing in DryRunSheet. Host runs TrashOrchestrator.
     public var confirmTrash: @Sendable () async throws -> Void
 
-    /// User selected a subset of assets from a Run detail view to restore.
-    public var restore: @Sendable (_ filenames: [String], _ fromRunId: String) async throws -> Void
+    /// User selected a subset of assets from a Run detail view to
+    /// restore. `assetIds` are Immich's server-side UUIDs (from
+    /// `CandidateFixture.assetId`), passed straight to
+    /// `RestoreOrchestrator.restore(fromRunId:assetIds:)`. An empty
+    /// array restores every asset in the run.
+    public var restore: @Sendable (_ assetIds: [String], _ fromRunId: String) async throws -> Void
 
-    /// User selected a subset of assets to add to the exclusion allowlist.
-    public var exclude: @Sendable (_ filenames: [String], _ fromRunId: String) async throws -> Void
+    /// User selected a subset of assets to add to the exclusion
+    /// allowlist. `checksums` are base64 SHA1s (from
+    /// `CandidateFixture.checksum`) — matches what the
+    /// `ExclusionStore` is keyed on. `filenames` are the
+    /// originalFileName values at exclusion time, used for display
+    /// and for the journal event.
+    public var exclude: @Sendable (_ checksums: [String], _ filenames: [String], _ fromRunId: String) async throws -> Void
 
-    /// User removed a filename from the allowlist via Excluded screen.
-    public var unexclude: @Sendable (_ filenames: [String]) async throws -> Void
+    /// User removed a checksum from the allowlist via Excluded screen.
+    public var unexclude: @Sendable (_ checksums: [String]) async throws -> Void
+
+    /// Wave 4: user approved a specific set of held/unconfirmed pending-
+    /// review candidates for immediate trashing — bypasses the rest of
+    /// the quarantine wait. Host translates checksums → asset IDs and
+    /// invokes `TrashOrchestrator.run` on just this subset.
+    public var approvePending: @Sendable (_ checksums: [String]) async throws -> Void
+
+    /// Wave 4: user marked a pending-review subset as "don't trash these"
+    /// — routes them into `ExclusionStore` so every future run skips them.
+    /// Also removes them from `ConfirmedDeletedStore` (un-confirms) so
+    /// they stop showing up in pending-review regardless.
+    public var excludePending: @Sendable (_ checksums: [String]) async throws -> Void
+
+    /// Wave 4: user tapped the mass-offload banner's "bulk exclude"
+    /// affordance — every checksum confirmed-deleted in the recent burst
+    /// is moved to the exclusion list. Host computes the set by filtering
+    /// `confirmedDeleted.snapshot()` for entries confirmed within the last
+    /// scan window. Same semantics as `excludePending` but operates on a
+    /// larger set.
+    public var bulkExcludeRecentOffload: @Sendable () async throws -> Void
 
     /// Setup wizard step: verify URL + API key against the server. Returns
     /// the asset count for the "1,204 assets visible to this key" success state.
@@ -170,9 +401,6 @@ public struct CairnAppActions: Sendable {
     /// Setup wizard step: request Background App Refresh.
     public var requestBackgroundRefresh: @Sendable () async -> Bool
 
-    /// Setup wizard final step: kick off the first dry-run.
-    public var runFirstDryRun: @Sendable () async -> Void
-
     /// Settings → Danger zone. Each is a destructive op the host wires
     /// to its real teardown logic (rebuild ever-seen, delete journal,
     /// clear keychain).
@@ -180,34 +408,91 @@ public struct CairnAppActions: Sendable {
     public var clearJournal:  @Sendable () async -> Void
     public var signOut:       @Sendable () async -> Void
 
+    /// Settings → Library. Clears the persistent-change token + the
+    /// deferred-hash queue so the next sync re-enumerates the library
+    /// from scratch. Lighter than `resetIndex` — ever-seen and
+    /// confirmed-deleted survive, so reconciliation history is
+    /// preserved. Used when the user changes a size-limit setting and
+    /// wants the new value to take effect immediately.
+    public var rescanLibrary: @Sendable () async -> Void
+
+    /// Persist the current `CairnSettings` to the on-device store.
+    /// Called automatically when the settings binding mutates; there's
+    /// no user-visible "save" button, so this runs in the background
+    /// whenever any slider/toggle changes.
+    public var persistSettings: @Sendable (CairnSettings) async -> Void
+
+    /// User tapped "Skip for now" on the initial-scan screen. Host
+    /// flips `hasDismissedInitialScan` so the UI lands on the main
+    /// tabs; a persistent banner keeps the scan one tap away.
+    public var dismissInitialScan: @Sendable () async -> Void
+
+    /// User tapped "Start over" while indexing was paused. Wipe hash
+    /// cache + token + defer queue + ever-seen + confirmed-deleted so
+    /// the next scan begins from scratch. Distinct from `resumeSync`
+    /// (which picks up from where the cache left off).
+    public var startOverInitialScan: @Sendable () async -> Void
+
+    /// User explicitly asked to hash the deferred queue right now,
+    /// rather than waiting for iOS to grant a background slot. Runs
+    /// the unlimited-drain path in foreground — same code BGProcessingTask
+    /// uses, but the user pays the time cost here. Hard ceiling still
+    /// applies. Progress surfaces via the normal `syncProgress`.
+    public var forceDrainDeferred: @Sendable () async -> Void
+
+    /// Dev-only: replay the onboarding flow without clearing stored
+    /// credentials. Host reads URL + API key from Keychain, pre-fills
+    /// the model so the SetupScreen fields come up populated, and
+    /// flips `needsOnboarding = true`. Completing the flow (or
+    /// backgrounding and returning) drops the user back into the
+    /// main app with credentials still intact. Exposed via a
+    /// DEBUG-gated row in Settings → Advanced.
+    public var replayOnboarding: @Sendable () async -> Void
+
     public init(
         requestSync: @escaping @Sendable () async throws -> Void = {},
         confirmTrash: @escaping @Sendable () async throws -> Void = {},
         restore: @escaping @Sendable ([String], String) async throws -> Void = { _, _ in },
-        exclude: @escaping @Sendable ([String], String) async throws -> Void = { _, _ in },
+        exclude: @escaping @Sendable ([String], [String], String) async throws -> Void = { _, _, _ in },
         unexclude: @escaping @Sendable ([String]) async throws -> Void = { _ in },
+        approvePending: @escaping @Sendable ([String]) async throws -> Void = { _ in },
+        excludePending: @escaping @Sendable ([String]) async throws -> Void = { _ in },
+        bulkExcludeRecentOffload: @escaping @Sendable () async throws -> Void = {},
         verifyServer: @escaping @Sendable (String, String) async -> SetupScreen.ServerVerifyResult = { _, _ in
             SetupScreen.ServerVerifyResult(success: true, assetCount: 0, errorMessage: nil)
         },
         requestPhotosAccess: @escaping @Sendable () async -> Bool = { true },
         requestBackgroundRefresh: @escaping @Sendable () async -> Bool = { true },
-        runFirstDryRun: @escaping @Sendable () async -> Void = {},
         resetIndex: @escaping @Sendable () async -> Void = {},
         clearJournal: @escaping @Sendable () async -> Void = {},
-        signOut: @escaping @Sendable () async -> Void = {}
+        signOut: @escaping @Sendable () async -> Void = {},
+        rescanLibrary: @escaping @Sendable () async -> Void = {},
+        persistSettings: @escaping @Sendable (CairnSettings) async -> Void = { _ in },
+        dismissInitialScan: @escaping @Sendable () async -> Void = {},
+        startOverInitialScan: @escaping @Sendable () async -> Void = {},
+        forceDrainDeferred: @escaping @Sendable () async -> Void = {},
+        replayOnboarding: @escaping @Sendable () async -> Void = {}
     ) {
         self.requestSync = requestSync
         self.confirmTrash = confirmTrash
         self.restore = restore
         self.exclude = exclude
         self.unexclude = unexclude
+        self.approvePending = approvePending
+        self.excludePending = excludePending
+        self.bulkExcludeRecentOffload = bulkExcludeRecentOffload
         self.verifyServer = verifyServer
         self.requestPhotosAccess = requestPhotosAccess
         self.requestBackgroundRefresh = requestBackgroundRefresh
-        self.runFirstDryRun = runFirstDryRun
         self.resetIndex = resetIndex
         self.clearJournal = clearJournal
         self.signOut = signOut
+        self.rescanLibrary = rescanLibrary
+        self.persistSettings = persistSettings
+        self.dismissInitialScan = dismissInitialScan
+        self.startOverInitialScan = startOverInitialScan
+        self.forceDrainDeferred = forceDrainDeferred
+        self.replayOnboarding = replayOnboarding
     }
 
     /// All-no-op closures with successful default returns. Use in previews

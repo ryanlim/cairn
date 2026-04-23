@@ -87,7 +87,7 @@ public struct ExcludedScreen: View {
                 Button("Cancel", role: .cancel) {}
             }
         } message: {
-            Text("Future runs can trash this again.")
+            Text("Future runs can move this to Immich's Trash again.")
         }
     }
 
@@ -155,9 +155,8 @@ public struct ExcludedScreen: View {
     // MARK: - Explainer card
 
     private var explainerCard: some View {
-        // Info-tone Callout. Copy verbatim from screens/excluded.jsx.
         Callout(.info, icon: "shield") {
-            Text("Excluded assets stay indexed — cairn still knows they exist — but every future reconcile will skip them. Useful for photos you plan to re-trash yourself, or anything you'd rather keep on server even if it's gone from the phone.")
+            (Text("Excluded assets stay indexed — ") + .cairnWord + Text(" still knows they exist — but every future reconcile will skip them. Useful for photos you'd rather keep on the server even if they're gone from the phone."))
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.horizontal, 16)
@@ -211,7 +210,7 @@ private struct ExcludedRow: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
-            MockAssetThumb(filename: entry.filename, size: 44, isLivePair: entry.isLivePair)
+            ImmichAssetThumb(assetId: entry.assetId, filename: entry.filename, size: 44, isLivePair: entry.isLivePair)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(entry.filename)
@@ -237,22 +236,11 @@ private struct ExcludedRow: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            Button(action: onRemove) {
-                Text("Remove")
-                    .font(.system(size: 11, weight: .semibold))
-                    .tracking(0.66) // ~0.06em at 11pt
-                    .foregroundStyle(t.textBody)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(t.bg)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 7, style: .continuous)
-                            .strokeBorder(t.divider, lineWidth: 0.5)
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Remove \(entry.filename) from excluded list")
+            CairnChip(
+                "Remove",
+                accessibilityLabel: "Remove \(entry.filename) from excluded list",
+                action: onRemove
+            )
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
@@ -295,19 +283,25 @@ public struct ExcludedScreenEntry: Sendable, Identifiable {
     public let kind: CairnFixtures.CandidateFixture.Kind
     public let isLivePair: Bool
     public let metadata: ExclusionMetadata
+    /// Server-side asset UUID when known. Populated by the host when
+    /// joining the exclusion list against server records; `nil` for
+    /// preview fixtures (they fall back to the gradient placeholder).
+    public let assetId: String?
 
     public init(
         filename: String,
         bytes: Int,
         kind: CairnFixtures.CandidateFixture.Kind,
         isLivePair: Bool,
-        metadata: ExclusionMetadata
+        metadata: ExclusionMetadata,
+        assetId: String? = nil
     ) {
         self.filename = filename
         self.bytes = bytes
         self.kind = kind
         self.isLivePair = isLivePair
         self.metadata = metadata
+        self.assetId = assetId
     }
 }
 

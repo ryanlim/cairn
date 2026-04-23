@@ -88,7 +88,6 @@ public struct SetupScreen: View {
     public let onVerifyServer: @Sendable (String, String) async -> ServerVerifyResult
     public let onRequestPhotosAccess: @Sendable () async -> Bool
     public let onRequestBackgroundRefresh: @Sendable () async -> Bool
-    public let onRunFirstDryRun: @Sendable () async -> Void
     public let onComplete: () -> Void
 
     /// The step the wizard should open on. Defaults to `.welcome`;
@@ -102,7 +101,6 @@ public struct SetupScreen: View {
         onVerifyServer: @escaping @Sendable (String, String) async -> ServerVerifyResult,
         onRequestPhotosAccess: @escaping @Sendable () async -> Bool,
         onRequestBackgroundRefresh: @escaping @Sendable () async -> Bool,
-        onRunFirstDryRun: @escaping @Sendable () async -> Void,
         onComplete: @escaping () -> Void,
         initialStep: Step = .welcome
     ) {
@@ -112,7 +110,6 @@ public struct SetupScreen: View {
         self.onVerifyServer = onVerifyServer
         self.onRequestPhotosAccess = onRequestPhotosAccess
         self.onRequestBackgroundRefresh = onRequestBackgroundRefresh
-        self.onRunFirstDryRun = onRunFirstDryRun
         self.onComplete = onComplete
         self.initialStep = initialStep
     }
@@ -120,11 +117,17 @@ public struct SetupScreen: View {
     // MARK: - Internal state
 
     @Environment(\.cairnTokens) private var t
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var step: Step = .welcome
 
     // Server step
     @State private var verifying: Bool = false
     @State private var verifyResult: ServerVerifyResult? = nil
+    @FocusState private var serverUrlFocused: Bool
+    /// Guard so we only clear the pre-filled default URL on the *first*
+    /// focus — subsequent focus/unfocus cycles (e.g. dismissing the
+    /// keyboard and tapping back) leave the user's typed input alone.
+    @State private var serverUrlWasCleared: Bool = false
 
     // Photos / background steps — record outcome so the user can see
     // they completed (or skipped) the step before continuing.
@@ -132,9 +135,6 @@ public struct SetupScreen: View {
     @State private var photosRequesting: Bool = false
     @State private var backgroundGranted: Bool = false
     @State private var backgroundRequesting: Bool = false
-
-    // First-run step
-    @State private var runningFirstSync: Bool = false
 
     // MARK: - Body
 
@@ -147,6 +147,10 @@ public struct SetupScreen: View {
                     .padding(.horizontal, 20)
                     .padding(.bottom, 24)
             }
+            // Keyboard dismissal: drag the scroll interactively,
+            // or tap empty chrome outside the focused field.
+            .scrollDismissesKeyboard(.interactively)
+            .cairnDismissKeyboardOnBackgroundTap()
             footerNav
         }
         .background(t.bg)
@@ -156,12 +160,8 @@ public struct SetupScreen: View {
     // MARK: - Brand + stepper
 
     private var brandHeader: some View {
-        HStack(spacing: 10) {
-            CairnMark(size: 28, crowned: true)
-            Text("cairn")
-                .font(.system(size: 22, weight: .semibold))
-                .tracking(-0.4)
-                .foregroundStyle(t.text)
+        HStack(spacing: 0) {
+            CairnWordmark(size: 22, variant: .adaptive)
             Spacer()
         }
         .padding(.horizontal, 20)
@@ -176,7 +176,7 @@ public struct SetupScreen: View {
                     .fill(s.rawValue <= step.rawValue ? t.text.opacity(0.85) : t.divider)
                     .frame(height: 3)
                     .frame(maxWidth: .infinity)
-                    .animation(.easeInOut(duration: 0.2), value: step)
+                    .animation(reduceMotion ? .none : .easeInOut(duration: 0.2), value: step)
             }
         }
         .padding(.horizontal, 20)
@@ -202,20 +202,16 @@ public struct SetupScreen: View {
 
     private var welcomeStep: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Lockup: the brief calls for `CairnMark(size: 64, crowned: true)`
-            // since there's no separate `CairnLockup` Swift component.
-            HStack(spacing: 14) {
-                CairnMark(size: 64, crowned: true)
-                Text("cairn")
-                    .font(.system(size: 40, weight: .semibold))
-                    .tracking(-0.8)
-                    .foregroundStyle(t.text)
-            }
+            // Lockup: onboarding welcome is the single most gaze-dwelled
+            // surface in the app, so it uses the detailed multi-color
+            // hero art rather than the smaller theme-responsive mark
+            // used in nav chrome.
+            CairnWordmark(size: 40, variant: .hero)
             .padding(.bottom, 24)
 
             // Pitch — verbatim from the brief; this is the elevator
             // sentence used elsewhere in product surfaces too.
-            Text("cairn cleans up your Immich server when you delete photos on your iPhone.")
+            (Text.cairnWord + Text(" cleans up your Immich server when you delete photos on your iPhone."))
                 .font(.system(size: 22, weight: .semibold))
                 .tracking(-0.4)
                 .foregroundStyle(t.text)
@@ -237,8 +233,8 @@ public struct SetupScreen: View {
     private var serverStep: some View {
         VStack(alignment: .leading, spacing: 0) {
             // Headline + intro — verbatim from `screens/setup.jsx` step 0.
-            stepHeadline("Point cairn at your Immich.")
-            stepBlurb("Photos never leave your iPhone or your Immich server. cairn only sends trash requests, signed with your API key.")
+            stepHeadline(Text("Point ") + .cairnWord + Text(" at your Immich server."))
+            stepBlurb(Text("Photos never leave your iPhone or your Immich server. ") + .cairnWord + Text(" only sends trash requests, signed with your API key."))
 
             fieldLabel("Server URL")
             CairnCard {
@@ -258,6 +254,21 @@ public struct SetupScreen: View {
                         .textInputAutocapitalization(.never)
                         .keyboardType(.URL)
                         #endif
+                        .focused($serverUrlFocused)
+                        .onChange(of: serverUrlFocused) { _, nowFocused in
+                            // First-focus clear: the field ships pre-filled
+                            // with a scaffold URL so unused surfaces (the
+                            // Status subhead) have something to render.
+                            // When the user actually taps in, wipe so they
+                            // don't have to select-all-and-delete before
+                            // typing their real URL. Guarded so they can
+                            // unfocus and refocus without losing their own
+                            // in-progress input.
+                            if nowFocused && !serverUrlWasCleared {
+                                serverUrlWasCleared = true
+                                serverUrl = ""
+                            }
+                        }
                         .onChange(of: serverUrl) { _, _ in verifyResult = nil }
                 }
             }
@@ -266,23 +277,11 @@ public struct SetupScreen: View {
 
             fieldLabel("API key")
             CairnCard {
-                HStack(spacing: 0) {
-                    Image(systemName: "key")
-                        .font(.system(size: 14))
-                        .foregroundStyle(t.textMuted)
-                        .padding(.leading, 14)
-                    SecureField("paste key from Immich account settings", text: $apiKey)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 14, design: .monospaced))
-                        .foregroundStyle(t.textBody)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 14)
-                        .autocorrectionDisabled(true)
-                        #if os(iOS)
-                        .textInputAutocapitalization(.never)
-                        #endif
-                        .onChange(of: apiKey) { _, _ in verifyResult = nil }
-                }
+                ApiKeyInput(
+                    text: $apiKey,
+                    placeholder: "paste key from Immich account settings",
+                    onChange: { verifyResult = nil }
+                )
             }
             .padding(.horizontal, -20)
             .padding(.bottom, 10)
@@ -358,7 +357,7 @@ public struct SetupScreen: View {
         VStack(alignment: .leading, spacing: 0) {
             // Headline + body — verbatim from `screens/setup.jsx` step 1.
             stepHeadline("Grant full Photos access.")
-            stepBlurb("cairn needs to enumerate your whole library to know what's no longer there. It only reads content identifiers — never photo contents — and never transmits anything outside your devices.")
+            stepBlurb(Text.cairnWord + Text(" needs to enumerate your whole library to know what's no longer there. It reads each photo once to compute a SHA1 fingerprint — the same identifier Immich uses. Bytes are hashed in memory and discarded; only the fingerprints leave your iPhone, and only to your own Immich server."))
 
             CairnCard {
                 HStack(alignment: .top, spacing: 12) {
@@ -371,7 +370,7 @@ public struct SetupScreen: View {
                             .font(.system(size: 14, weight: .medium))
                             .foregroundStyle(t.textBody)
                         // Verbatim from `screens/setup.jsx` step 1.
-                        Text("Limited access won't work: cairn must distinguish photos you deleted from photos it hasn't indexed yet.")
+                        (Text("Limited access won't work: ") + .cairnWord + Text(" must distinguish photos you deleted from photos it hasn't indexed yet."))
                             .font(.system(size: 12.5))
                             .foregroundStyle(t.textMuted)
                             .lineSpacing(2)
@@ -415,10 +414,10 @@ public struct SetupScreen: View {
 
     private var backgroundStep: some View {
         VStack(alignment: .leading, spacing: 0) {
-            stepHeadline("Let cairn check in periodically.")
+            stepHeadline(Text("Let ") + .cairnWord + Text(" check in periodically."))
             // Tone is taken from the plan doc's framing of background
             // refresh as load-bearing-but-skippable safety scaffolding.
-            stepBlurb("cairn uses Background App Refresh to scan your Recently Deleted album on a schedule, so it sees deletions even if you haven't opened the app for a while. You can skip this — cairn still works in the foreground.")
+            stepBlurb(Text.cairnWord + Text(" uses Background App Refresh to pick up deletions while the app is closed. You can skip this — ") + .cairnWord + Text(" still works in the foreground."))
 
             CairnCard {
                 HStack(alignment: .top, spacing: 12) {
@@ -430,7 +429,7 @@ public struct SetupScreen: View {
                         Text("Background App Refresh")
                             .font(.system(size: 14, weight: .medium))
                             .foregroundStyle(t.textBody)
-                        Text("iOS decides exactly when. cairn never auto-trashes — every scheduled run is preview-only.")
+                        (Text("iOS decides exactly when. ") + .cairnWord + Text(" never moves anything to Trash automatically — every scheduled run is preview-only."))
                             .font(.system(size: 12.5))
                             .foregroundStyle(t.textMuted)
                             .lineSpacing(2)
@@ -481,7 +480,7 @@ public struct SetupScreen: View {
         VStack(alignment: .leading, spacing: 0) {
             stepHeadline("Set safety thresholds.")
             // Verbatim from `screens/setup.jsx` step 2.
-            stepBlurb("Defaults are conservative. If any single run would trash more than the threshold, cairn stops and asks. Trash is never permanent — Immich keeps deleted assets for 30 days.")
+            stepBlurb(Text("Defaults are conservative. A run that would move more than the threshold to Immich's Trash stops and asks first. Nothing's permanent — Immich keeps deleted assets for 30 days."))
 
             CairnCard {
                 VStack(spacing: 0) {
@@ -493,7 +492,9 @@ public struct SetupScreen: View {
                         ),
                         range: 0.1 ... 10.0,
                         step: 0.1,
-                        formatted: String(format: "%.1f%%", settings.maxDeletePercent),
+                        unitSuffix: "%",
+                        format: { String(format: "%.1f", $0) },
+                        parse: NumericInputParse.decimal,
                         sub: "of matched assets"
                     )
                     RowDivider()
@@ -505,7 +506,9 @@ public struct SetupScreen: View {
                         ),
                         range: 1 ... 50,
                         step: 1,
-                        formatted: "\(settings.minDeleteFloor)",
+                        unitSuffix: "",
+                        format: { String(format: "%.0f", $0) },
+                        parse: NumericInputParse.integer,
                         sub: "minimum candidates before the cap kicks in"
                     )
                 }
@@ -522,12 +525,21 @@ public struct SetupScreen: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    /// Onboarding slider row. Retains the larger display-size number
+    /// for emphasis (this is the user's first exposure to these
+    /// values) but the number doubles as an editable field via the
+    /// reusable `EditableNumericField` — so power users can type the
+    /// exact value they want without scrubbing. Falls back to a plain
+    /// label when `unitSuffix` / `format` / `parse` aren't supplied
+    /// (legacy call sites).
     private func sliderRow(
         label: String,
         value: Binding<Double>,
         range: ClosedRange<Double>,
-        step: Double.Stride,
-        formatted: String,
+        step: Double,
+        unitSuffix: String,
+        format: @escaping (Double) -> String,
+        parse: @escaping (String) -> Double?,
         sub: String
     ) -> some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -537,10 +549,14 @@ public struct SetupScreen: View {
                     .tracking(0.9)
                     .foregroundStyle(t.textMuted)
                 Spacer()
-                Text(formatted)
-                    .font(.system(size: 22, weight: .semibold).monospacedDigit())
-                    .tracking(-0.4)
-                    .foregroundStyle(t.text)
+                EditableNumericField(
+                    value: value,
+                    range: range,
+                    step: step,
+                    unitSuffix: unitSuffix,
+                    format: format,
+                    parse: parse
+                )
             }
             Slider(value: value, in: range, step: step)
                 .tint(t.primary)
@@ -556,50 +572,40 @@ public struct SetupScreen: View {
 
     private var strictnessStep: some View {
         VStack(alignment: .leading, spacing: 0) {
-            stepHeadline("Pick how strict cairn is.")
-            // Onboarding seed copy — verbatim from
-            // immich-ios-deletion-sync-plan.md → "Confirmed-deletion
-            // signal (Wave 4) → User-facing messaging → Onboarding".
-            // Designer-approved per the brief.
-            stepBlurb("cairn watches your Photos library and your Recently Deleted album. When you delete a photo, cairn confirms it via Recently Deleted before trashing the matching photo on your Immich server. This is the most reliable signal we have, but it has a 30-day window — if you don't open cairn for a month, it falls back to a more conservative inference. You can pick how strict cairn is in Settings.")
+            stepHeadline(Text("Pick how strict ") + .cairnWord + Text(" is."))
+            // Post-Wave-4 copy: the original plan-doc seed referenced
+            // "Recently Deleted album" as the positive signal, but
+            // Wave 4 pivoted to `PHPhotoLibrary.fetchPersistentChanges`
+            // (iOS fires `deletedLocalIdentifiers` at soft-delete
+            // time). Copy reframed around "iOS confirms a deletion"
+            // — same strict/trusting split, accurate mechanism.
+            stepBlurb(Text.cairnWord + Text(" watches your Photos library and sees deletions as they happen. When iOS confirms a photo was deleted on this device, ") + .cairnWord + Text(" moves the matching photo to Immich's Trash. If ") + .cairnWord + Text(" ever misses a deletion event — the app didn't run for weeks, for example — it falls back to a more conservative inference."))
 
-            // Segmented strict/trusting picker.
-            Picker("Strictness", selection: Binding(
-                get: { settings.deletionStrictness },
-                set: { settings.deletionStrictness = $0 }
-            )) {
-                Text("Strict").tag(DeletionStrictness.strict)
-                Text("Trusting").tag(DeletionStrictness.trusting)
-            }
-            .pickerStyle(.segmented)
-            .padding(.bottom, 16)
-
-            // Mode tooltip — switches between the two seed copies from
-            // the same plan-doc section ("Strict mode setting tooltip"
-            // / "Trusting mode setting tooltip").
-            CairnCard {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(settings.deletionStrictness == .strict ? "Strict mode" : "Trusting mode")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(t.text)
-                    Text(settings.deletionStrictness == .strict
-                         ? "cairn only trashes server photos that we positively saw in your Recently Deleted album. Anything else gets held for your review. Use this if you want maximum safety, especially with iCloud Photo Library or iCloud-Optimized Storage."
-                         : "cairn trashes any server photo that's no longer on your device, even if we didn't see it in Recently Deleted. Faster, but vulnerable to iCloud sync hiccups and library restores.")
-                        .font(.system(size: 13))
-                        .foregroundStyle(t.textBody)
-                        .lineSpacing(3)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .padding(16)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .padding(.horizontal, -20)
+            // Radio list inlines each mode's explanation with the
+            // option itself — the strict/trusting choice is load-
+            // bearing in onboarding, and a separate tooltip card
+            // below the picker disrupted the left-to-right-then-down
+            // reading flow.
+            CairnRadioList(
+                selection: Binding(
+                    get: { settings.deletionStrictness },
+                    set: { settings.deletionStrictness = $0 }
+                ),
+                options: [
+                    .init(
+                        value: DeletionStrictness.strict,
+                        title: "Strict",
+                        subtitle: "Only move a server photo to Immich's Trash when iOS directly confirmed it was deleted on this device. Anything else gets held for your review. Recommended with iCloud Photo Library and iCloud-Optimized Storage."
+                    ),
+                    .init(
+                        value: DeletionStrictness.trusting,
+                        title: "Trusting",
+                        subtitle: "Move any server photo to Immich's Trash when it's no longer on your device, even if iOS didn't directly confirm the deletion. Faster, but can accidentally send photos to Trash during iCloud sync hiccups or library restores."
+                    ),
+                ]
+            )
             .padding(.bottom, 12)
 
-            // Subtle "you can change this later" — explicitly in the
-            // plan-doc seed copy ("You can pick how strict cairn is in
-            // Settings"). Restating it here under the picker reduces
-            // commitment anxiety.
             Text("You can change this any time in Settings.")
                 .font(.system(size: 12))
                 .foregroundStyle(t.textMuted)
@@ -607,13 +613,18 @@ public struct SetupScreen: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    // MARK: - Step: First dry-run
+    // MARK: - Step: First scan
 
     private var firstRunStep: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Headline — verbatim from `screens/setup.jsx` step 3.
-            stepHeadline("First run is always a dry-run.")
-            stepBlurb("cairn will scan your library, index every asset, and show exactly what it would move to Immich trash. Nothing happens on the server until you confirm a second time.")
+            // Post-CLI copy rewrite: the original headline said "First
+            // run is always a dry-run," but the orchestrator's real
+            // `dryRun` flag is never set from iOS — every interactive
+            // run calls `TrashOrchestrator.run(dryRun: false)`. The
+            // safety comes from the sheet + explicit confirm, not
+            // from the orchestrator. Reframe around that mechanism.
+            stepHeadline("You'll see the list before anything syncs.")
+            stepBlurb(Text.cairnWord + Text(" scans your library, indexes every asset, and shows exactly what would move to Immich's Trash. Nothing happens on the server until you confirm."))
 
             // The "what happens next" card — preserves the prototype's
             // 4-step preview so the user knows the shape of the work.
@@ -664,31 +675,19 @@ public struct SetupScreen: View {
             .padding(.horizontal, -20)
             .padding(.bottom, 14)
 
-            // Verbatim from HANDOFF.md "Keep these copies verbatim".
             Callout(.info, icon: "eye") {
-                Text("Every scheduled run is preview-only. You confirm each trash manually.")
+                Text("Every scheduled run is preview-only. You confirm before anything moves to Trash.")
             }
             .padding(.bottom, 16)
 
             primaryButton(
-                title: runningFirstSync ? "Starting…" : "Run first sync (dry-run)",
+                title: "Finish setup",
                 tone: .primary,
-                disabled: runningFirstSync,
-                action: runFirstDryRun
+                disabled: false,
+                action: onComplete
             )
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func runFirstDryRun() {
-        runningFirstSync = true
-        Task {
-            await onRunFirstDryRun()
-            await MainActor.run {
-                self.runningFirstSync = false
-                self.onComplete()
-            }
-        }
     }
 
     // MARK: - Footer nav
@@ -741,18 +740,21 @@ public struct SetupScreen: View {
             onComplete()
             return
         }
-        withAnimation(.easeInOut(duration: 0.18)) { step = next }
+        withAnimation(reduceMotion ? .none : .easeInOut(duration: 0.18)) { step = next }
     }
 
     private func goBack() {
         guard let prev = Step(rawValue: step.rawValue - 1) else { return }
-        withAnimation(.easeInOut(duration: 0.18)) { step = prev }
+        withAnimation(reduceMotion ? .none : .easeInOut(duration: 0.18)) { step = prev }
     }
 
     // MARK: - Shared step chrome
 
-    private func stepHeadline(_ text: String) -> some View {
-        Text(text)
+    private func stepHeadline(_ text: String) -> some View { stepHeadline(Text(text)) }
+    private func stepBlurb(_ text: String) -> some View { stepBlurb(Text(text)) }
+
+    private func stepHeadline(_ text: Text) -> some View {
+        text
             .font(.system(size: 26, weight: .semibold))
             .tracking(-0.5)
             .foregroundStyle(t.text)
@@ -761,8 +763,8 @@ public struct SetupScreen: View {
             .fixedSize(horizontal: false, vertical: true)
     }
 
-    private func stepBlurb(_ text: String) -> some View {
-        Text(text)
+    private func stepBlurb(_ text: Text) -> some View {
+        text
             .font(.system(size: 14))
             .foregroundStyle(t.textMuted)
             .lineSpacing(3)
@@ -853,7 +855,6 @@ private struct SetupPreviewHarness: View {
             },
             onRequestPhotosAccess: { true },
             onRequestBackgroundRefresh: { true },
-            onRunFirstDryRun: { },
             onComplete: { },
             initialStep: initialStep
         )

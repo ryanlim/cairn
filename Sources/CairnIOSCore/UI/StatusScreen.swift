@@ -42,11 +42,61 @@ public struct StatusScreen: View {
     public let journalTail: [CairnFixtures.JournalTailEntry]
     public let serverHost: String
     public let maxDeletePercent: Double
+    /// Wave 4: total count of candidates awaiting the user's call (held +
+    /// unconfirmed). When > 0 the screen surfaces a compact pending-review
+    /// card directly below the sync card.
+    public let pendingReviewCount: Int
+    /// Sum of every bucket awaiting user action (held-by-quarantine +
+    /// pending-review + eligible-to-trash candidates). Drives the
+    /// backlog-alert banner when it crosses
+    /// `backlogAlertThreshold`.
+    public let deletionBacklog: Int
+    /// Count threshold above which the backlog banner appears. 0
+    /// disables the banner entirely.
+    public let backlogAlertThreshold: Int
+    /// Optional transient toast (e.g. "Library up to date") surfaced as
+    /// a Callout above the sync card after a no-op sync. Host is
+    /// responsible for clearing after the auto-dismiss window.
+    public let syncToast: CairnAppModel.SyncToast?
+    /// When true, the user dismissed the initial-scan screen and the
+    /// library hasn't been indexed yet. Surfaces a persistent callout
+    /// prompting the user to begin or resume the scan.
+    public let initialScanPending: Bool
+    /// Handler for the "Begin initial scan" affordance on that banner.
+    public let onResumeInitialScan: () -> Void
+    /// Current deferred-hash queue summary. When `count > 0` Status
+    /// surfaces a banner with a "Hash now" affordance so the user
+    /// doesn't have to dig into Settings to clear the queue.
+    public let deferredQueue: CairnAppModel.DeferredQueueSummary
+    public let onForceDrainDeferred: () -> Void
+    /// True while `actions.requestSync` is mid-flight. Drives spinner +
+    /// disabled state on the CTA so taps don't feel dead.
+    public let isSyncing: Bool
+    /// Optional hashing progress, surfaced in the CTA label when the
+    /// full-enumeration path is running ("Hashing 1,245 / 4,218").
+    public let syncProgress: (hashed: Int, total: Int)?
     public let onStartSync: () -> Void
+    public let onCancelSync: () -> Void
     public let onOpenRun: (CairnFixtures.RunFixture) -> Void
     public let onSeeAllRuns: () -> Void
+    public let onOpenPendingReview: () -> Void
 
     @Environment(\.cairnTokens) private var t
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var journalExpanded: Bool = false
+    /// Latches the count at which the user dismissed the banner so
+    /// it doesn't re-show until the underlying state *changes* (more
+    /// items accrue, or some get cleared). `@AppStorage` persists
+    /// the value to UserDefaults, which survives view re-creation
+    /// (tab navigation, background/foreground) and app relaunch —
+    /// so a deliberate dismissal isn't un-dismissed by just coming
+    /// back to the screen. Sentinel value `-1` means "never
+    /// dismissed"; real counts are always >= 0, so `stored == count`
+    /// cleanly tests "dismissed at this exact value".
+    @AppStorage("cairn.status.dismissedBacklogAtCount")
+    private var dismissedBacklogAtCount: Int = -1
+    @AppStorage("cairn.status.dismissedDeferredAtCount")
+    private var dismissedDeferredAtCount: Int = -1
 
     public init(
         appState: AppState = .steady,
@@ -56,9 +106,21 @@ public struct StatusScreen: View {
         journalTail: [CairnFixtures.JournalTailEntry] = CairnFixtures.journalTail,
         serverHost: String = "immich.home.arpa",
         maxDeletePercent: Double = 1.0,
+        pendingReviewCount: Int = 0,
+        deletionBacklog: Int = 0,
+        backlogAlertThreshold: Int = 25,
+        syncToast: CairnAppModel.SyncToast? = nil,
+        initialScanPending: Bool = false,
+        isSyncing: Bool = false,
+        syncProgress: (hashed: Int, total: Int)? = nil,
         onStartSync: @escaping () -> Void = {},
+        onCancelSync: @escaping () -> Void = {},
         onOpenRun: @escaping (CairnFixtures.RunFixture) -> Void = { _ in },
-        onSeeAllRuns: @escaping () -> Void = {}
+        onSeeAllRuns: @escaping () -> Void = {},
+        onOpenPendingReview: @escaping () -> Void = {},
+        onResumeInitialScan: @escaping () -> Void = {},
+        deferredQueue: CairnAppModel.DeferredQueueSummary = .empty,
+        onForceDrainDeferred: @escaping () -> Void = {}
     ) {
         self.appState = appState
         self.degraded = degraded
@@ -67,9 +129,21 @@ public struct StatusScreen: View {
         self.journalTail = journalTail
         self.serverHost = serverHost
         self.maxDeletePercent = maxDeletePercent
+        self.pendingReviewCount = pendingReviewCount
+        self.deletionBacklog = deletionBacklog
+        self.backlogAlertThreshold = backlogAlertThreshold
+        self.syncToast = syncToast
+        self.initialScanPending = initialScanPending
+        self.isSyncing = isSyncing
+        self.syncProgress = syncProgress
         self.onStartSync = onStartSync
+        self.onCancelSync = onCancelSync
         self.onOpenRun = onOpenRun
         self.onSeeAllRuns = onSeeAllRuns
+        self.onOpenPendingReview = onOpenPendingReview
+        self.onResumeInitialScan = onResumeInitialScan
+        self.deferredQueue = deferredQueue
+        self.onForceDrainDeferred = onForceDrainDeferred
     }
 
     private var pct: Double {
@@ -84,13 +158,34 @@ public struct StatusScreen: View {
         }
     }
 
+    /// Compound value whose changes trigger the banner-area spring
+    /// animation. Every boolean below maps to one banner's
+    /// visibility gate. When any flips, SwiftUI re-layouts the
+    /// enclosing VStack and the paired `.transition` on each
+    /// banner plays in-spring.
+    private var bannerVisibilityKey: [Bool] {
+        [
+            degraded != .none,
+            appState != .steady,
+            initialScanPending,
+            backlogAlertThreshold > 0 && deletionBacklog >= backlogAlertThreshold && !initialScanPending && dismissedBacklogAtCount != deletionBacklog,
+            syncToast != nil,
+            deferredQueue.count > 0 && !initialScanPending && dismissedDeferredAtCount != deferredQueue.count,
+        ]
+    }
+
     public var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 wordmarkHeader
                 degradedBanner
                 stateBanner
+                initialScanPendingBanner
+                backlogAlertBanner
+                syncToastBanner
+                deferredQueueBanner
                 syncCard
+                pendingReviewCard
                 KeylineSection("Library")
                 libraryStats
                 KeylineSection("Recent runs")
@@ -99,8 +194,57 @@ public struct StatusScreen: View {
                 journalTailCard
                 Spacer(minLength: 24)
             }
+            // Canonical spring timing shared across the app —
+            // see `cairnBannerAnimation(value:)` in
+            // CairnPrimitives.swift. Without this, the
+            // `.transition(.cairnBanner)` modifiers on individual
+            // banners are no-ops (SwiftUI only plays transitions
+            // inside an animated context).
+            .cairnBannerAnimation(value: bannerVisibilityKey)
         }
         .background(t.bg)
+    }
+
+    // MARK: - Pending review card
+
+    @ViewBuilder
+    private var pendingReviewCard: some View {
+        if pendingReviewCount > 0 {
+            // Wrapped in a Button so we pick up `CairnPressStyle`'s
+            // scale + dim on press. Previous `.onTapGesture` rendered
+            // no feedback, which made the card feel like decoration
+            // rather than a tappable row.
+            Button(action: onOpenPendingReview) {
+                CairnCard {
+                    HStack(alignment: .center, spacing: 14) {
+                        ZStack {
+                            Circle()
+                                .fill(t.pendingSoft)
+                                .frame(width: 44, height: 44)
+                            Image(systemName: "tray.and.arrow.down")
+                                .font(.system(size: 18, weight: .semibold))
+                                .foregroundStyle(t.pendingInk)
+                        }
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Pending review")
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundStyle(t.text)
+                            (Text("\(pendingReviewCount) \(pendingReviewCount == 1 ? "item needs" : "items need") your review before ") + .cairnWord + Text(" moves them to Immich's Trash."))
+                                .font(.system(size: 12))
+                                .foregroundStyle(t.textMuted)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .multilineTextAlignment(.leading)
+                        }
+                        Spacer(minLength: 0)
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(t.textHint)
+                    }
+                }
+            }
+            .buttonStyle(CairnPressStyle())
+            .padding(.top, 12)
+        }
     }
 
     // MARK: - Header
@@ -108,13 +252,7 @@ public struct StatusScreen: View {
     private var wordmarkHeader: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                HStack(spacing: 10) {
-                    CairnMark(size: 28, crowned: true)
-                    Text("cairn")
-                        .font(.system(size: 28, weight: .semibold))
-                        .tracking(-0.6)
-                        .foregroundStyle(t.text)
-                }
+                CairnWordmark(size: 28, variant: .adaptive)
                 Spacer()
                 statusChip
             }
@@ -155,6 +293,13 @@ public struct StatusScreen: View {
 
     // MARK: - Banners
 
+    /// Alias to the module-wide `.cairnBanner` transition. Kept as a
+    /// per-instance computed property so the call sites below don't
+    /// have to change — `bannerTransition` is used in ~6 places in
+    /// this file and swapping to `.cairnBanner` at each was noisier
+    /// than keeping the shim.
+    private var bannerTransition: AnyTransition { .cairnBanner }
+
     @ViewBuilder
     private var degradedBanner: some View {
         switch degraded {
@@ -168,6 +313,7 @@ public struct StatusScreen: View {
                 }
             }
             .padding(.horizontal, 16).padding(.bottom, 12)
+            .transition(bannerTransition)
         case .authStale:
             Callout(.pending, icon: "key") {
                 VStack(alignment: .leading, spacing: 4) {
@@ -177,24 +323,27 @@ public struct StatusScreen: View {
                 }
             }
             .padding(.horizontal, 16).padding(.bottom, 12)
+            .transition(bannerTransition)
         case .photosLimited:
             Callout(.pending, icon: "photo.on.rectangle.angled") {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Photos access is Limited").fontWeight(.semibold)
-                    Text("cairn can only see the assets you picked. With Limited access it will flag everything outside as “missing” and suggest deleting them — dangerous. Grant Full access to continue.")
+                    (Text("With Limited access, ") + .cairnWord + Text(" only sees the assets you picked. Everything else looks “missing” and would be flagged for deletion — dangerous. Grant Full access to continue."))
                         .opacity(0.88).fixedSize(horizontal: false, vertical: true)
                 }
             }
             .padding(.horizontal, 16).padding(.bottom, 12)
+            .transition(bannerTransition)
         case .tinyLibrary:
             Callout(.pending, icon: "info.circle") {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Library is small").fontWeight(.semibold)
-                    Text("Your iPhone has a small set of assets. cairn works best with 200+ so signals are reliable. You can still sync, but treat the first run carefully.")
+                    Text("Your iPhone has a small photo library. With fewer than ~200 assets, any single deletion is a large fraction of the library and the percent-based safety rail can't protect you as well. You can still sync — just treat the first run carefully.")
                         .opacity(0.88).fixedSize(horizontal: false, vertical: true)
                 }
             }
             .padding(.horizontal, 16).padding(.bottom, 12)
+            .transition(bannerTransition)
         }
     }
 
@@ -211,6 +360,7 @@ public struct StatusScreen: View {
                 }
             }
             .padding(.horizontal, 16).padding(.bottom, 12)
+            .transition(bannerTransition)
         case .dryRun:
             Callout(.info, icon: "info.circle") {
                 VStack(alignment: .leading, spacing: 4) {
@@ -220,8 +370,186 @@ public struct StatusScreen: View {
                 }
             }
             .padding(.horizontal, 16).padding(.bottom, 12)
+            .transition(bannerTransition)
         case .steady:
             EmptyView()
+        }
+    }
+
+    @ViewBuilder
+    private var initialScanPendingBanner: some View {
+        if initialScanPending {
+            Button(action: onResumeInitialScan) {
+                Callout(.pending, icon: "sparkle.magnifyingglass") {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Initial scan pending").fontWeight(.semibold)
+                        (Text("Tap to index your library. ")
+                            + .cairnWord
+                            + Text(" needs a one-time SHA1 pass before it can tell real deletions apart from sync hiccups."))
+                            .opacity(0.88).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 16).padding(.bottom, 12)
+            .transition(bannerTransition)
+        }
+    }
+
+    /// Escalation banner for a large accumulated backlog of confirmed
+    /// deletions + pending-review items. Gated by the user's
+    /// configurable threshold (0 disables). The pending-candidates
+    /// card already surfaces the raw count; this banner adds a
+    /// louder "you've let a lot pile up" signal for users who open
+    /// cairn infrequently. Tapping routes to the most relevant
+    /// destination: Pending Review if there's anything to review,
+    /// otherwise it opens the dry-run sheet for eligible-to-trash
+    /// candidates.
+    @ViewBuilder
+    private var backlogAlertBanner: some View {
+        if backlogAlertThreshold > 0
+            && deletionBacklog >= backlogAlertThreshold
+            && !initialScanPending
+            && dismissedBacklogAtCount != deletionBacklog {
+            Button(action: backlogTapTarget) {
+                Callout(.pending, icon: "bell.badge") {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("\(deletionBacklog) deletions waiting").fontWeight(.semibold)
+                        Text("Since your last trash run. Tap to review, or swipe to dismiss.")
+                            .opacity(0.88).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 16).padding(.bottom, 12)
+            .cairnSwipeToDismiss {
+                dismissedBacklogAtCount = deletionBacklog
+            }
+            .transition(bannerTransition)
+        }
+    }
+
+    /// Smart routing for the backlog banner: pending review first,
+    /// else the dry-run sheet for eligible-to-trash candidates.
+    private func backlogTapTarget() {
+        if pendingReviewCount > 0 {
+            onOpenPendingReview()
+        } else {
+            onStartSync()
+        }
+    }
+
+    /// Surfaces the deferred-hash queue on Status when it's non-empty,
+    /// with a "Hash now" button that runs the unlimited-drain path.
+    /// Without this, the queue is only visible in Settings — users
+    /// land on Status after an initial scan, see the same "Indexed"
+    /// number across repeated syncs, and wonder why it's stuck.
+    ///
+    /// Suppressed while `initialScanPending`: an aborted earlier scan
+    /// can leave orphan deferred rows on disk, and showing both the
+    /// "Initial scan pending" banner AND a "queued for background
+    /// hashing" banner reads as contradictory. Once the user runs
+    /// the initial scan to completion, the deferred queue (whatever's
+    /// left) becomes a valid call-to-action.
+    @ViewBuilder
+    private var deferredQueueBanner: some View {
+        if deferredQueue.count > 0
+            && !initialScanPending
+            && dismissedDeferredAtCount != deferredQueue.count {
+            Callout(.info, icon: "tray.and.arrow.down") {
+                HStack(alignment: .top, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("\(deferredQueue.count) \(deferredQueue.count == 1 ? "asset" : "assets") queued for background hashing")
+                            .fontWeight(.semibold)
+                        Group {
+                            if deferredQueue.totalKnownBytes > 0 {
+                                Text("\(formatDeferredBytes(deferredQueue.totalKnownBytes)) of iCloud downloads. Waiting for a charging + Wi-Fi slot, or tap Hash now.")
+                            } else {
+                                Text("Waiting for a background slot (charging + Wi-Fi), or tap Hash now.")
+                            }
+                        }
+                        .opacity(0.88).fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 4)
+                    Button(action: onForceDrainDeferred) {
+                        Text("Hash now")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(t.primaryInk)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 7)
+                            .background(t.primary)
+                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    }
+                    .buttonStyle(CairnPressStyle())
+                }
+            }
+            .padding(.horizontal, 16).padding(.bottom, 12)
+            .cairnSwipeToDismiss {
+                dismissedDeferredAtCount = deferredQueue.count
+            }
+            .transition(bannerTransition)
+        }
+    }
+
+    /// Body text for the `upToDate` toast. When `indexed == total`
+    /// there's no "rest to catch up" — drop that clause so the line
+    /// doesn't imply missing work. When some assets are still
+    /// deferred (indexed < total), keep the catch-up caveat so the
+    /// user isn't surprised by the queue sitting in Settings.
+    private func upToDateSubline(indexed: Int, total: Int) -> Text {
+        let count = Text("\(indexed) of \(total)").bold()
+        if indexed >= total {
+            // Everything hashed. No caveat needed.
+            return Text("Nothing new to trash. ") + count + Text(" assets indexed.")
+        } else {
+            return Text("Nothing new to trash. ") + count
+                + Text(" assets indexed — the rest will catch up in the background.")
+        }
+    }
+
+    private func formatDeferredBytes(_ bytes: Int64) -> String {
+        CairnTimeHelpers.formatBytes(bytes)
+    }
+
+    @ViewBuilder
+    private var syncToastBanner: some View {
+        if let toast = syncToast {
+            Group {
+                switch toast {
+                case .upToDate(let indexed, let total):
+                    Callout(.verified, icon: "checkmark.seal") {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Library in sync").fontWeight(.semibold)
+                            upToDateSubline(indexed: indexed, total: total)
+                                .opacity(0.88).fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                case .journalCleared:
+                    Callout(.verified, icon: "trash") {
+                        Text("Journal cleared.").fontWeight(.semibold)
+                    }
+                case .indexReset:
+                    Callout(.verified, icon: "arrow.counterclockwise") {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Index reset").fontWeight(.semibold)
+                            Text("Next sync will re-enumerate your library from scratch.")
+                                .opacity(0.88).fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                case .rescanQueued:
+                    Callout(.verified, icon: "arrow.triangle.2.circlepath") {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Rescan queued").fontWeight(.semibold)
+                            Text("The initial-scan screen will run a fresh full enumeration.")
+                                .opacity(0.88).fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, 16).padding(.bottom, 12)
+            .transition(bannerTransition)
         }
     }
 
@@ -240,7 +568,7 @@ public struct StatusScreen: View {
                             .tracking(-2.0)
                             .foregroundStyle(t.pendingInk)
                             .lineLimit(1)
-                        (Text("would move to ") + Text("Immich trash").foregroundStyle(t.text) + Text(" on next run"))
+                        (Text("would move to ") + Text("Immich's Trash").foregroundStyle(t.text) + Text(" on next run"))
                             .font(.system(size: 13))
                             .foregroundStyle(t.textMuted)
                             .padding(.top, 2)
@@ -255,15 +583,38 @@ public struct StatusScreen: View {
                     }
                 }
 
-                ProgressBar(
-                    fraction: min(1.0, pct / max(0.001, maxDeletePercent)),
-                    tone: withinBudget ? .pending : .danger
-                )
+                // Dual-purpose progress bar:
+                //   - During an active sync with a known total (full
+                //     enumeration, or a drain), show hashed-of-total
+                //     so the user watches work tick by — was
+                //     previously only visible on the Initial Scan
+                //     screen; now surfaces on Status too.
+                //   - Otherwise, show the original "candidates as a
+                //     fraction of the `maxDeletePercent` cap", which
+                //     is the safety-rail budget indicator.
+                if isSyncing, let progress = syncProgress, progress.total > 0 {
+                    ProgressBar(
+                        fraction: min(1.0, Double(progress.hashed) / Double(progress.total)),
+                        tone: .pending
+                    )
+                } else {
+                    ProgressBar(
+                        fraction: min(1.0, pct / max(0.001, maxDeletePercent)),
+                        tone: withinBudget ? .pending : .danger
+                    )
+                }
 
-                Button(action: { if !syncBlocked { onStartSync() } }) {
+                Button(action: { if !syncBlocked && !isSyncing { onStartSync() } }) {
                     HStack(spacing: 8) {
-                        Image(systemName: "arrow.triangle.2.circlepath")
-                            .font(.system(size: 14, weight: .semibold))
+                        if isSyncing {
+                            ProgressView()
+                                .progressViewStyle(.circular)
+                                .controlSize(.small)
+                                .tint(t.primaryInk)
+                        } else {
+                            Image(systemName: "arrow.triangle.2.circlepath")
+                                .font(.system(size: 14, weight: .semibold))
+                        }
                         Text(syncCtaLabel)
                             .font(.system(size: 16, weight: .semibold))
                     }
@@ -273,9 +624,28 @@ public struct StatusScreen: View {
                     .background(syncBlocked ? t.surfaceAlt : t.primary)
                     .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                 }
-                .buttonStyle(.plain)
-                .disabled(syncBlocked)
+                .buttonStyle(CairnPressStyle())
+                .disabled(syncBlocked || isSyncing)
                 .opacity(syncBlocked ? 0.85 : 1)
+
+                // Cancel affordance during sync. Separate from the locked
+                // primary button so there's no ambiguity about what the
+                // tap does — the primary renders progress, this one
+                // interrupts. Kept subtle (text button, muted tone) so
+                // it doesn't steal attention from the progress itself.
+                if isSyncing {
+                    Button(action: onCancelSync) {
+                        Text("Cancel")
+                            .font(.system(size: 13, weight: .semibold))
+                            .tracking(0.66)
+                            .foregroundStyle(t.dangerInk)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 8)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(CairnPressStyle())
+                    .accessibilityLabel("Cancel sync")
+                }
             }
             .padding(18)
         }
@@ -284,6 +654,12 @@ public struct StatusScreen: View {
 
     private var syncCtaLabel: String {
         if syncBlocked { return "Can’t sync — see banner" }
+        if isSyncing {
+            if let progress = syncProgress, progress.total > 0 {
+                return "Hashing \(progress.hashed.formatted(.number)) / \(progress.total.formatted(.number))"
+            }
+            return "Syncing…"
+        }
         if appState == .thresholdTripped { return "Review before syncing" }
         return "Review & sync"
     }
@@ -339,25 +715,60 @@ public struct StatusScreen: View {
 
     // MARK: - Journal tail
 
+    /// Monospace tail of recent journal events. All rows live inside
+    /// one horizontal `ScrollView` so scrolling right reveals the tail
+    /// of every row simultaneously — "cand=12 elapsed=37.58s" lines up
+    /// column-wise with every other event's right edge, which makes
+    /// it easy to eyeball what changed between runs.
+    ///
+    /// The collapsed view caps at `collapsedJournalTailLimit` rows;
+    /// tapping "Show more" grows to the full buffered tail so the
+    /// user can audit further back without leaving Status.
     private var journalTailCard: some View {
-        CairnCard {
-            VStack(alignment: .leading, spacing: 6) {
-                ForEach(journalTail) { entry in
-                    HStack(spacing: 8) {
-                        Text(entry.time)
-                            .font(.system(size: 11.5, design: .monospaced))
-                            .foregroundStyle(t.textHint)
-                            .frame(width: 78, alignment: .leading)
-                        Text(entry.event)
-                            .font(.system(size: 11.5, weight: .medium, design: .monospaced))
-                            .foregroundStyle(eventColor(entry.event))
-                            .frame(width: 90, alignment: .leading)
-                        Text(entry.message)
-                            .font(.system(size: 11.5, design: .monospaced))
+        let visible = journalExpanded
+            ? journalTail
+            : Array(journalTail.prefix(Self.collapsedJournalTailLimit))
+        return CairnCard {
+            VStack(alignment: .leading, spacing: 10) {
+                if journalTail.isEmpty {
+                    Text("No events yet. Events appear here after the first sync.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(t.textMuted)
+                        .padding(.vertical, 6)
+                } else {
+                    // Single outer ScrollView: every row shifts
+                    // together when the user swipes horizontally.
+                    // `.scrollBounceBehavior(.basedOnSize)` suppresses
+                    // the bounce when content already fits.
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(visible) { entry in
+                                JournalTailRow(entry: entry, eventInk: eventColor(entry.event))
+                            }
+                        }
+                        .padding(.trailing, 4)   // breathing room on the right edge
+                    }
+                    .scrollBounceBehavior(.basedOnSize)
+
+                    if journalTail.count > Self.collapsedJournalTailLimit {
+                        Button {
+                            withAnimation(reduceMotion ? .none : .snappy(duration: 0.16)) {
+                                journalExpanded.toggle()
+                            }
+                        } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: journalExpanded ? "chevron.up" : "chevron.down")
+                                    .font(.system(size: 11, weight: .semibold))
+                                Text(journalExpanded
+                                     ? "Show fewer"
+                                     : "Show \(journalTail.count - Self.collapsedJournalTailLimit) more")
+                                    .font(.system(size: 12, weight: .medium))
+                            }
                             .foregroundStyle(t.textMuted)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
                             .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.top, 2)
+                        }
+                        .buttonStyle(.plain)
                     }
                 }
             }
@@ -365,6 +776,10 @@ public struct StatusScreen: View {
             .padding(.vertical, 12)
         }
     }
+
+    /// How many journal rows show in the collapsed state. Everything
+    /// beyond this hides behind the "Show more" toggle.
+    private static let collapsedJournalTailLimit: Int = 8
 
     private func eventColor(_ ev: String) -> Color {
         switch ev {
@@ -377,9 +792,54 @@ public struct StatusScreen: View {
     }
 }
 
+// MARK: - Journal tail row
+
+/// One row inside the journal-tail card. Plain single-line layout;
+/// horizontal scrolling happens at the *card* level (all rows shift
+/// together) so column positions stay aligned. Fixed-width time and
+/// event columns keep messages flush-left across rows.
+private struct JournalTailRow: View {
+    let entry: CairnFixtures.JournalTailEntry
+    let eventInk: Color
+
+    @Environment(\.cairnTokens) private var t
+
+    var body: some View {
+        HStack(spacing: 8) {
+            // Time is the only column with a fixed width — so rows
+            // scan cleanly by time across the tail. The date-prefixed
+            // format ("Apr 22 · 17:57:19.325") needs more room than
+            // the time-only version the column was originally sized
+            // for.
+            Text(entry.time)
+                .font(.system(size: 11.5, design: .monospaced))
+                .foregroundStyle(t.textHint)
+                .frame(width: 160, alignment: .leading)
+            // Event hugs its content (no fixed column) — a short
+            // name like "sync" sits right next to its message
+            // rather than drifting out to the width of the longest
+            // possible event. Ragged message-start columns read a
+            // bit busier, but the cost of fixed-width dead space
+            // was worse.
+            Text(entry.event)
+                .font(.system(size: 11.5, weight: .medium, design: .monospaced))
+                .foregroundStyle(eventInk)
+                .fixedSize()
+            Text(entry.message)
+                .font(.system(size: 11.5, design: .monospaced))
+                .foregroundStyle(t.textMuted)
+                .lineLimit(1)
+                .fixedSize()
+        }
+    }
+}
+
 // MARK: - Sub-views
 
-private enum ChipTone {
+/// Shared palette for small tinted pills / progress bars. Internal so
+/// `ProgressBar` (reused by `InitialScanScreen`) can reference it across
+/// files in this module without duplicating the enum.
+enum ChipTone {
     case verified, danger, pending, info, neutral
 }
 
@@ -425,7 +885,10 @@ private struct Chip: View {
     private var dotColor: Color { inkColor.opacity(0.85) }
 }
 
-private struct ProgressBar: View {
+/// 4pt capsule progress bar. Widened access so `InitialScanScreen`
+/// can reuse the exact same visual — keeping progress styling consistent
+/// across every surface that shows one.
+struct ProgressBar: View {
     let fraction: Double
     let tone: ChipTone
 

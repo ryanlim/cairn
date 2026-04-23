@@ -163,15 +163,13 @@ public struct RunsScreen: View {
                 }
                 .padding(.bottom, 18)
 
-                // Headline (verbatim, screens/runs.jsx:28).
-                Text("Nothing to replay yet.")
+                Text("No runs yet.")
                     .font(.system(size: 18, weight: .semibold))
                     .tracking(-0.27)
                     .foregroundStyle(t.text)
                     .padding(.bottom, 6)
 
-                // Explainer (verbatim, screens/runs.jsx:31).
-                Text("Every sync — dry-run, aborted, or trashed — lands here with the exact filenames touched and the API calls made. You can restore any trashed batch as long as Immich still has it.")
+                Text("Every sync lands here — completed, aborted, or restored — with the candidate list and the journal of API calls. You can restore any trashed batch while Immich still has it.")
                     .font(.system(size: 13))
                     .foregroundStyle(t.textMuted)
                     .multilineTextAlignment(.center)
