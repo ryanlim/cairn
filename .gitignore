@@ -28,3 +28,7 @@ iOS/fastlane/metadata/
 *.ipa
 *.dSYM.zip
 *.xcresult
+# Per-developer Apple Developer Team ID — see iOS/README.md "Running on a real device".
+iOS/.team
+# Per-developer Immich dev credentials seeded by `make device` on debug installs.
+iOS/.dev-secrets
