@@ -142,6 +142,20 @@ platform :ios do
     UI.important "⚠️  Submit for review in App Store Connect when ready."
   end
 
+  desc "Capture App Store + README screenshots"
+  # Delegates to scripts/capture-screenshots.sh because fastlane's
+  # `capture_screenshots` builds its xcodebuild `-destination` from
+  # simctl's short-form iOS version label ("iOS 26.4") but recent
+  # xcodebuild insists on the full build string ("OS:26.4.1") for
+  # the same simulator runtime. The shell script sidesteps this by
+  # resolving each simulator by UDID, then post-processes the output
+  # into the same fastlane/screenshots/<locale>/ layout.
+  lane :screenshots do
+    # `sh` runs from fastlane/; script self-locates to iOS/.
+    sh("../scripts/capture-screenshots.sh")
+    UI.success "📸 Screenshots captured under fastlane/screenshots/"
+  end
+
   desc "Setup certificates and provisioning profiles via match"
   lane :setup_certificates do
     match(type: "appstore", app_identifier: APP_IDENTIFIER, readonly: false)

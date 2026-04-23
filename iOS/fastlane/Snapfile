@@ -1,0 +1,61 @@
+# Snapfile — Fastlane screenshot configuration for cairn.
+# Invoked by `fastlane screenshots` (see Fastfile) or `make screenshots`.
+
+# Devices in the order we want App Store Connect to receive them.
+# iPhone 17 Pro Max covers the 6.9" slot (required for new 2025+
+# submissions). iPhone 17 covers the 6.3" mainstream slot. Roster
+# rotates annually — keep this in sync with what's actually installed
+# in the active Xcode Simulator runtimes (`xcrun simctl list devices`).
+# Temporarily narrowed to one device for smoke-testing the pipeline.
+# Restore the two-device list (iPhone 17 Pro Max + iPhone 17) once we
+# confirm PNG output lands where expected.
+devices([
+  "iPhone 17 Pro Max",
+])
+
+# Pin the simulator runtime. `xcrun simctl list runtimes` tends to
+# ship a short-form and a full-form runtime with the same display
+# name (e.g. "iOS 26.4" and "iOS 26.4.1" both presented as "iOS 26.4"
+# by `simctl list devices`); fastlane's auto-detection picks the
+# short form and xcodebuild then refuses the destination. Pin the
+# full version string so the destination resolves cleanly. Update
+# this line when a new Xcode / iOS simulator ships.
+ios_version "26.4.1"
+
+languages(["en-US"])
+
+# Output under `iOS/fastlane/screenshots/<locale>/<device>-<name>.png`.
+output_directory "./fastlane/screenshots"
+
+# Wipe previous captures so stale shots don't drift into the next run.
+clear_previous_screenshots true
+
+# Keep going on a single-shot failure — easier to spot which specific
+# state broke than re-running end-to-end every time.
+stop_after_first_error false
+
+# Reinstall the app before each run so the fixture-mode state starts
+# clean (no SwiftData / UserDefaults carry-over from a prior build).
+reinstall_app true
+
+# Launch args forwarded to the XCUITest harness. `CAIRN_SCREENSHOT_MODE`
+# gates the fixture-seeded bootstrap path in `AppDependencies`; the
+# `FASTLANE_SNAPSHOT` and `DisableAnimations` flags come from Fastlane's
+# recommended defaults (deterministic UI, no bouncing transitions).
+launch_arguments([
+  "-CAIRN_SCREENSHOT_MODE 1",
+  "-FASTLANE_SNAPSHOT YES",
+])
+
+# Retry transient flakes once. UITest timing on iOS 18 sims is mostly
+# reliable but the occasional sim cold-start burns a single screenshot
+# if we don't allow a retry.
+number_of_retries 1
+
+# Open the HTML summary page after the run so you can scroll through
+# the grid in the browser.
+skip_open_summary false
+
+# Project pointers.
+project "./Cairn.xcodeproj"
+scheme "Cairn"
