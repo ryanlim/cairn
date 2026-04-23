@@ -4,20 +4,19 @@ import CairnCore
 
 // MARK: - @Model types
 
-/// SwiftData row for `EverSeenStore`. One row per checksum the device has
-/// ever observed locally.
+/// Ever-seen checksum row. One per SHA1 the device has ever observed
+/// locally.
 ///
-/// `base64` is `@Attribute(.unique)` so that SwiftData (well, the underlying
-/// SQLite store) enforces dedup at the schema level. This is preferable to
-/// dedup-on-insert in Swift because:
-///   1. It collapses the "snapshot, diff, write" round trip on `union(_:)`
-///      into a straight insert-and-let-the-store-reject-duplicates pattern.
-///   2. Concurrent writers from two `SwiftDataEverSeenStore` actors over the
-///      same container can't race their way to a duplicate row.
+/// `base64` is `@Attribute(.unique)` so the underlying SQLite store
+/// enforces dedup at the schema level. Two wins over dedup-on-insert:
+///   1. `union(_:)` collapses from "snapshot, diff, write" to
+///      "insert and let the store reject duplicates."
+///   2. Concurrent writers from two actors over the same container
+///      can't race their way to a duplicate row.
 ///
-/// Note: `@Model` classes are reference types and *not* `Sendable`. They
+/// `@Model` classes are reference types and **not** `Sendable`. They
 /// must never escape the actor that owns the `ModelContext` they were
-/// fetched on. The actors below convert to plain `Checksum` values before
+/// fetched on. The actors below convert to `Checksum` values before
 /// returning anything to callers.
 @Model
 final class StoredEverSeenChecksum {
@@ -28,13 +27,11 @@ final class StoredEverSeenChecksum {
     }
 }
 
-/// SwiftData row for `ExclusionStore`. Keyed by `checksumBase64` (unique).
-///
-/// The metadata fields are stored as plain columns rather than a nested
-/// `ExclusionMetadata` value because SwiftData prefers flat schemas and we
-/// gain nothing by nesting — there is one metadata blob per checksum and
-/// the protocol surface only ever returns flattened `ExclusionMetadata`
-/// values to callers.
+/// Exclusion row. One per excluded checksum, keyed on unique
+/// `checksumBase64`. Metadata fields flatten to plain columns rather
+/// than nesting an `ExclusionMetadata` — one blob per row, SwiftData
+/// prefers flat schemas, and the protocol surface converts back to
+/// `ExclusionMetadata` at read time anyway.
 @Model
 final class StoredExclusion {
     @Attribute(.unique) var checksumBase64: String
@@ -50,41 +47,111 @@ final class StoredExclusion {
     }
 }
 
-/// SwiftData row for `ConfirmedDeletedStore`. One row per checksum that
-/// has been observed in iOS's Recently Deleted album. Same `.unique`-on-
-/// `base64` pattern as `StoredEverSeenChecksum`.
+/// Confirmed-deleted checksum row. One per checksum seen as
+/// locally-deleted. `confirmedAt` stamps the first observation;
+/// `union` is first-write-wins on that timestamp so the quarantine
+/// clock stays stable across re-observations (flapping assets don't
+/// reset their clock).
 @Model
 final class StoredConfirmedDeletedChecksum {
     @Attribute(.unique) var base64: String
+    var confirmedAt: Date
 
-    init(base64: String) {
+    init(base64: String, confirmedAt: Date) {
         self.base64 = base64
+        self.confirmedAt = confirmedAt
+    }
+}
+
+/// Local-hash row. One per `(localIdentifier, checksum)` pair — a
+/// `PHAsset` may contribute multiple checksums (Live Photo = still +
+/// paired video), so the unique key is the compound
+/// `"<localIdentifier>|<base64>"` rather than just `localIdentifier`.
+///
+/// `modificationDate` duplicates across rows sharing a
+/// `localIdentifier` — a per-asset property we flatten onto every row
+/// to keep the schema simple. Cheap on disk, simpler queries. Optional
+/// so legacy rows (pre-field addition) decode without a migration.
+@Model
+final class StoredLocalHashEntry {
+    @Attribute(.unique) var compoundKey: String
+    var localIdentifier: String
+    var base64: String
+    var modificationDate: Date?
+
+    init(localIdentifier: String, base64: String, modificationDate: Date?) {
+        self.compoundKey = "\(localIdentifier)|\(base64)"
+        self.localIdentifier = localIdentifier
+        self.base64 = base64
+        self.modificationDate = modificationDate
+    }
+}
+
+/// Deferred-hash row. One per asset awaiting a later re-hash. See
+/// `CairnCore/DeferredHashStore.swift` for the lifecycle rules.
+///
+/// `reasonRaw` stores the enum's raw string value rather than using a
+/// native enum column. Strings survive schema evolution painlessly —
+/// a new defer reason added in a future version decodes to `.tooLarge`
+/// (the common case) on older clients rather than throwing.
+@Model
+final class StoredDeferredHash {
+    @Attribute(.unique) var localIdentifier: String
+    var reasonRaw: String
+    /// `Int64?` so "unknown size" (timeouts, no-resources cases)
+    /// round-trips cleanly.
+    var sizeBytes: Int64?
+    var firstDeferredAt: Date
+
+    init(localIdentifier: String, reasonRaw: String, sizeBytes: Int64?, firstDeferredAt: Date) {
+        self.localIdentifier = localIdentifier
+        self.reasonRaw = reasonRaw
+        self.sizeBytes = sizeBytes
+        self.firstDeferredAt = firstDeferredAt
+    }
+}
+
+/// Persistent-change-token row. Singleton — the store keys off a
+/// fixed sentinel id (`"default"`). Token bytes are stored opaque
+/// (`NSSecureCoding` output from `PhotoKitPersistentChangeReconciler
+/// .archiveToken`); cairn never inspects PhotoKit internals, only
+/// round-trips what PhotoKit gives us.
+@Model
+final class StoredPersistentChangeToken {
+    @Attribute(.unique) var singletonId: String
+    var tokenData: Data
+    var savedAt: Date
+
+    init(tokenData: Data, savedAt: Date) {
+        self.singletonId = "default"
+        self.tokenData = tokenData
+        self.savedAt = savedAt
     }
 }
 
 // MARK: - Container helper
 
-/// Factory for the shared `ModelContainer` that backs the iOS app's
-/// SwiftData stores. The four `SwiftData*Store` actors are expected to be
-/// constructed from the same container so they end up writing to one
-/// underlying SQLite file owned by the app.
+/// Factory for the shared `ModelContainer` behind the iOS app's
+/// SwiftData stores. All `SwiftData*Store` actors are expected to
+/// share one container so they end up writing to a single underlying
+/// SQLite file.
 public enum CairnSwiftDataContainer {
-    /// Build a `ModelContainer` over every `@Model` type in this file.
+    /// Build a `ModelContainer` covering every `@Model` type in this file.
     ///
     /// - Parameters:
-    ///   - url: Optional explicit on-disk location for the SQLite store.
-    ///     When `nil`, SwiftData uses its default app-support location
-    ///     (`Application Support/default.store` inside the app's data
-    ///     container). Tests should pass `inMemory: true` instead of a
-    ///     temp URL so each test gets a fully isolated store with no
-    ///     filesystem cleanup.
-    ///   - inMemory: When `true`, the container lives only in RAM. Used
-    ///     by tests so they can run in parallel without sharing state.
+    ///   - url: Explicit on-disk location for the SQLite store. `nil`
+    ///     uses SwiftData's default app-support location. Tests
+    ///     should pass `inMemory: true` rather than a temp URL.
+    ///   - inMemory: When true, the container lives only in RAM —
+    ///     tests get full isolation with no filesystem cleanup.
     public static func make(url: URL? = nil, inMemory: Bool = false) throws -> ModelContainer {
         let schema = Schema([
             StoredEverSeenChecksum.self,
             StoredExclusion.self,
             StoredConfirmedDeletedChecksum.self,
+            StoredLocalHashEntry.self,
+            StoredDeferredHash.self,
+            StoredPersistentChangeToken.self,
         ])
         let configuration: ModelConfiguration
         if inMemory {
@@ -102,21 +169,18 @@ public enum CairnSwiftDataContainer {
 
 /// SwiftData-backed `EverSeenStore`.
 ///
-/// **Why a plain `actor` instead of `@ModelActor`?** `@ModelActor` synthesizes
-/// an init that takes a `ModelContainer` and a custom `Executor`, and gives
-/// you a `modelContext` property. That sounds nice, but it bakes in a
-/// specific isolation model that is more restrictive than what we need
-/// (e.g. you can't easily share fetch helpers across actors, and the
-/// generated init makes it awkward to expose other parameters). A plain
-/// actor with an internally-owned `ModelContext` is just as Sendable-safe —
-/// the `ModelContext` never escapes the actor — and gives us full control
-/// over the init shape.
+/// **Why a plain `actor` instead of `@ModelActor`.** `@ModelActor`
+/// synthesizes an init taking a `ModelContainer` + custom `Executor`
+/// and exposes a `modelContext` property. Convenient, but it bakes
+/// in a more restrictive isolation model than we need — sharing
+/// fetch helpers across actors gets awkward and the generated init
+/// doesn't leave room for other parameters. A plain actor with an
+/// internally-owned `ModelContext` is just as `Sendable`-safe (the
+/// context never escapes the actor) with full control over the init.
 public actor SwiftDataEverSeenStore: EverSeenStore {
-    private let container: ModelContainer
     private let context: ModelContext
 
     public init(container: ModelContainer) {
-        self.container = container
         // Each actor owns its own context so all SwiftData calls happen on
         // a single isolation domain (this actor's). Sharing a context
         // across isolation boundaries is the SwiftData footgun this design
@@ -146,7 +210,7 @@ public actor SwiftDataEverSeenStore: EverSeenStore {
         for checksum in additions where !existing.contains(checksum.base64) {
             context.insert(StoredEverSeenChecksum(base64: checksum.base64))
         }
-        // SwiftData does not auto-persist; explicit save is required.
+        // SwiftData doesn't auto-persist — explicit save required.
         try context.save()
     }
 
@@ -160,19 +224,30 @@ public actor SwiftDataEverSeenStore: EverSeenStore {
         }
         return out
     }
+
+    /// Wipe every ever-seen row. Called by Settings → Reset index.
+    /// Not on the `EverSeenStore` protocol — wiping the index is an
+    /// iOS-specific affordance; no Kotlin port or CLI invocation
+    /// needs it.
+    public func clear() async throws {
+        var changed = false
+        for row in try context.fetch(FetchDescriptor<StoredEverSeenChecksum>()) {
+            context.delete(row)
+            changed = true
+        }
+        if changed { try context.save() }
+    }
 }
 
 // MARK: - SwiftDataExclusionStore
 
-/// SwiftData-backed `ExclusionStore`. Same actor/context pattern as
-/// `SwiftDataEverSeenStore`. See that type's doc comment for the rationale
-/// on plain-actor-vs-`@ModelActor`.
+/// SwiftData-backed `ExclusionStore`. Same actor-with-private-context
+/// pattern as `SwiftDataEverSeenStore`; see that type for the
+/// plain-actor-vs-`@ModelActor` rationale.
 public actor SwiftDataExclusionStore: ExclusionStore {
-    private let container: ModelContainer
     private let context: ModelContext
 
     public init(container: ModelContainer) {
-        self.container = container
         self.context = ModelContext(container)
     }
 
@@ -192,8 +267,8 @@ public actor SwiftDataExclusionStore: ExclusionStore {
     }
 
     public func isExcluded(_ checksum: Checksum) async throws -> Bool {
-        // Targeted predicate fetch on the unique attribute — cheaper than
-        // pulling every row just to test membership.
+        // Predicate fetch on the unique attribute — cheaper than
+        // materializing every row just to test membership.
         let base64 = checksum.base64
         var descriptor = FetchDescriptor<StoredExclusion>(
             predicate: #Predicate<StoredExclusion> { $0.checksumBase64 == base64 }
@@ -212,9 +287,9 @@ public actor SwiftDataExclusionStore: ExclusionStore {
             )
             descriptor.fetchLimit = 1
             if let existing = try context.fetch(descriptor).first {
-                // Last-writer-wins: overwrite the metadata fields in place.
-                // Mutating a fetched `@Model` instance is the SwiftData
-                // idiom for updates; no separate `update` call is needed.
+                // Last-writer-wins. Mutating a fetched `@Model`
+                // instance in place is the SwiftData idiom for
+                // updates — no separate `update` call.
                 existing.addedAt = metadata.addedAt
                 existing.fromRunId = metadata.fromRunId
                 existing.reason = metadata.reason
@@ -254,37 +329,56 @@ public actor SwiftDataExclusionStore: ExclusionStore {
 
 // MARK: - SwiftDataConfirmedDeletedStore
 
-/// SwiftData-backed `ConfirmedDeletedStore`. Mirrors `SwiftDataEverSeenStore`
-/// in shape — append-only set of base64 checksums, dedup at the schema level
-/// via a unique attribute. See `SwiftDataEverSeenStore` for the rationale on
-/// plain-actor-vs-`@ModelActor`.
+/// SwiftData-backed `ConfirmedDeletedStore`. One row per confirmed
+/// checksum + `confirmedAt` timestamp; schema-level dedup on
+/// `base64`. `union(_:at:)` is first-write-wins on `confirmedAt` so
+/// the quarantine clock stays stable across re-observations. See
+/// `SwiftDataEverSeenStore` for the plain-actor-vs-`@ModelActor`
+/// rationale.
 public actor SwiftDataConfirmedDeletedStore: ConfirmedDeletedStore {
-    private let container: ModelContainer
     private let context: ModelContext
 
     public init(container: ModelContainer) {
-        self.container = container
         self.context = ModelContext(container)
     }
 
-    public func snapshot() async throws -> Set<Checksum> {
+    public func snapshot() async throws -> [Checksum: Date] {
         let descriptor = FetchDescriptor<StoredConfirmedDeletedChecksum>()
         let rows = try context.fetch(descriptor)
-        var out: Set<Checksum> = []
+        var out: [Checksum: Date] = [:]
         out.reserveCapacity(rows.count)
         for row in rows {
-            out.insert(Checksum(base64: row.base64))
+            out[Checksum(base64: row.base64)] = row.confirmedAt
         }
         return out
     }
 
-    public func union(_ additions: Set<Checksum>) async throws {
+    public func union(_ additions: Set<Checksum>, at timestamp: Date) async throws {
         guard !additions.isEmpty else { return }
         let existing = try snapshotBase64Set()
+        var changed = false
         for checksum in additions where !existing.contains(checksum.base64) {
-            context.insert(StoredConfirmedDeletedChecksum(base64: checksum.base64))
+            context.insert(StoredConfirmedDeletedChecksum(base64: checksum.base64, confirmedAt: timestamp))
+            changed = true
         }
-        try context.save()
+        if changed { try context.save() }
+    }
+
+    public func remove(_ checksums: Set<Checksum>) async throws {
+        guard !checksums.isEmpty else { return }
+        var changed = false
+        for checksum in checksums {
+            let base64 = checksum.base64
+            var descriptor = FetchDescriptor<StoredConfirmedDeletedChecksum>(
+                predicate: #Predicate<StoredConfirmedDeletedChecksum> { $0.base64 == base64 }
+            )
+            descriptor.fetchLimit = 1
+            if let existing = try context.fetch(descriptor).first {
+                context.delete(existing)
+                changed = true
+            }
+        }
+        if changed { try context.save() }
     }
 
     private func snapshotBase64Set() throws -> Set<String> {
@@ -296,5 +390,253 @@ public actor SwiftDataConfirmedDeletedStore: ConfirmedDeletedStore {
             out.insert(row.base64)
         }
         return out
+    }
+
+    /// Wipe every confirmed-deleted row. Part of Settings → Reset
+    /// index; quarantine clocks reset alongside everything else.
+    public func clear() async throws {
+        var changed = false
+        for row in try context.fetch(FetchDescriptor<StoredConfirmedDeletedChecksum>()) {
+            context.delete(row)
+            changed = true
+        }
+        if changed { try context.save() }
+    }
+}
+
+// MARK: - SwiftDataLocalHashStore
+
+/// SwiftData-backed `LocalHashStore`. See `CairnCore/LocalHashStore.swift`
+/// for the caching contract. This impl stores rows keyed on the compound
+/// `(localId|base64)` string so SwiftData can enforce uniqueness at the
+/// schema level.
+public actor SwiftDataLocalHashStore: LocalHashStore {
+    private let context: ModelContext
+
+    public init(container: ModelContainer) {
+        self.context = ModelContext(container)
+    }
+
+    public func snapshot() async throws -> [String: Set<Checksum>] {
+        let rows = try context.fetch(FetchDescriptor<StoredLocalHashEntry>())
+        var out: [String: Set<Checksum>] = [:]
+        for row in rows {
+            out[row.localIdentifier, default: []].insert(Checksum(base64: row.base64))
+        }
+        return out
+    }
+
+    /// Count of distinct `localIdentifier`s. SwiftData has no
+    /// `SELECT DISTINCT ... COUNT(*)`, so we fetch the id column and
+    /// dedupe in memory — a `Set<String>` insert per row. For single-
+    /// checksum assets this is one row each; Live Photos (still +
+    /// motion video) fold their two rows into one id. Cheaper than
+    /// the protocol's default `snapshot().keys.count` because we
+    /// never materialize the full `[String: Set<Checksum>]`.
+    public func indexedCount() async throws -> Int {
+        let rows = try context.fetch(FetchDescriptor<StoredLocalHashEntry>())
+        var seen = Set<String>()
+        seen.reserveCapacity(rows.count)
+        for row in rows {
+            seen.insert(row.localIdentifier)
+        }
+        return seen.count
+    }
+
+    public func checksums(for localIdentifier: String) async throws -> Set<Checksum> {
+        let descriptor = FetchDescriptor<StoredLocalHashEntry>(
+            predicate: #Predicate<StoredLocalHashEntry> { $0.localIdentifier == localIdentifier }
+        )
+        let rows = try context.fetch(descriptor)
+        var out: Set<Checksum> = []
+        out.reserveCapacity(rows.count)
+        for row in rows {
+            out.insert(Checksum(base64: row.base64))
+        }
+        return out
+    }
+
+    public func set(_ checksums: Set<Checksum>, for localIdentifier: String, modificationDate: Date?) async throws {
+        // Delete the asset's existing rows first — an edit changes the
+        // pixel bytes and thus the checksums, so keeping stale rows
+        // would leave the store lying about what's currently hashed.
+        let staleDescriptor = FetchDescriptor<StoredLocalHashEntry>(
+            predicate: #Predicate<StoredLocalHashEntry> { $0.localIdentifier == localIdentifier }
+        )
+        for row in try context.fetch(staleDescriptor) {
+            context.delete(row)
+        }
+        for checksum in checksums {
+            context.insert(StoredLocalHashEntry(
+                localIdentifier: localIdentifier,
+                base64: checksum.base64,
+                modificationDate: modificationDate
+            ))
+        }
+        try context.save()
+    }
+
+    public func modificationDate(for localIdentifier: String) async throws -> Date? {
+        var descriptor = FetchDescriptor<StoredLocalHashEntry>(
+            predicate: #Predicate<StoredLocalHashEntry> { $0.localIdentifier == localIdentifier }
+        )
+        descriptor.fetchLimit = 1
+        return try context.fetch(descriptor).first?.modificationDate
+    }
+
+    public func removeAll(for localIdentifiers: Set<String>) async throws {
+        guard !localIdentifiers.isEmpty else { return }
+        var changed = false
+        for id in localIdentifiers {
+            let descriptor = FetchDescriptor<StoredLocalHashEntry>(
+                predicate: #Predicate<StoredLocalHashEntry> { $0.localIdentifier == id }
+            )
+            for row in try context.fetch(descriptor) {
+                context.delete(row)
+                changed = true
+            }
+        }
+        if changed { try context.save() }
+    }
+
+    public func clear() async throws {
+        var changed = false
+        for row in try context.fetch(FetchDescriptor<StoredLocalHashEntry>()) {
+            context.delete(row)
+            changed = true
+        }
+        if changed { try context.save() }
+    }
+}
+
+// MARK: - SwiftDataDeferredHashStore
+
+/// SwiftData-backed `DeferredHashStore`. Same actor/context pattern
+/// as the other stores. `upsert` preserves `firstDeferredAt` on
+/// existing rows so a repeatedly-deferred asset shows its true age
+/// in the UI rather than looking perpetually fresh.
+public actor SwiftDataDeferredHashStore: DeferredHashStore {
+    private let context: ModelContext
+
+    public init(container: ModelContainer) {
+        self.context = ModelContext(container)
+    }
+
+    public func snapshot() async throws -> [DeferredHashEntry] {
+        let rows = try context.fetch(FetchDescriptor<StoredDeferredHash>())
+        return rows.map(Self.toEntry)
+    }
+
+    public func count() async throws -> Int {
+        try context.fetchCount(FetchDescriptor<StoredDeferredHash>())
+    }
+
+    public func upsert(_ entries: [DeferredHashEntry]) async throws {
+        guard !entries.isEmpty else { return }
+        for entry in entries {
+            let id = entry.localIdentifier
+            var descriptor = FetchDescriptor<StoredDeferredHash>(
+                predicate: #Predicate<StoredDeferredHash> { $0.localIdentifier == id }
+            )
+            descriptor.fetchLimit = 1
+            if let existing = try context.fetch(descriptor).first {
+                // Preserve firstDeferredAt — age is reported across
+                // retries, so overwriting it would reset the clock
+                // every time we re-encounter the same asset.
+                existing.reasonRaw = entry.reason.rawValue
+                existing.sizeBytes = entry.sizeBytes
+            } else {
+                context.insert(StoredDeferredHash(
+                    localIdentifier: entry.localIdentifier,
+                    reasonRaw: entry.reason.rawValue,
+                    sizeBytes: entry.sizeBytes,
+                    firstDeferredAt: entry.firstDeferredAt
+                ))
+            }
+        }
+        try context.save()
+    }
+
+    public func remove(_ localIdentifiers: Set<String>) async throws {
+        guard !localIdentifiers.isEmpty else { return }
+        var changed = false
+        for id in localIdentifiers {
+            var descriptor = FetchDescriptor<StoredDeferredHash>(
+                predicate: #Predicate<StoredDeferredHash> { $0.localIdentifier == id }
+            )
+            descriptor.fetchLimit = 1
+            if let existing = try context.fetch(descriptor).first {
+                context.delete(existing)
+                changed = true
+            }
+        }
+        if changed { try context.save() }
+    }
+
+    public func clear() async throws {
+        var changed = false
+        for row in try context.fetch(FetchDescriptor<StoredDeferredHash>()) {
+            context.delete(row)
+            changed = true
+        }
+        if changed { try context.save() }
+    }
+
+    private static func toEntry(_ row: StoredDeferredHash) -> DeferredHashEntry {
+        // Unknown reason (written by a future version) falls back to
+        // `.tooLarge`, the common case. Keeps older clients forward-
+        // compatible with queue contents from newer versions.
+        let reason = DeferredHashEntry.DeferReason(rawValue: row.reasonRaw) ?? .tooLarge
+        return DeferredHashEntry(
+            localIdentifier: row.localIdentifier,
+            reason: reason,
+            sizeBytes: row.sizeBytes,
+            firstDeferredAt: row.firstDeferredAt
+        )
+    }
+}
+
+// MARK: - SwiftDataPersistentChangeTokenStore
+
+/// SwiftData-backed `PersistentChangeTokenStore`. The protocol and
+/// `StoredToken` value type live in `CairnCore` so a Kotlin port
+/// can provide its own impl against Android's equivalent. This impl
+/// stores the opaque bytes in a singleton SwiftData row.
+public actor SwiftDataPersistentChangeTokenStore: PersistentChangeTokenStore {
+    private let context: ModelContext
+
+    public init(container: ModelContainer) {
+        self.context = ModelContext(container)
+    }
+
+    public func load() async throws -> StoredToken? {
+        var descriptor = FetchDescriptor<StoredPersistentChangeToken>()
+        descriptor.fetchLimit = 1
+        guard let row = try context.fetch(descriptor).first else { return nil }
+        return StoredToken(data: row.tokenData, savedAt: row.savedAt)
+    }
+
+    public func save(_ token: StoredToken) async throws {
+        // Singleton upsert — only one token row should ever exist.
+        let descriptor = FetchDescriptor<StoredPersistentChangeToken>()
+        let existing = try context.fetch(descriptor)
+        if let row = existing.first {
+            row.tokenData = token.data
+            row.savedAt = token.savedAt
+            // Clean up any rogue extras from older bugs.
+            for extra in existing.dropFirst() {
+                context.delete(extra)
+            }
+        } else {
+            context.insert(StoredPersistentChangeToken(tokenData: token.data, savedAt: token.savedAt))
+        }
+        try context.save()
+    }
+
+    public func clear() async throws {
+        for row in try context.fetch(FetchDescriptor<StoredPersistentChangeToken>()) {
+            context.delete(row)
+        }
+        try context.save()
     }
 }

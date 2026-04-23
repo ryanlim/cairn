@@ -5,67 +5,77 @@ import CairnCore
 import Photos
 import CryptoKit
 
-/// PhotoKit-backed `PhotoEnumerator` that hashes every relevant
-/// `PHAssetResource` byte-stream in the user's Photos library and returns the
+/// PhotoKit-backed `PhotoEnumerator`. Hashes every relevant
+/// `PHAssetResource` in the user's Photos library and returns the
 /// union as a `Set<Checksum>`.
 ///
-/// Why this shape (vs. one checksum per `PHAsset`):
-/// Immich identifies assets by SHA1 of file content, and a Live Photo uploads
-/// to Immich as **two** assets — the still and the paired motion video — that
-/// the server does not cascade-trash through `livePhotoVideoId`. By hashing
-/// every resource a Live Photo carries (`.photo` + `.pairedVideo`) and
-/// emitting both checksums independently, the iOS reconciliation pipeline
-/// becomes uniform: a deleted `PHAsset` naturally yields two missing
-/// checksums on the next diff, and the orchestrator no longer needs the
-/// `livePhotoVideoId` special case (see plan §"Phase 2 (iOS): include-hidden
-/// view, uniform checksum diff").
+/// **Why one checksum per resource, not per `PHAsset`.** Immich
+/// identifies assets by SHA1 of file content. A Live Photo uploads as
+/// two Immich assets — the still and the paired motion video — and
+/// the server does **not** cascade-trash through `livePhotoVideoId`.
+/// Hashing every resource a Live Photo carries (`.photo` +
+/// `.pairedVideo`) and emitting both checksums independently keeps
+/// the reconciliation pipeline uniform: a deleted `PHAsset` yields
+/// two missing checksums on the next diff, and the orchestrator
+/// sidesteps the `livePhotoVideoId` special case (see plan
+/// §"Phase 2 (iOS): include-hidden view, uniform checksum diff").
 ///
-/// Resource-type policy (deliberate choice — see `Self.resourcesToHash`):
-/// for each `PHAsset` we pick the resource(s) whose **bytes** match what
-/// Immich would have stored on upload. For an unedited photo that's
-/// `.photo`; for an edited photo we prefer `.fullSizePhoto` (the rendered
-/// edited still) when present, falling back to `.photo`. Video assets use
-/// `.fullSizeVideo` if present, else `.video`. Live Photos always include
-/// the paired video resource (`.fullSizePairedVideo` preferred when present
-/// — the rendered edited motion variant — else `.pairedVideo`). Adjustment
-/// sidecars (`.adjustmentData`, `.adjustmentBasePhoto`,
-/// `.adjustmentBasePairedVideo`, `.adjustmentBaseVideo`) are skipped — they
-/// are not standalone uploaded assets.
+/// **Resource-type policy** (see `Self.resourcesToHash`). For each
+/// `PHAsset` we pick the resource(s) whose bytes match what Immich
+/// would have stored on upload:
+///   - Unedited photo: `.photo`.
+///   - Edited photo: `.fullSizePhoto` (the rendered edit) when
+///     present, else `.photo`.
+///   - Video: `.fullSizeVideo` when present, else `.video`.
+///   - Live Photo motion video: `.fullSizePairedVideo` (rendered
+///     edit) when present, else `.pairedVideo`.
+///   - Adjustment sidecars (`.adjustmentData`, `.adjustmentBasePhoto`,
+///     `.adjustmentBasePairedVideo`, `.adjustmentBaseVideo`) are
+///     skipped — they're not uploaded as standalone assets.
 ///
-/// Permission model: this type assumes the host app has already obtained
-/// `.authorized` (full library) access. It does not request permission;
-/// `currentChecksums()` throws `Error.notAuthorized` if access isn't granted.
+/// **Permissions.** Assumes the host app has already obtained
+/// `.authorized` full-library access. Does not drive the permission
+/// flow; `currentChecksums()` throws `Error.notAuthorized` if access
+/// isn't granted.
 ///
-/// Memory: PhotoKit streams resource bytes via a callback. We feed each
-/// chunk into a streaming `Insecure.SHA1` accumulator so a multi-GB ProRes
-/// video doesn't materialize in RAM. The hash itself is hardware-accelerated
-/// on Apple silicon (ARMv8 crypto extensions); I/O dominates.
+/// **Memory.** PhotoKit streams resource bytes through a callback;
+/// each chunk feeds a streaming `Insecure.SHA1` accumulator so a
+/// multi-GB ProRes video doesn't materialize in RAM. The hash itself
+/// is hardware-accelerated on Apple silicon (ARMv8 crypto
+/// extensions); I/O dominates.
 ///
-/// Concurrency: we serialize per-asset hashing today (resources hashed one
-/// at a time within an async function). PhotoKit's resource manager is
-/// thread-safe but disk I/O on a phone is the bottleneck and parallel reads
-/// can thrash. A future optimization could fan out across a small task
-/// group; correctness first.
+/// **Concurrency.** `currentChecksums()` serializes per-asset. The
+/// reconciler does its own `TaskGroup`-based fan-out; this type
+/// stays sequential for correctness on its direct CLI-style
+/// callers.
 public struct PhotoKitPhotoEnumerator: PhotoEnumerator {
 
-    /// Errors specific to the PhotoKit enumerator. Kept narrow so callers
-    /// can surface useful UI messages.
+    /// Errors specific to the PhotoKit enumerator. Narrow by design
+    /// so callers can surface useful UI messages.
     public enum Error: Swift.Error, Sendable, Equatable {
-        /// Photos library access isn't `.authorized`. The host app must
-        /// drive the permission flow before invoking this enumerator.
+        /// Photos access isn't `.authorized`. Host app drives the
+        /// permission flow before invoking this enumerator.
         case notAuthorized(PHAuthorizationStatus)
-        /// `PHAssetResourceManager` reported failure for a specific resource.
-        /// Surfaced with the underlying error's localized description so we
+        /// `PHAssetResourceManager` failed for a specific resource.
+        /// Carries the underlying localized description so callers
         /// don't have to mirror PhotoKit's error domain.
         case resourceReadFailed(assetLocalIdentifier: String, message: String)
-        /// An asset had no resource we knew how to hash (e.g. a stub asset
-        /// with only adjustment sidecars). Treated as fatal so the operator
-        /// notices; in practice this should not happen for normal libraries.
+        /// No resource we knew how to hash — adjustment-only stubs and
+        /// similar oddities. Treated as fatal here so a non-zero count
+        /// gets noticed; shouldn't happen in normal libraries.
         case noHashableResource(assetLocalIdentifier: String)
     }
 
     public init() {}
 
+    /// Enumerate every user-library asset and return the full set of
+    /// resource-level SHA1 checksums. Throws `Error.notAuthorized` if
+    /// Photos access has been revoked.
+    ///
+    /// Filters to `.typeUserLibrary` because that's the only source
+    /// the user can trigger deletions from — iCloud Shared and
+    /// iTunes-synced assets can't be trashed and shouldn't drive the
+    /// server-side delete.
     public func currentChecksums() async throws -> Set<Checksum> {
         let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
         guard status == .authorized else {
@@ -103,13 +113,10 @@ public struct PhotoKitPhotoEnumerator: PhotoEnumerator {
         var assets: [PHAsset] = []
         assets.reserveCapacity(result.count)
         result.enumerateObjects { asset, _, _ in
-            // Defensive: skip if PhotoKit ever surfaces a trashed asset
-            // through a future API change. `PHAsset` exposes no public
-            // `isTrashed` property today — Recently Deleted is queried via
-            // a dedicated smart album (`PHAssetCollectionSubtype.smartAlbumRecentlyDeleted`)
-            // and those assets do not appear in `fetchAssets(with:)` with
-            // default options. Documented here so a future maintainer
-            // doesn't reinvent the filter.
+            // No per-asset filter needed here. `PHAsset` has no public
+            // `isTrashed` property, and `fetchAssets(with:)` under
+            // default options doesn't surface trashed assets. Documented
+            // so a future maintainer knows the pass-through isn't a bug.
             assets.append(asset)
         }
 
@@ -127,126 +134,130 @@ public struct PhotoKitPhotoEnumerator: PhotoEnumerator {
         return checksums
     }
 
-    /// Wave 4 positive-deletion signal: enumerate iOS's Recently Deleted
-    /// album and return checksums for every asset (and paired motion video)
-    /// in it. Photos in this album are positively user-deleted and pending
-    /// the system's 30-day auto-purge. A scheduled scan calls this on each
-    /// run so that confirmed-deleted state captures every deletion before
-    /// the auto-purge window closes.
-    ///
-    /// **iOS-only.** `PHAssetCollectionSubtype.smartAlbumRecentlyDeleted`
-    /// is not available on macOS. On macOS this returns an empty set so
-    /// the rest of the pipeline degrades cleanly to "no positive
-    /// confirmation available" — strict-mode reconciliation will hold
-    /// every diff candidate for review, which is the safe outcome.
-    public func recentlyDeletedChecksums() async throws -> Set<Checksum> {
-        #if os(iOS)
-        let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
-        guard status == .authorized else {
-            throw Error.notAuthorized(status)
-        }
-
-        // Recently Deleted is exposed as a smart album. With Full Photos
-        // access the user's own deletions are visible here regardless of
-        // the typical fetchAssets visibility rules.
-        let collections = PHAssetCollection.fetchAssetCollections(
-            with: .smartAlbum,
-            subtype: .smartAlbumRecentlyDeleted,
-            options: nil
-        )
-        guard let trash = collections.firstObject else { return [] }
-
-        let result = PHAsset.fetchAssets(in: trash, options: nil)
-        var assets: [PHAsset] = []
-        assets.reserveCapacity(result.count)
-        result.enumerateObjects { asset, _, _ in assets.append(asset) }
-
-        var checksums = Set<Checksum>()
-        for asset in assets {
-            let resources = Self.resourcesToHash(for: asset)
-            // Don't throw on resource-less trashed assets — Recently Deleted
-            // can contain odd partial states. Just skip; the scheduled scan
-            // will see them again on the next pass if they re-acquire
-            // resources, and worst case the diff catches them via the
-            // negative signal anyway.
-            for resource in resources {
-                let checksum = try await Self.hash(resource: resource, assetLocalIdentifier: asset.localIdentifier)
-                checksums.insert(checksum)
-            }
-        }
-        return checksums
-        #else
-        return []
-        #endif
-    }
+    // The Wave 4 positive-deletion signal lives in
+    // `PhotoKitPersistentChangeReconciler`, which subscribes to
+    // `PHPhotoLibrary.fetchPersistentChanges(since:)` and tracks
+    // `deletedLocalIdentifiers` against a persisted
+    // `[localIdentifier: Checksum]` cache. This enumerator deliberately
+    // doesn't surface Recently Deleted — Apple never exposed it as a
+    // public `PHAssetCollectionSubtype`, so enumeration isn't an option.
+    // The reconciler is the only supported path.
 
     // MARK: - Internal hashing
 
-    /// Hash a single `PHAssetResource` by streaming its bytes through
-    /// `Insecure.SHA1`. Bridges PhotoKit's callback API into async/await.
+    /// Stream a `PHAssetResource`'s bytes through `Insecure.SHA1` and
+    /// return the resulting checksum. Bridges `PHAssetResourceManager`'s
+    /// callback API into async/await and honors cooperative
+    /// cancellation — a cancelled surrounding Task (timeout or user
+    /// action) invokes `cancelDataRequest` to unblock a stuck iCloud
+    /// fetch rather than leaking it.
+    ///
+    /// `isNetworkAccessAllowed = true` so iCloud-Optimized resources
+    /// download on demand. Completion errors that reduce to
+    /// `NSUserCancelledError` surface as `CancellationError` so the
+    /// Swift concurrency runtime routes them naturally.
     static func hash(resource: PHAssetResource, assetLocalIdentifier: String) async throws -> Checksum {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Checksum, Swift.Error>) in
-            let options = PHAssetResourceRequestOptions()
-            // Allow iCloud download — without this, resources stored only in
-            // iCloud (common on devices with optimized storage) fail the
-            // request. The host app should ideally pre-warm via a
-            // PHCachingImageManager, but we tolerate slow paths.
-            options.isNetworkAccessAllowed = true
-
-            // Hasher is mutated only inside the data-received callback,
-            // which PhotoKit serializes per request. Wrap in a class to
-            // give the closures a stable reference.
-            final class HasherBox: @unchecked Sendable {
-                var hasher = Insecure.SHA1()
-            }
-            let box = HasherBox()
-
-            PHAssetResourceManager.default().requestData(
-                for: resource,
-                options: options,
-                dataReceivedHandler: { chunk in
-                    box.hasher.update(data: chunk)
-                },
-                completionHandler: { error in
-                    if let error {
-                        continuation.resume(throwing: Error.resourceReadFailed(
-                            assetLocalIdentifier: assetLocalIdentifier,
-                            message: error.localizedDescription
-                        ))
-                        return
-                    }
-                    let digest = box.hasher.finalize()
-                    let checksum = Checksum(base64: Data(digest).base64EncodedString())
-                    continuation.resume(returning: checksum)
-                }
-            )
+        // Cancellation plumbing: the request ID returned synchronously
+        // from `requestData` is what PhotoKit wants back for cancellation.
+        // Stash it in a class box so `onCancel` can read it regardless
+        // of when the continuation fires vs when the Task was cancelled.
+        final class RequestBox: @unchecked Sendable {
+            var id: PHAssetResourceDataRequestID = PHInvalidAssetResourceDataRequestID
         }
+        let requestBox = RequestBox()
+
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Checksum, Swift.Error>) in
+                let options = PHAssetResourceRequestOptions()
+                // Allow iCloud download — without this, resources stored only in
+                // iCloud (common on devices with optimized storage) fail the
+                // request. The host app should ideally pre-warm via a
+                // PHCachingImageManager, but we tolerate slow paths.
+                options.isNetworkAccessAllowed = true
+
+                // Hasher is mutated only inside the data-received callback,
+                // which PhotoKit serializes per request. Wrap in a class to
+                // give the closures a stable reference.
+                final class HasherBox: @unchecked Sendable {
+                    var hasher = Insecure.SHA1()
+                }
+                let box = HasherBox()
+
+                let id = PHAssetResourceManager.default().requestData(
+                    for: resource,
+                    options: options,
+                    dataReceivedHandler: { chunk in
+                        box.hasher.update(data: chunk)
+                    },
+                    completionHandler: { error in
+                        if let error {
+                            // A cancelled request completes with
+                            // NSCocoaErrorDomain / NSUserCancelledError.
+                            // Surface it as CancellationError so the
+                            // Swift concurrency runtime routes it
+                            // naturally.
+                            let ns = error as NSError
+                            if ns.domain == NSCocoaErrorDomain && ns.code == NSUserCancelledError {
+                                continuation.resume(throwing: CancellationError())
+                            } else {
+                                continuation.resume(throwing: Error.resourceReadFailed(
+                                    assetLocalIdentifier: assetLocalIdentifier,
+                                    message: error.localizedDescription
+                                ))
+                            }
+                            return
+                        }
+                        let digest = box.hasher.finalize()
+                        let checksum = Checksum(base64: Data(digest).base64EncodedString())
+                        continuation.resume(returning: checksum)
+                    }
+                )
+                requestBox.id = id
+            }
+        } onCancel: {
+            let id = requestBox.id
+            guard id != PHInvalidAssetResourceDataRequestID else { return }
+            PHAssetResourceManager.default().cancelDataRequest(id)
+        }
+    }
+
+    /// Cheap file-size lookup — no bytes download to answer. Uses a
+    /// KVC key because `PHAssetResource.fileSize` only became public in
+    /// iOS 18 and the deployment target is iOS 17. The KVC path has
+    /// worked for many releases. Returns `nil` if the key disappears
+    /// in a future SDK.
+    static func resourceFileSize(_ resource: PHAssetResource) -> Int64? {
+        (resource.value(forKey: "fileSize") as? NSNumber)?.int64Value
+    }
+
+    /// Whether the resource's bytes are already on-device (not
+    /// iCloud-only). Same KVC-for-deployment-target reason as
+    /// `resourceFileSize(_:)`. `nil` means "unknown" — callers
+    /// should treat as remote to be safe.
+    static func resourceIsLocallyAvailable(_ resource: PHAssetResource) -> Bool? {
+        (resource.value(forKey: "locallyAvailable") as? NSNumber)?.boolValue
     }
 
     // MARK: - Resource selection (pure, testable)
 
-    /// Pick the ordered list of `PHAssetResource`s whose bytes we should
-    /// hash for a given asset. Pure function modulo the PhotoKit query —
-    /// the actual selection logic over the returned resource array lives
-    /// in `selectResourcesToHash(from:)` and is unit-testable without a
-    /// device.
+    /// Ordered list of resources to hash for a `PHAsset`. Thin wrapper
+    /// around `PHAssetResource.assetResources(for:)` plus the pure
+    /// selection logic in `selectResourcesToHash(from:)`.
     static func resourcesToHash(for asset: PHAsset) -> [PHAssetResource] {
         let all = PHAssetResource.assetResources(for: asset)
         return selectResourcesToHash(from: all)
     }
 
-    /// Pure selection logic over a resource list. Extracted so tests can
-    /// drive it with mock `PHAssetResource`-shaped fixtures (or, in
-    /// practice, with real PhotoKit resources from a simulator / device).
-    /// Algorithm:
-    ///   1. Pick the primary still: prefer `.fullSizePhoto` (rendered edit)
-    ///      when present, else `.photo`.
-    ///   2. Pick the primary video: prefer `.fullSizeVideo` over `.video`.
-    ///   3. Pick the paired motion-video for Live Photos: prefer
-    ///      `.fullSizePairedVideo` (rendered edit of the motion video)
-    ///      when present, else `.pairedVideo`.
-    /// Returns resources in a deterministic order (still, video, paired)
-    /// so the hashing loop is reproducible for debugging.
+    /// Selection logic factored out of PhotoKit so tests can drive it
+    /// with fixture data. Algorithm:
+    ///   1. Primary still: prefer `.fullSizePhoto` (rendered edit) over
+    ///      `.photo`.
+    ///   2. Primary video: prefer `.fullSizeVideo` over `.video`.
+    ///   3. Live Photo motion video: prefer `.fullSizePairedVideo`
+    ///      (rendered edit) over `.pairedVideo`.
+    ///
+    /// Returns resources in deterministic order (still, video,
+    /// paired) so hashing sequences are reproducible for debugging.
     static func selectResourcesToHash(from resources: [PHAssetResource]) -> [PHAssetResource] {
         var picked: [PHAssetResource] = []
         let byType = Dictionary(grouping: resources, by: { $0.type })

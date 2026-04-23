@@ -2,34 +2,39 @@ import Foundation
 import Security
 import CairnCore
 
-/// Mutable variant of `SecretStore`. The base protocol in `CairnCore` is
-/// deliberately read-only because the CLI populates secrets out-of-band
-/// (a `.env` file loaded at process start). The iOS app, by contrast,
-/// has to *write* secrets during onboarding and rotate them later, so
-/// we add an iOS-side protocol the concrete Keychain type conforms to.
+/// Mutable variant of `SecretStore`. The base protocol in `CairnCore`
+/// is read-only by design — the CLI populates secrets out-of-band via
+/// a `.env` file loaded at process start. The iOS app must *write*
+/// secrets during onboarding and rotate them later, so this
+/// iOS-side protocol extends the base with setters and a clear.
 ///
-/// Defining this as a protocol (rather than just methods on the concrete
-/// type) lets test code substitute a fake mutable store for any iOS
-/// surface — onboarding view-models, sign-out flows — that needs to
-/// write credentials.
+/// A protocol (rather than methods on the concrete type) so tests
+/// can substitute a fake mutable store behind any surface that
+/// writes credentials — onboarding view-models, sign-out flows.
 public protocol MutableSecretStore: SecretStore {
+    /// Persist `url` as the Immich server URL. Overwrites any
+    /// existing value. Thread-safe at the Keychain layer.
     func setServerURL(_ url: URL) throws
+    /// Persist `key` as the Immich API key. Overwrites any existing
+    /// value.
     func setAPIKey(_ key: String) throws
-    /// Remove every secret this store manages. Used by sign-out.
+    /// Remove every secret this store manages. Idempotent — safe to
+    /// call on sign-out even if one secret was already missing.
     func clear() throws
 }
 
-/// Errors specific to the Keychain-backed implementation. We surface the
-/// raw `OSStatus` rather than translating into a curated set of cases
-/// because Keychain failures in production tend to be one-off platform
-/// quirks (locked, no-entitlement, interaction-not-allowed) that callers
-/// will mostly just log and report. The numeric code plus
-/// `SecCopyErrorMessageString` is the most useful thing to surface.
+/// Keychain-specific errors. Surfaces the raw `OSStatus` rather than
+/// translating into curated cases — Keychain failures in production
+/// are mostly one-off platform quirks (device locked, entitlement
+/// missing, interaction not allowed) that callers log and report.
+/// The numeric code plus `SecCopyErrorMessageString` carries the most
+/// useful signal.
 public enum KeychainError: Error, CustomStringConvertible, Equatable {
+    /// The Keychain API returned a non-success `OSStatus`. The
+    /// `description` includes `SecCopyErrorMessageString`'s text.
     case osStatus(OSStatus)
-    /// The Keychain returned a value of an unexpected type (e.g. a non-Data
-    /// blob where we expected UTF-8 bytes). Indicates an item created by
-    /// some other tool under our service identifier.
+    /// An item exists under our service identifier but isn't UTF-8
+    /// bytes — something else wrote to this slot.
     case unexpectedItemFormat
 
     public var description: String {
@@ -44,32 +49,40 @@ public enum KeychainError: Error, CustomStringConvertible, Equatable {
     }
 }
 
-/// Keychain-backed `SecretStore` for the Immich server URL and API key.
+/// Keychain-backed `SecretStore` for the Immich server URL and API
+/// key.
 ///
-/// Why a `struct` with no mutable state: the Keychain is the source of
-/// truth, and `SecItem*` calls are themselves thread-safe. The wrapper
-/// only carries identifiers (`service`, account names) so it's trivially
-/// `Sendable` and safe to share across actors.
+/// **Struct with no mutable state.** The Keychain itself is the
+/// source of truth and `SecItem*` calls are thread-safe, so the
+/// wrapper only carries identifiers (`service`, account names). That
+/// makes it trivially `Sendable`.
 ///
-/// Why `kSecAttrAccessibleWhenUnlockedThisDeviceOnly`:
-/// - `*ThisDeviceOnly` opts the item out of iCloud Keychain sync. The
-///   Immich API key is per-device by intent (the user can revoke a
-///   single device without touching others) and we do not want it
-///   replicated to other devices in plaintext-equivalent form.
-/// - `WhenUnlocked` blocks reads while the device is locked; cairn's
-///   background sync runs only after the user unlocks anyway, so this
-///   adds defense-in-depth without breaking workflows.
+/// **Accessibility policy:** `kSecAttrAccessibleWhenUnlockedThisDeviceOnly`.
+/// - `*ThisDeviceOnly` opts out of iCloud Keychain sync. The API key
+///   is per-device by intent — the user can revoke a single device
+///   without touching the others, and we don't want the key replicated
+///   to other devices in plaintext-equivalent form.
+/// - `WhenUnlocked` blocks reads while the device is locked. cairn's
+///   background sync only runs post-unlock anyway, so this adds
+///   defense-in-depth without breaking workflows.
 ///
-/// Why upsert (update-then-add) instead of always add: many naive
-/// Keychain wrappers call `SecItemAdd` unconditionally and surface
-/// `errSecDuplicateItem` to callers when the item already exists — which
-/// is exactly what onboarding-then-rotation will trigger. We try
-/// `SecItemUpdate` first and fall back to `SecItemAdd` on
-/// `errSecItemNotFound`. Either order works; this one minimizes the
-/// number of calls in the common (already-set, just rotating) case.
+/// **Survival across reinstall:** paid Apple Developer accounts keep
+/// Keychain items through reinstalls; free-tier provisioning profiles
+/// regenerate on each install and wipe the Keychain. Onboarding
+/// handles the "credentials missing" case regardless.
+///
+/// **Upsert strategy:** `SecItemUpdate` first, fall back to
+/// `SecItemAdd` on `errSecItemNotFound`. Naive wrappers call
+/// `SecItemAdd` unconditionally and surface `errSecDuplicateItem` on
+/// rotation. Update-first minimizes calls in the common
+/// (already-set, just rotating) case.
 public struct KeychainSecretStore: MutableSecretStore, Sendable {
+    /// `kSecAttrService` value that groups this store's items.
+    /// Defaults to `"app.cairn.immich"`; override for tests.
     public let service: String
+    /// `kSecAttrAccount` for the server URL row.
     public let urlAccount: String
+    /// `kSecAttrAccount` for the API key row.
     public let keyAccount: String
 
     public init(service: String = "app.cairn.immich",
@@ -111,8 +124,8 @@ public struct KeychainSecretStore: MutableSecretStore, Sendable {
 
     // MARK: - Keychain primitives
 
-    /// Base query identifying *this store's* items. Every call narrows
-    /// it with the specific account.
+    /// Base query identifying this store's items. Every call narrows
+    /// it with a specific account.
     private func baseQuery(account: String) -> [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,
@@ -145,11 +158,11 @@ public struct KeychainSecretStore: MutableSecretStore, Sendable {
     private func writeString(_ value: String, account: String) throws {
         let data = Data(value.utf8)
 
-        // Try update first (the common case once onboarding has run).
+        // Update first — the common case once onboarding has run.
         let updateAttrs: [String: Any] = [
             kSecValueData as String: data,
-            // Re-assert accessibility on every write so an item created
-            // under a different policy gets corrected. Cheap and harmless
+            // Re-assert accessibility on every write so items created
+            // under a different policy get corrected. Cheap; harmless
             // when the policy already matches.
             kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
         ]
@@ -180,8 +193,9 @@ public struct KeychainSecretStore: MutableSecretStore, Sendable {
 
     private func delete(account: String) throws {
         let status = SecItemDelete(baseQuery(account: account) as CFDictionary)
-        // `errSecItemNotFound` is fine for a delete — clear() should be
-        // idempotent so sign-out works even if one secret was already gone.
+        // `errSecItemNotFound` is fine on delete — `clear()` must be
+        // idempotent so sign-out succeeds when one secret was
+        // already gone.
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw KeychainError.osStatus(status)
         }
