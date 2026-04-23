@@ -1,6 +1,19 @@
 {
   "images" : [
     {
+      "filename" : "cairn-icon-1024.png",
+      "idiom" : "universal",
+      "platform" : "ios",
+      "size" : "1024x1024"
+    },
+    {
+      "appearances" : [
+        {
+          "appearance" : "luminosity",
+          "value" : "dark"
+        }
+      ],
+      "filename" : "cairn-icon-1024-dark.png",
       "idiom" : "universal",
       "platform" : "ios",
       "size" : "1024x1024"

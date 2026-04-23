@@ -50,13 +50,107 @@ make test          # run all SPM tests (CairnCore + CairnIOSCore)
 make build         # produce a Release IPA via fastlane
 make beta          # build + upload to TestFlight
 make release       # build + upload to App Store
+make screenshots   # capture App Store screenshots (no Immich needed)
 ```
+
+## Screenshots
+
+`make screenshots` drives `CairnUITests/ScreenshotsUITests` through
+the app's key screens and drops the PNGs under
+`fastlane/screenshots/en-US/`. The app runs in a **fixture mode**
+(`-CAIRN_SCREENSHOT_MODE 1` launch arg) that short-circuits every real
+dependency — Keychain, PhotoKit, SwiftData, ImmichClient — and
+populates the model from `CairnFixtures`. Captures are deterministic;
+no Immich server, Photos permission, or live data is needed.
+
+Device list is hardcoded in `scripts/capture-screenshots.sh`; defaults
+to iPhone 17 Pro Max + iPhone 17. Override with `DEVICES="iPhone 17"`
+or a positional arg. Skipped devices print a warning.
+
+The `make screenshots` path goes through a shell script rather than
+`fastlane snapshot` because Apple's xcodebuild and simctl disagree on
+iOS simulator runtime version strings (simctl says "iOS 26.4",
+xcodebuild insists on "26.4.1" for the same runtime); fastlane's
+destination resolution reads simctl and hands xcodebuild a version it
+rejects. The script resolves simulators by UDID instead, then
+post-processes into the same `fastlane/screenshots/` layout that
+`deliver` / `upload_to_app_store` consume.
+
+## Running on a real device
+
+One-time setup:
+
+1. Connect your iPhone via USB (or pair over Wi-Fi in Finder).
+2. On the iPhone, tap **Trust** when prompted to trust this Mac.
+3. Run `make device-list` — the device should show as **available (paired)**. If it shows **unavailable**, unlock the phone and try again; if it still fails, unplug + replug.
+4. **Record your Apple Developer Team ID.** Find it at [developer.apple.com → Account → Membership](https://developer.apple.com/account) (a 10-character string like `ABC1234XYZ`). Put it somewhere the Makefile can find it:
+   ```sh
+   echo 'ABC1234XYZ' > iOS/.team          # per-repo, gitignored (recommended)
+   echo 'ABC1234XYZ' > ~/.cairn-team      # global, cross-repo
+   # or prefix each invocation: DEVELOPMENT_TEAM=ABC1234XYZ make device
+   ```
+   `project.yml` deliberately leaves the team blank so the YAML stays repo-portable; `make device` injects it at build time via `xcodebuild`'s `DEVELOPMENT_TEAM=` setting, so neither the YAML nor the regenerated `.xcodeproj` ever holds it.
+5. In Xcode once, open `Cairn.xcodeproj` → Cairn target → Signing & Capabilities → make sure **Automatic Signing** is on and your **Team** is selected. This registers your device UDID with your Apple Developer profile. (After `make generate` wipes the team back out of the .xcodeproj on next run, step 4's `.team` file keeps `make device` working.)
+6. First run only: after `make device` succeeds, the app installs but iOS won't launch an untrusted developer build. Go to **Settings → General → VPN & Device Management → (your developer cert) → Trust**. Subsequent `make device` runs don't need this.
+
+Each deploy after that:
+
+```sh
+make device                  # build + install + launch on the first paired device
+make device DEVICE=foo       # explicit device name or UDID (get both from `make device-list`)
+make device CAP=100          # cap first-sync hashing at 100 assets (testing on big libraries)
+make device CAP=100 DEVICE=foo   # combined
+make device-logs             # opens Console.app — filter by "cairn" in the sidebar
+```
+
+`make device` builds in Debug configuration for `generic/platform=iOS`, installs the `.app` via `xcrun devicectl`, and launches by bundle id. No IPA packaging, no TestFlight — it's the iOS equivalent of `flutter run` once the signing setup is done.
+
+**`CAP` for testing.** On a real phone with tens of thousands of photos, a full first-sync hash can take minutes. `CAP=N` sets the `CAIRN_ASSET_CAP` env var inside the app (via `devicectl`'s `DEVICECTL_CHILD_*` pass-through) and the reconciler truncates the full-enumeration fetch to the first `N` assets. Omit `CAP` (or pass `CAP=` / `CAP=0`) for no cap. Takes effect on any full-enumeration run — first sync, or after a token-expired fallback.
+
+**Credentials surviving reinstall.** iOS wipes Keychain items on every reinstall where the provisioning profile regenerates (i.e., every `make device`), so normally you'd re-enter your Immich URL + API key each time. Skip that by creating `iOS/.dev-secrets` (gitignored):
+
+```
+url=https://your-immich.example.com
+key=abc123xyz456
+```
+
+`make device` reads it, forwards the values via `DEVICECTL_CHILD_CAIRN_DEV_SEED_*` env vars, and `AppDependencies.bootstrap` writes them into an empty Keychain on launch. Onboarding is skipped — the app lands on Status and auto-syncs. Debug builds only; the seed block is `#if DEBUG`, so release builds ignore the env vars regardless.
+
+## Measuring hash performance on-device
+
+The reconciler emits structured logs for every full-enumeration pass — useful for timing real-device hashing against your actual camera roll.
+
+Two ways to see them:
+
+```sh
+make device-run          # terminal-attached launch; stdout streams here, Ctrl-C detaches
+make device-run CAP=250  # constrained run to iterate quickly
+```
+
+`make device-run` behaves exactly like `make device` (build → install → launch with dev-seed + cap) except it passes `--console` to `devicectl`. The app's stdout/stderr — including `[cairn.hash]` lines — stream to your terminal until the app exits or you Ctrl-C.
+
+Example output:
+
+```
+[cairn.hash] full-enum start: total=4218 resuming-cached=0 to-hash=4218
+[cairn.hash] full-enum done: total=4218 resumed=0 hashed=4218 elapsed=47821ms per-asset=11.3ms
+```
+
+Fields:
+- `total` — assets in scope (after `CAIRN_ASSET_CAP`).
+- `resuming-cached` — assets already in `LocalHashStore` (from a prior cancelled or partial run); skipped.
+- `to-hash` — assets this pass needs to actually hash.
+- `hashed` — assets whose hash succeeded this pass. Mismatch vs `to-hash` = assets that had no readable resources (skipped without error).
+- `elapsed` — wall-clock ms spent in `hashAssets`.
+- `per-asset` — average across the `to-hash` set. Useful for back-of-envelope: a 20k-photo library at `per-asset=15ms` → ~5 min total hash.
+
+For persisted structured logs (filterable via Console.app / sysdiagnose), the same events go to `os.Logger(subsystem: "app.cairn.ios", category: "hash")` at `.notice` level. Run `make device-logs` to open Console.app.
 
 ## Distribution
 
 ### App Store Connect API key
 
-cairn's Fastlane config uses an App Store Connect API key (the modern auth path — no 2FA prompts, works in CI). Set these env vars before running `make beta` / `make release`:
+`cairn`'s Fastlane config uses an App Store Connect API key (the modern auth path — no 2FA prompts, works in CI). Set these env vars before running `make beta` / `make release`:
 
 ```sh
 export APP_STORE_CONNECT_API_KEY_KEY_ID="ABC1234XYZ"

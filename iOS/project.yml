@@ -54,10 +54,22 @@ targets:
           cairn needs Full library access to detect photos you've deleted from
           your iPhone and reconcile them against your Immich server. Photos
           never leave your device or your Immich server.
-        # Background refresh task identifier — must match the value passed to
-        # BGTaskScheduler.shared.register() at app launch.
+        # Background refresh task identifiers — must match the values passed
+        # to BGTaskScheduler.shared.register() at app launch.
+        #   - app.cairn.refresh → short BGAppRefreshTask (~30s) for the
+        #     incremental persistent-change reconciler pass.
+        #   - app.cairn.hash → long BGProcessingTask (several minutes) for
+        #     the initial full-library hash, only until the first scan lands.
         BGTaskSchedulerPermittedIdentifiers:
           - app.cairn.refresh
+          - app.cairn.hash
+        # Enables the "Background App Refresh" toggle on the app's per-app
+        # Settings page. `fetch` pairs with BGAppRefreshTask; `processing`
+        # pairs with BGProcessingTask. Without these, iOS hides the toggle
+        # entirely and neither task type is allowed to run in background.
+        UIBackgroundModes:
+          - fetch
+          - processing
         # Skips the App Store export-compliance question on every upload.
         # cairn uses only standard system crypto (CryptoKit SHA1) so this is true.
         ITSAppUsesNonExemptEncryption: false
@@ -80,3 +92,52 @@ targets:
         CODE_SIGN_IDENTITY: "Apple Development"
         DEVELOPMENT_TEAM: ""
         PRODUCT_BUNDLE_IDENTIFIER: app.cairn.ios
+
+  # UI tests — only used for Fastlane snapshot capture (App Store +
+  # README screenshots). The app is driven through representative
+  # states via `-CAIRN_SCREENSHOT_MODE 1` launch arg, which swaps the
+  # real dependency wiring for preview fixtures inside
+  # `AppDependencies.bootstrap`.
+  CairnUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: CairnUITests
+    dependencies:
+      - target: Cairn
+    settings:
+      base:
+        TEST_TARGET_NAME: Cairn
+        PRODUCT_BUNDLE_IDENTIFIER: app.cairn.ios.uitests
+        # Auto-generated Info.plist — UITest bundles don't need a
+        # custom one, and hand-rolling an Info.plist in the repo
+        # just creates a second source of truth to keep in sync
+        # with XcodeGen.
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: ""
+
+# Explicit shared scheme so fastlane's test runner has a stable
+# Testable list. XcodeGen's default auto-schemes live under
+# xcuserdata/ and aren't committed; fastlane can find them in this
+# checkout but they don't survive a fresh clone on CI. A shared
+# scheme also makes it explicit which target owns the Test action.
+schemes:
+  Cairn:
+    build:
+      targets:
+        Cairn: all
+        CairnUITests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - CairnUITests
+      gatherCoverageData: false
+    archive:
+      config: Release
+    profile:
+      config: Release
+    analyze:
+      config: Debug
