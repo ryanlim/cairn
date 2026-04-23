@@ -39,9 +39,10 @@ struct UserDefaultsSettingsStoreTests {
         let custom = CairnSettings(
             maxDeletePercent: 3.5,
             minDeleteFloor: 42,
-            dryRunByDefault: true,
             notifyOnAbort: false,
-            verboseLogging: true
+            verboseLogging: true,
+            deletionStrictness: .strict,
+            quarantineDays: 21
         )
         try await store.save(custom)
 
@@ -49,9 +50,10 @@ struct UserDefaultsSettingsStoreTests {
         #expect(loaded == custom)
         #expect(loaded.maxDeletePercent == 3.5)
         #expect(loaded.minDeleteFloor == 42)
-        #expect(loaded.dryRunByDefault == true)
         #expect(loaded.notifyOnAbort == false)
         #expect(loaded.verboseLogging == true)
+        #expect(loaded.quarantineDays == 21)
+        #expect(loaded.deletionStrictness == .strict)
     }
 
     @Test("save replaces previous contents — no merging with prior state")
@@ -64,9 +66,10 @@ struct UserDefaultsSettingsStoreTests {
         let first = CairnSettings(
             maxDeletePercent: 9.0,
             minDeleteFloor: 99,
-            dryRunByDefault: true,
             notifyOnAbort: false,
-            verboseLogging: true
+            verboseLogging: true,
+            deletionStrictness: .strict,
+            quarantineDays: 60
         )
         try await store.save(first)
 
@@ -76,9 +79,10 @@ struct UserDefaultsSettingsStoreTests {
         let second = CairnSettings(
             maxDeletePercent: 0.5,
             minDeleteFloor: 1,
-            dryRunByDefault: false,
             notifyOnAbort: true,
-            verboseLogging: false
+            verboseLogging: false,
+            deletionStrictness: .trusting,
+            quarantineDays: 0
         )
         try await store.save(second)
 
@@ -115,9 +119,10 @@ struct UserDefaultsSettingsStoreTests {
         let custom = CairnSettings(
             maxDeletePercent: 2.0,
             minDeleteFloor: 7,
-            dryRunByDefault: true,
             notifyOnAbort: true,
-            verboseLogging: false
+            verboseLogging: false,
+            deletionStrictness: .strict,
+            quarantineDays: 3
         )
         try await store.save(custom)
 

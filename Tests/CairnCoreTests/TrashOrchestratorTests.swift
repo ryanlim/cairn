@@ -120,4 +120,55 @@ struct TrashOrchestratorTests {
         #expect(entries.contains { if case .trashFailed = $0.event { return true } else { return false } })
         #expect(!entries.contains { if case .trashSucceeded = $0.event { return true } else { return false } })
     }
+
+    /// Pins the "breadcrumb stays on server after a partial-failure run"
+    /// semantic. Tag is upserted + applied *before* the DELETE call,
+    /// so if the DELETE throws, the server has:
+    ///   - the `cairn/v1/run/<id>` tag committed
+    ///   - the tag applied to the candidate asset IDs
+    ///   - the assets themselves still live (not trashed)
+    ///
+    /// That's the intended shape — the tag is a breadcrumb, not a state
+    /// flag. `cairn history` will find the tag on live, non-trashed
+    /// assets; that tells the user "this run attempted to trash these
+    /// and the server rejected it," which is the whole point of the
+    /// breadcrumb. The journal's `trashFailed` event is the local-side
+    /// mirror of the same fact.
+    @Test("trash failure after tag: cairn/v1 tag and tagApplied remain, trashFailed is the terminal")
+    func trashFailureLeavesBreadcrumbOnServer() async throws {
+        let writer = FakeWriter()
+        await writer.setFailTrash(FakeError(message: "server-500"))
+        let (journal, path) = tempJournal()
+        defer { try? FileManager.default.removeItem(at: path) }
+
+        let candidates = [asset("a1", "ck1"), asset("a2", "ck2")]
+        let orch = TrashOrchestrator(writer: writer, journal: journal)
+        await #expect(throws: FakeError.self) {
+            _ = try await orch.run(
+                runId: "PARTIAL",
+                candidates: candidates,
+                assetsInPurview: 100,
+                dryRun: false
+            )
+        }
+
+        // Tag was created AND applied on the server before trash threw.
+        #expect(await writer.upsertedTagValues == ["cairn/v1/run/PARTIAL"])
+        let tagged = await writer.taggedBatches
+        #expect(tagged.count == 1)
+        #expect(tagged[0].assetIds.sorted() == ["a1", "a2"])
+        // DELETE never committed.
+        #expect(await writer.trashedBatches.isEmpty)
+
+        // Journal: tagApplied + trashFailed, NO trashSucceeded.
+        // `trashFailed` is the terminal — the orchestrator's
+        // `emittedTerminal` flag prevents an extra `runAborted` or
+        // `runCompleted` from landing on top of it.
+        let entries = try await journal.readAll()
+        let events = entries.map { String(describing: $0.event) }
+        #expect(events.contains { $0.hasPrefix("tagApplied") })
+        #expect(events.contains { $0.hasPrefix("trashFailed") })
+        #expect(!events.contains { $0.hasPrefix("trashSucceeded") })
+        #expect(!events.contains { $0.hasPrefix("runCompleted") })
+    }
 }

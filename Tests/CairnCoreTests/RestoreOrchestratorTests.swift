@@ -177,6 +177,51 @@ struct RestoreOrchestratorTests {
         #expect(unrelated == ["o1"])
     }
 
+    /// Pins the load-bearing invariant that makes the explicit-IDs
+    /// guard safe against post-expansion leakage:
+    ///
+    ///     expand(explicit, planningTargets) ⊆ trashedSet
+    ///
+    /// The guard at the top of `restore(_:assetIds:)` checks
+    /// `explicit ⊆ trashedSet` before expansion. Expansion then adds
+    /// Live-Photo pair IDs pulled from `planningTargets` — but those
+    /// pair IDs were themselves included in the original trash batch
+    /// (see `TrashOrchestrator.run`, which trashes `assetId` + its
+    /// `livePhotoVideoId` together). So expansion can never introduce
+    /// an ID that wasn't in `trashedSet`, and a standalone asset that
+    /// wasn't selected must not get pulled in either.
+    @Test("explicit-IDs guard + Live Photo expansion: expanded set stays within trashedSet")
+    func expansionStaysWithinTrashedSet() async throws {
+        let (journal, path) = tempJournal()
+        defer { try? FileManager.default.removeItem(at: path) }
+
+        // Journal shape: one Live Photo pair + one standalone asset,
+        // all of which were trashed together in the original run.
+        try await journal.append(.init(runId: "R", event: .runStarted(dryRun: false, candidateCount: 2, assetsInPurview: 100)))
+        try await journal.append(.init(runId: "R", event: .planningTrash(targets: [
+            JournalEntry.TrashTarget(assetId: "still-1", checksum: "ck-still", livePhotoVideoId: "video-1"),
+            JournalEntry.TrashTarget(assetId: "solo-2", checksum: "ck-solo", livePhotoVideoId: nil),
+        ])))
+        try await journal.append(.init(runId: "R", event: .trashSucceeded(assetIds: ["still-1", "video-1", "solo-2"])))
+        try await journal.append(.init(runId: "R", event: .runCompleted(deletedCount: 3)))
+
+        // Restore just the still. Expansion pulls in video-1 (paired);
+        // solo-2 is unrelated and must NOT get swept up.
+        let writer = FakeWriter()
+        let orch = RestoreOrchestrator(writer: writer, journal: journal)
+        let summary = try await orch.restore(fromRunId: "R", assetIds: ["still-1"])
+
+        let expanded = Set(summary.restoredAssetIds)
+        let trashedSet: Set<String> = ["still-1", "video-1", "solo-2"]
+        #expect(expanded.isSubset(of: trashedSet), "expansion MUST stay within trashedSet")
+        #expect(expanded == ["still-1", "video-1"])
+        #expect(!expanded.contains("solo-2"), "standalone asset must not be pulled in by expansion")
+
+        // The server call reflects the same set — sorted for
+        // determinism inside the orchestrator.
+        #expect(await writer.restoredBatches == [["still-1", "video-1"]])
+    }
+
     @Test("multiple runs in the same journal: restore only touches the requested run's assets")
     func multipleRunsIsolation() async throws {
         let (journal, path) = tempJournal()

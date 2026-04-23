@@ -10,10 +10,18 @@ struct CairnSettingsTests {
         let d = CairnSettings.defaults
         #expect(d.maxDeletePercent == 1.0)
         #expect(d.minDeleteFloor == 5)
-        #expect(d.dryRunByDefault == false)
         #expect(d.notifyOnAbort == true)
         #expect(d.verboseLogging == false)
-        #expect(d.deletionStrictness == .strict)
+        #expect(d.deletionStrictness == .trusting)
+        #expect(d.quarantineDays == 14)
+        #expect(d.iCloudDownloadLimitMB == 100)
+        #expect(d.iCloudMaxEverBytesMB == nil)
+    }
+
+    @Test("quarantineDaysRange covers the documented 0...90 span")
+    func quarantineDaysRangeIsDocumented() {
+        #expect(CairnSettings.quarantineDaysRange == 0...90)
+        #expect(CairnSettings.quarantineDaysRange.contains(CairnSettings.defaults.quarantineDays))
     }
 
     @Test("DeletionStrictness encodes as its raw string for stable on-disk format")
@@ -22,6 +30,81 @@ struct CairnSettingsTests {
         let trusting = try JSONEncoder().encode(DeletionStrictness.trusting)
         #expect(String(data: strict, encoding: .utf8) == #""strict""#)
         #expect(String(data: trusting, encoding: .utf8) == #""trusting""#)
+    }
+
+    @Test("round-trip encode-decode preserves every field, including new ones")
+    func roundTripPreservesEveryField() throws {
+        let original = CairnSettings(
+            maxDeletePercent: 2.5,
+            minDeleteFloor: 11,
+            notifyOnAbort: false,
+            verboseLogging: true,
+            deletionStrictness: .strict,
+            quarantineDays: 30,
+            iCloudDownloadLimitMB: 250,
+            iCloudMaxEverBytesMB: 2048
+        )
+        let data = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(CairnSettings.self, from: data)
+        #expect(decoded == original)
+        #expect(decoded.quarantineDays == 30)
+        #expect(decoded.deletionStrictness == .strict)
+        #expect(decoded.iCloudDownloadLimitMB == 250)
+        #expect(decoded.iCloudMaxEverBytesMB == 2048)
+    }
+
+    @Test("legacy JSON without iCloudMaxEverBytesMB decodes as nil (hard ceiling off)")
+    func legacyJSONMissingHardCeilingUsesDefault() throws {
+        // A settings blob written before the hard-ceiling field existed.
+        // Must decode without throwing and keep the feature disabled.
+        let legacyJSON = """
+        {
+            "maxDeletePercent": 1.0,
+            "minDeleteFloor": 5,
+            "notifyOnAbort": true,
+            "verboseLogging": false,
+            "deletionStrictness": "trusting",
+            "quarantineDays": 14,
+            "iCloudDownloadLimitMB": 50
+        }
+        """
+        let decoded = try JSONDecoder().decode(CairnSettings.self, from: Data(legacyJSON.utf8))
+        #expect(decoded.iCloudMaxEverBytesMB == nil)
+        #expect(decoded.iCloudDownloadLimitMB == 50)
+    }
+
+    @Test("legacy JSON without quarantineDays decodes with the default value")
+    func legacyJSONMissingQuarantineDaysUsesDefault() throws {
+        // A settings blob written before the quarantine field existed. The
+        // custom init(from:) must tolerate the missing key.
+        let legacyJSON = """
+        {
+            "maxDeletePercent": 1.0,
+            "minDeleteFloor": 5,
+            "notifyOnAbort": true,
+            "verboseLogging": false,
+            "deletionStrictness": "strict"
+        }
+        """
+        let decoded = try JSONDecoder().decode(CairnSettings.self, from: Data(legacyJSON.utf8))
+        #expect(decoded.quarantineDays == CairnSettings.defaults.quarantineDays)
+        #expect(decoded.deletionStrictness == .strict)
+        #expect(decoded.maxDeletePercent == 1.0)
+    }
+
+    @Test("legacy JSON without deletionStrictness falls back to the current default")
+    func legacyJSONMissingStrictnessUsesDefault() throws {
+        let legacyJSON = """
+        {
+            "maxDeletePercent": 1.0,
+            "minDeleteFloor": 5,
+            "notifyOnAbort": true,
+            "verboseLogging": false
+        }
+        """
+        let decoded = try JSONDecoder().decode(CairnSettings.self, from: Data(legacyJSON.utf8))
+        #expect(decoded.deletionStrictness == CairnSettings.defaults.deletionStrictness)
+        #expect(decoded.quarantineDays == CairnSettings.defaults.quarantineDays)
     }
 }
 
@@ -48,9 +131,10 @@ struct JSONFileSettingsStoreTests {
         let custom = CairnSettings(
             maxDeletePercent: 3.5,
             minDeleteFloor: 42,
-            dryRunByDefault: true,
             notifyOnAbort: false,
-            verboseLogging: true
+            verboseLogging: true,
+            deletionStrictness: .strict,
+            quarantineDays: 21
         )
         try await store.save(custom)
 
@@ -58,9 +142,10 @@ struct JSONFileSettingsStoreTests {
         #expect(loaded == custom)
         #expect(loaded.maxDeletePercent == 3.5)
         #expect(loaded.minDeleteFloor == 42)
-        #expect(loaded.dryRunByDefault == true)
         #expect(loaded.notifyOnAbort == false)
         #expect(loaded.verboseLogging == true)
+        #expect(loaded.deletionStrictness == .strict)
+        #expect(loaded.quarantineDays == 21)
     }
 
     @Test("saved settings survive across store instances at the same path")
@@ -72,9 +157,10 @@ struct JSONFileSettingsStoreTests {
         let custom = CairnSettings(
             maxDeletePercent: 2.25,
             minDeleteFloor: 10,
-            dryRunByDefault: true,
             notifyOnAbort: false,
-            verboseLogging: true
+            verboseLogging: true,
+            deletionStrictness: .strict,
+            quarantineDays: 7
         )
         try await first.save(custom)
 
@@ -92,9 +178,10 @@ struct JSONFileSettingsStoreTests {
         let first = CairnSettings(
             maxDeletePercent: 9.0,
             minDeleteFloor: 99,
-            dryRunByDefault: true,
             notifyOnAbort: false,
-            verboseLogging: true
+            verboseLogging: true,
+            deletionStrictness: .strict,
+            quarantineDays: 60
         )
         try await store.save(first)
 
@@ -104,9 +191,10 @@ struct JSONFileSettingsStoreTests {
         let second = CairnSettings(
             maxDeletePercent: 0.5,
             minDeleteFloor: 1,
-            dryRunByDefault: false,
             notifyOnAbort: true,
-            verboseLogging: false
+            verboseLogging: false,
+            deletionStrictness: .trusting,
+            quarantineDays: 0
         )
         try await store.save(second)
 
