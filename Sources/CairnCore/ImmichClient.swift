@@ -1,5 +1,8 @@
 import Foundation
 
+/// Errors surfaced by `ImmichClient` and `ImmichThumbnailLoader`. The
+/// `httpStatus` body is truncated by `description` to keep logs legible;
+/// callers that need the full body should pattern-match directly.
 public enum ImmichClientError: Error, CustomStringConvertible {
     case httpStatus(Int, body: String)
     case unexpectedResponse(String)
@@ -17,6 +20,15 @@ public enum ImmichClientError: Error, CustomStringConvertible {
     }
 }
 
+/// Thin HTTP client over the subset of Immich's REST API that cairn's
+/// reconciliation pipeline touches. Value type; safe to pass between
+/// actors. `URLSession` handles connection pooling so constructing
+/// fresh instances on credential rotation is cheap.
+///
+/// Authentication is `x-api-key` on every request. The API key's scope
+/// determines which endpoints work: `asset.read`, `asset.delete`,
+/// `tag.create`, and `tag.asset` cover the trash/restore path;
+/// `tag.read` is additionally required for history reconstruction.
 public struct ImmichClient: Sendable {
     public let baseURL: URL
     public let apiKey: String
@@ -38,10 +50,63 @@ public struct ImmichClient: Sendable {
         return url.appending(path: "api")
     }
 
+    /// Parse + sanitize a user-entered server URL string. Handles the
+    /// common input mistakes:
+    ///
+    ///   - Missing scheme (`"immich.example.com"`) → assumes `https://`.
+    ///     Typed bare hostnames should "just work" since iPhone users
+    ///     rarely type schemes.
+    ///   - Whitespace around the URL → trimmed.
+    ///   - Trailing slashes → preserved; `normalize` handles either form.
+    ///   - `http://` — accepted as-is (legit for home-LAN installs like
+    ///     `http://immich.local:2283`); we never silently upgrade to
+    ///     `https`, since that'd break those setups.
+    ///   - Anything with no parseable host, or with a scheme other than
+    ///     http/https → `nil`. Caller surfaces "Invalid URL" to the user.
+    ///
+    /// Returns a `URL` suitable for `ImmichClient.init(baseURL:)` — no
+    /// `/api` appending yet; the init's `normalize` does that.
+    public static func parseServerURL(_ raw: String) -> URL? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        let candidate: String
+        if trimmed.hasPrefix("http://") || trimmed.hasPrefix("https://") {
+            candidate = trimmed
+        } else if trimmed.contains("://") {
+            // Some other scheme typed explicitly (ftp://, ws://, file://).
+            // Reject outright — these aren't valid Immich endpoints and a
+            // silent upgrade would mask a user typo.
+            return nil
+        } else {
+            candidate = "https://" + trimmed
+        }
+
+        guard let url = URL(string: candidate),
+              let host = url.host,
+              !host.isEmpty,
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https"
+        else {
+            return nil
+        }
+        return url
+    }
+
     // MARK: - Ping / verify
 
-    public struct PingResponse: Decodable, Sendable { public let res: String }
+    /// Decoded body of `GET /server/ping` — a tiny `{"res": "pong"}`.
+    /// Internal — `ping()` returns the unwrapped `res` string, no caller
+    /// outside this file needs the DTO.
+    private struct PingResponse: Decodable { let res: String }
 
+    /// Confirms the server is reachable and the API key authenticates.
+    /// Returns the `res` field ("pong" on a healthy server).
+    ///
+    /// Note: we deliberately do **not** send `Accept: application/json`
+    /// here. Immich's `/server/ping` responds with `text/html` and
+    /// returns `406 Not Acceptable` when JSON is explicitly requested.
+    /// `makeRequest` accordingly sets no Accept header.
     public func ping() async throws -> String {
         let req = try makeRequest(method: "GET", path: "server/ping")
         let (data, resp) = try await session.data(for: req)
@@ -51,10 +116,19 @@ public struct ImmichClient: Sendable {
 
     // MARK: - List assets (paginated)
 
-    /// Streams every asset visible to the API key's user. By default the server
-    /// excludes hidden assets (e.g., motion videos of Live Photos); pass an explicit
-    /// `visibility` to filter to a single class, or call repeatedly across cases of
-    /// `AssetVisibility` and merge to get a complete view.
+    /// Streams every asset visible to the API key's user via
+    /// `POST /api/search/metadata`, paginated by `pageSize`. Results are
+    /// accumulated into one array; large libraries should expect
+    /// tens-of-megabytes memory footprint during the call.
+    ///
+    /// `visibility` defaults to nil (server default: excludes `hidden`),
+    /// which omits Live Photo motion videos. To reconstruct a full view,
+    /// call once per `AssetVisibility` case and merge on asset `id`, or
+    /// use `assetsForTag` which already does this for tag scoping.
+    ///
+    /// `includeTrashed: true` sets `withDeleted` so restored-candidate
+    /// detection can see trashed assets. `withExif: false` — we never
+    /// need EXIF; skipping it keeps the wire payload small.
     public func listAllAssets(
         includeTrashed: Bool = false,
         visibility: AssetVisibility? = nil,
@@ -80,9 +154,55 @@ public struct ImmichClient: Sendable {
         return out
     }
 
+    // MARK: - Server-side statistics (fast count)
+
+    /// Decoded body of `GET /api/assets/statistics`. `total == images +
+    /// videos` on every Immich version we've tested; callers prefer
+    /// `total` over summing.
+    public struct AssetStatistics: Sendable, Equatable, Codable {
+        public let images: Int
+        public let videos: Int
+        public let total: Int
+    }
+
+    /// `GET /api/assets/statistics?isTrashed=false` — a `{images,
+    /// videos, total}` payload the UI renders as "On server" at sync
+    /// start, before the full `listAllAssets()` reconciliation fetch
+    /// finishes. Cheap enough to call on every sync.
+    ///
+    /// `isTrashed: false` mirrors the `serverNonTrashed` filter the
+    /// reconciliation display uses, so the number the user sees during
+    /// scanning matches the number after scanning.
+    public func assetStatistics(includeTrashed: Bool = false) async throws -> AssetStatistics {
+        // `makeRequest(path:)` appends via `URL.appending(path:)`,
+        // which URL-encodes `?` and `=`. Build the URL with query
+        // items through URLComponents instead so the query string
+        // stays unescaped.
+        let base = baseURL.appending(path: "assets/statistics")
+        var comps = URLComponents(url: base, resolvingAgainstBaseURL: false)
+        comps?.queryItems = [
+            URLQueryItem(name: "isTrashed", value: includeTrashed ? "true" : "false"),
+        ]
+        guard let url = comps?.url else {
+            throw ImmichClientError.invalidURL
+        }
+        var req = URLRequest(url: url)
+        req.httpMethod = "GET"
+        req.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+        let (data, resp) = try await session.data(for: req)
+        try Self.expectOK(resp, data: data)
+        return try JSONDecoder().decode(AssetStatistics.self, from: data)
+    }
+
     // MARK: - Trash
 
-    /// Moves the given assets to Immich trash. `force: false` is the trash path; never call with `force: true` from this app.
+    /// Moves the given assets to Immich trash via `DELETE /api/assets`
+    /// with `force: false`. The server treats `force: true` as immediate
+    /// hard-delete with no restore path — cairn never calls it that way,
+    /// and this method's body hard-codes `force: false` to keep that
+    /// invariant at the call site.
+    ///
+    /// Empty `ids` is a no-op rather than a zero-length call.
     public func trashAssets(ids: [String]) async throws {
         guard !ids.isEmpty else { return }
         var req = try makeRequest(method: "DELETE", path: "assets")
@@ -90,11 +210,24 @@ public struct ImmichClient: Sendable {
         let body: [String: Any] = ["ids": ids, "force": false]
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
         let (data, resp) = try await session.data(for: req)
+        // Debug-only log so the device console shows exactly what the
+        // server returned for a trash call. Bodies for DELETE
+        // /api/assets are typically empty (204) on success; anything
+        // else is worth seeing. Helps diagnose "Immich UI disagrees
+        // with the trash state" reports. Gated on `#if DEBUG` so
+        // production builds don't stream per-call logs to stderr.
+        #if DEBUG
+        let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
+        let bodySnippet = String(data: data.prefix(200), encoding: .utf8) ?? "<non-utf8>"
+        print("[cairn.api] DELETE /api/assets ids=\(ids.count) force=false → HTTP \(status) body=\(bodySnippet.isEmpty ? "(empty)" : bodySnippet)")
+        #endif
         try Self.expectOK(resp, data: data)
     }
 
-    /// Restores specific assets from trash by their UUIDs. Server is idempotent for
-    /// assets that aren't currently trashed, so callers don't need to pre-filter.
+    /// `POST /api/trash/restore/assets` — moves the given assets out of
+    /// trash. The server is idempotent for assets not currently trashed
+    /// (returns 2xx without touching them), so callers don't need to
+    /// pre-filter. Empty `ids` is a no-op.
     public func restoreAssets(ids: [String]) async throws {
         guard !ids.isEmpty else { return }
         var req = try makeRequest(method: "POST", path: "trash/restore/assets")
@@ -107,14 +240,19 @@ public struct ImmichClient: Sendable {
 
     // MARK: - Tags (breadcrumbs)
 
-    /// Creates (or returns existing) tag. Immich's POST /tags is upsert-by-value.
+    /// `POST /api/tags` — upsert-by-value. Returning an existing tag
+    /// when the name matches lets trash runs safely call this without a
+    /// lookup-then-create race. cairn uses tags named
+    /// `cairn/v1/run/<run_id>` as per-run breadcrumbs on the server.
     public func upsertTag(value: String) async throws -> ImmichTag {
         let body: [String: Any] = ["name": value]
         let dto: TagDTO = try await postJSON(path: "tags", jsonObject: body)
         return dto.asImmichTag
     }
 
-    /// Lists every tag visible to the API key's user. Requires `tag.read` scope.
+    /// `GET /api/tags` — every tag visible to the API key's user.
+    /// Requires `tag.read` scope (not part of the default trash-run
+    /// scope set); `cairn history` and filename-based restore use this.
     public func listTags() async throws -> [ImmichTag] {
         let req = try makeRequest(method: "GET", path: "tags")
         let (data, resp) = try await session.data(for: req)
@@ -123,12 +261,13 @@ public struct ImmichClient: Sendable {
         return dtos.map(\.asImmichTag)
     }
 
-    /// Every asset attached to a given tag, across every non-locked visibility
-    /// class (timeline/archive/hidden) and including trashed ones by default.
-    /// Search by tagIds honors the default visibility filter on the server,
-    /// so a naive single query misses Live Photo motion videos (visibility
-    /// `hidden`). We iterate and merge. `locked` is intentionally skipped —
-    /// listing it requires an elevated auth flow our API key doesn't have.
+    /// Every asset attached to a given tag, across every non-locked
+    /// visibility class (timeline/archive/hidden) and including trashed
+    /// ones by default. `search/metadata` honors the default visibility
+    /// filter on the server, so a naive single query misses Live Photo
+    /// motion videos (visibility `hidden`). Iterate and merge to get a
+    /// complete view. `locked` is intentionally skipped — listing it
+    /// requires an elevated auth flow our API key doesn't have.
     public func assetsForTag(
         tagId: String,
         includeTrashed: Bool = true,
@@ -159,6 +298,10 @@ public struct ImmichClient: Sendable {
         return out
     }
 
+    /// `PUT /api/tags/assets` — attach the given tags to every asset in
+    /// `assetIds`. Used at trash time to stamp the per-run breadcrumb
+    /// tag across every trashed asset. Empty input on either side is a
+    /// no-op.
     public func bulkTagAssets(tagIds: [String], assetIds: [String]) async throws {
         guard !tagIds.isEmpty, !assetIds.isEmpty else { return }
         var req = try makeRequest(method: "PUT", path: "tags/assets")
@@ -171,6 +314,9 @@ public struct ImmichClient: Sendable {
 
     // MARK: - HTTP plumbing
 
+    /// Builds a request with `x-api-key` auth and no Accept header —
+    /// see `ping()` for why the Accept omission matters on some
+    /// endpoints.
     private func makeRequest(method: String, path: String) throws -> URLRequest {
         let url = baseURL.appending(path: path)
         var req = URLRequest(url: url)
@@ -200,6 +346,8 @@ public struct ImmichClient: Sendable {
 
 // MARK: - Internal DTOs
 
+/// Wire shape of `POST /api/search/metadata`. `nextPage` is a stringified
+/// integer page number on servers that paginate (nil = final page).
 struct SearchResponseDTO: Decodable {
     let assets: AssetGroupDTO
     struct AssetGroupDTO: Decodable {
@@ -235,14 +383,37 @@ struct AssetItemDTO: Decodable {
     let livePhotoVideoId: String?
     let isTrashed: Bool
     let originalFileName: String?
+    /// Immich returns `fileCreatedAt` as an ISO-8601 string on
+    /// every standard asset response. Decode via a separate
+    /// property that parses to Date so callers don't have to
+    /// know the wire format.
+    let fileCreatedAt: String?
+
+    /// Parse an ISO-8601 string that may or may not include
+    /// fractional seconds. `ISO8601DateFormatter` is
+    /// non-`Sendable`, so instantiate per-call rather than hold a
+    /// static — cheap and keeps strict-concurrency happy.
+    private static func parseISO8601(_ s: String) -> Date? {
+        let frac = ISO8601DateFormatter()
+        frac.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let d = frac.date(from: s) { return d }
+        let plain = ISO8601DateFormatter()
+        plain.formatOptions = [.withInternetDateTime]
+        return plain.date(from: s)
+    }
 
     var asServerAsset: ServerAsset {
-        ServerAsset(
+        // Server sends fractional seconds on some assets and not on
+        // others; `parseISO8601` tries both. Nil on unparseable is
+        // fine — UI renders a placeholder rather than crashing.
+        let created: Date? = fileCreatedAt.flatMap(Self.parseISO8601)
+        return ServerAsset(
             id: id,
             checksum: Checksum(base64: checksum),
             livePhotoVideoId: livePhotoVideoId,
             isTrashed: isTrashed,
-            originalFileName: originalFileName
+            originalFileName: originalFileName,
+            fileCreatedAt: created
         )
     }
 }

@@ -1,5 +1,11 @@
 import Foundation
 
+/// Immich's content-addressing primitive. `base64` holds a base64-encoded
+/// SHA1 over the file's bytes — Immich exposes it as
+/// `AssetResponseDto.checksum` and rejects any other algorithm (see
+/// `server/src/enum.ts:44` in the Immich source). Every identity
+/// decision cairn makes is keyed on this value; filenames, UUIDs, and
+/// device IDs are all untrustworthy by comparison.
 public struct Checksum: Hashable, Sendable, Codable, CustomStringConvertible {
     public let base64: String
 
@@ -10,25 +16,38 @@ public struct Checksum: Hashable, Sendable, Codable, CustomStringConvertible {
     public var description: String { base64 }
 }
 
+/// One asset as the Immich server presents it. `id` is the server's
+/// UUID (stable across renames); `checksum` is the identity carriers
+/// rely on. `livePhotoVideoId` is the UUID of the paired motion video
+/// when this asset is a Live Photo still — the server does **not**
+/// cascade trash through that link, so `TrashOrchestrator` has to
+/// include paired IDs in every delete batch explicitly.
 public struct ServerAsset: Hashable, Sendable, Codable {
     public let id: String
     public let checksum: Checksum
     public let livePhotoVideoId: String?
     public let isTrashed: Bool
     public let originalFileName: String?
+    /// When Immich recorded the asset's original `fileCreatedAt`.
+    /// Optional because the field isn't universally populated on
+    /// every Immich version's list endpoint; when present, flows
+    /// into `TrashTarget` so run-detail rows show real dates.
+    public let fileCreatedAt: Date?
 
     public init(
         id: String,
         checksum: Checksum,
         livePhotoVideoId: String? = nil,
         isTrashed: Bool = false,
-        originalFileName: String? = nil
+        originalFileName: String? = nil,
+        fileCreatedAt: Date? = nil
     ) {
         self.id = id
         self.checksum = checksum
         self.livePhotoVideoId = livePhotoVideoId
         self.isTrashed = isTrashed
         self.originalFileName = originalFileName
+        self.fileCreatedAt = fileCreatedAt
     }
 }
 
@@ -43,6 +62,10 @@ public enum AssetVisibility: String, Sendable, Codable, CaseIterable {
     case locked
 }
 
+/// Opaque identifier for one trash-run's lifetime. Flows into the
+/// journal, the server-side breadcrumb tag (`cairn/v1/run/<value>`),
+/// and the restore CLI. Default init generates a fresh UUID; pass an
+/// explicit value to reconstruct a prior run's identity.
 public struct RunID: Hashable, Sendable, Codable, CustomStringConvertible {
     public let value: String
 

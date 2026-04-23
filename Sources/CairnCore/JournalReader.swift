@@ -100,6 +100,19 @@ public enum JournalReader {
         var firstRestoreFailedMessage: String? = nil
         var livePhotoVideoPairCount = 0
 
+        // Per-phase timestamps. Capturing these lets `durationMs`
+        // reflect the *most recent* phase only, not the full journal
+        // span. Without this, a run that was trashed and then
+        // restored N seconds later would report duration = N (the
+        // idle gap between phases) — misleading as "how long the
+        // run's work took."
+        var runStartedAt: Date?
+        var runCompletedAt: Date?
+        var runAbortedAt: Date?
+        var restoreStartedAt: Date?
+        var restoreEndedAt: Date?     // either restoreSucceeded or restoreFailed
+        var trashEndedAt: Date?       // either trashSucceeded or trashFailed (fallback if runCompleted missing)
+
         for entry in sorted {
             switch entry.event {
             case .runStarted(let isDry, let candidateCount, _):
@@ -108,34 +121,49 @@ public enum JournalReader {
                 if firstRunStartedCandidateCount == nil {
                     firstRunStartedCandidateCount = candidateCount
                 }
+                if runStartedAt == nil { runStartedAt = entry.timestamp }
             case .runCompleted:
                 sawRunCompleted = true
+                runCompletedAt = entry.timestamp
             case .runAborted(let reason):
                 sawAborted = true
                 if firstAbortReason == nil {
                     firstAbortReason = reason
                 }
+                runAbortedAt = entry.timestamp
             case .trashSucceeded(let ids):
                 sawTrashSucceeded = true
                 trashedCount = ids.count
+                trashEndedAt = entry.timestamp
             case .trashFailed(_, let message):
                 sawTrashFailed = true
                 if firstTrashFailedMessage == nil {
                     firstTrashFailedMessage = message
                 }
+                trashEndedAt = entry.timestamp
+            case .restoreStarted:
+                if restoreStartedAt == nil { restoreStartedAt = entry.timestamp }
             case .restoreSucceeded(_, let ids):
                 sawRestoreSucceeded = true
                 restoredCount = ids.count
+                restoreEndedAt = entry.timestamp
             case .restoreFailed(_, _, let message):
                 sawRestoreFailed = true
                 if firstRestoreFailedMessage == nil {
                     firstRestoreFailedMessage = message
                 }
+                restoreEndedAt = entry.timestamp
             case .planningTrash(let targets):
                 for target in targets where target.livePhotoVideoId != nil {
                     livePhotoVideoPairCount += 1
                 }
-            case .tagApplied, .restoreStarted, .assetsExcluded, .pendingReview:
+            case .tagApplied, .assetsExcluded, .pendingReview:
+                break
+            case .syncCompleted:
+                // Reconciliation summary — not a trash run, not a
+                // restore. Doesn't affect any of the fields we compute
+                // for `RunSummary`; the Status-screen tail picks these
+                // up separately via `JournalTailEntry.from(_:)`.
                 break
             }
         }
@@ -151,9 +179,32 @@ public enum JournalReader {
             return .inProgress
         }()
 
+        // Duration reflects the phase corresponding to the run's
+        // *current* status — not the full span from first journal
+        // event to last. See the comment on the per-phase timestamps
+        // above for the rationale.
+        let durationMs: Int = {
+            func diff(_ start: Date?, _ end: Date?) -> Int {
+                guard let s = start, let e = end else { return 0 }
+                return Int((e.timeIntervalSince(s) * 1000).rounded())
+            }
+            switch status {
+            case .restored, .restoreFailed:
+                return diff(restoreStartedAt, restoreEndedAt)
+            case .trashed, .trashFailed, .dryRun:
+                return diff(runStartedAt, runCompletedAt ?? trashEndedAt)
+            case .aborted:
+                return diff(runStartedAt, runAbortedAt)
+            case .inProgress:
+                // No completion yet — fall back to the current
+                // elapsed from start, which matches the old
+                // behavior for partial runs.
+                return diff(runStartedAt, sorted.last?.timestamp)
+            }
+        }()
+
         let firstTimestamp = sorted.first!.timestamp
         let lastTimestamp = sorted.last!.timestamp
-        let durationMs = Int((lastTimestamp.timeIntervalSince(firstTimestamp) * 1000).rounded())
 
         let notes = buildNotes(
             status: status,

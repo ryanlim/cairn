@@ -22,10 +22,6 @@ public struct CairnSettings: Sendable, Codable, Equatable {
     /// minimum run size that triggers the threshold check.
     public var minDeleteFloor: Int
 
-    /// When true, every sync records a preview run without touching the
-    /// server. Useful during onboarding and after a big library change.
-    public var dryRunByDefault: Bool
-
     /// Local notification when a safety rail trips and a run is aborted.
     /// Default on — silently skipping a destructive-intent run that the
     /// user opted into is worse than one extra notification.
@@ -41,42 +37,165 @@ public struct CairnSettings: Sendable, Codable, Equatable {
     /// rationale.
     public var deletionStrictness: DeletionStrictness
 
+    /// Number of days a confirmed-deleted checksum must age before it
+    /// becomes eligible to trash. Gives the user a grace period to catch
+    /// and recover from an accidental mass-offload before the server-side
+    /// delete fires. Values outside `Self.quarantineDaysRange` are tolerated
+    /// on decode (legacy files and manual edits round-trip unchanged); UI
+    /// surfaces should clamp on write.
+    public var quarantineDays: Int
+
+    /// Permitted range for `quarantineDays`. `0` opts out (the held bucket
+    /// is always empty). `90` caps cautious users at three months — long
+    /// enough to recover from real mistakes, short enough to bound store
+    /// growth and keep pending-review queues manageable.
+    public static let quarantineDaysRange: ClosedRange<Int> = 0...90
+
+    /// Per-asset iCloud-download soft limit (in megabytes) that the
+    /// foreground hashing pipeline will accept. Assets whose combined
+    /// unavailable-resource size exceeds this are **deferred**: queued
+    /// into `DeferredHashStore` and drained later — a small batch on
+    /// each subsequent incremental scan, or the whole queue during a
+    /// `BGProcessingTask` slot (which ignores this soft limit entirely).
+    ///
+    /// Rationale: on iCloud-optimized libraries, large videos can take
+    /// minutes each to fetch-then-hash. Without a limit, a first scan
+    /// can stall for hours on a handful of multi-hundred-MB clips.
+    /// Smaller values ship more work into the background bucket and
+    /// make the foreground experience faster; larger values hash more
+    /// on-demand but at the cost of responsiveness.
+    public var iCloudDownloadLimitMB: Int
+
+    /// Permitted range for `iCloudDownloadLimitMB`. `5` MB knocks out
+    /// essentially every video and Live Photo motion track from the
+    /// initial pass — aggressive. `500` MB lets almost everything
+    /// through, approximating uncapped. Default `100` is a compromise
+    /// that lets most short clips hash on the first pass while keeping
+    /// multi-hundred-MB/GB videos in the background-drain bucket.
+    public static let iCloudDownloadLimitMBRange: ClosedRange<Int> = 5...500
+
+    /// Optional hard never-touch ceiling (in megabytes). Assets whose
+    /// iCloud-download size exceeds this are **never hashed**, by any
+    /// path — not foreground, not background. They're effectively
+    /// out-of-scope for cairn: no checksum, not entered into
+    /// `EverSeenStore`, not added to `DeferredHashStore`. A consequence
+    /// is that if the user later deletes them from iPhone, cairn won't
+    /// propagate the deletion to Immich (because the checksum was never
+    /// in `everSeen`). Use this for multi-GB iCloud-archived videos you
+    /// want cairn to ignore entirely.
+    ///
+    /// `nil` = off (no hard ceiling, default). Values outside
+    /// `iCloudMaxEverBytesMBRange` are tolerated on decode but should
+    /// be clamped on write by the UI.
+    public var iCloudMaxEverBytesMB: Int?
+
+    /// Override for the system color scheme. Default is `.system` (follow
+    /// iOS Settings). Users who prefer a fixed appearance — or who find
+    /// one scheme more readable — can pin `.light` or `.dark` here.
+    public var appearance: AppearanceOverride
+
+    /// Surface a prominent Status banner when the total deletion
+    /// backlog (held-by-quarantine + pending-review + eligible-to-
+    /// trash) reaches this count. 0 disables the banner entirely.
+    /// The existing pending-candidates card on Status surfaces the
+    /// count regardless; this threshold is the escalation signal
+    /// for "you've accumulated a lot — come take a look."
+    public var deletionBacklogAlertThreshold: Int
+
+    /// Permitted range for `deletionBacklogAlertThreshold`. 0 opts
+    /// out; 500 caps a truly noise-tolerant user. Count-based (not
+    /// percent) so behavior doesn't drift with library size —
+    /// percent-based safety exists separately on the trash run rail.
+    public static let deletionBacklogAlertThresholdRange: ClosedRange<Int> = 0...500
+
+    /// Permitted range for `iCloudMaxEverBytesMB` when set. `50` MB is
+    /// below the default soft-limit so a sensible UI clamps it above
+    /// that; `10240` MB (10 GB) is an aggressive upper bound covering
+    /// essentially every personal-library case. Callers should clamp
+    /// on write.
+    public static let iCloudMaxEverBytesMBRange: ClosedRange<Int> = 50...10_240
+
     public init(
         maxDeletePercent: Double = 1.0,
         minDeleteFloor: Int = 5,
-        dryRunByDefault: Bool = false,
         notifyOnAbort: Bool = true,
         verboseLogging: Bool = false,
-        deletionStrictness: DeletionStrictness = .strict
+        deletionStrictness: DeletionStrictness = .trusting,
+        quarantineDays: Int = 14,
+        iCloudDownloadLimitMB: Int = 100,
+        iCloudMaxEverBytesMB: Int? = nil,
+        appearance: AppearanceOverride = .system,
+        deletionBacklogAlertThreshold: Int = 25
     ) {
         self.maxDeletePercent = maxDeletePercent
         self.minDeleteFloor = minDeleteFloor
-        self.dryRunByDefault = dryRunByDefault
         self.notifyOnAbort = notifyOnAbort
         self.verboseLogging = verboseLogging
         self.deletionStrictness = deletionStrictness
+        self.quarantineDays = quarantineDays
+        self.iCloudDownloadLimitMB = iCloudDownloadLimitMB
+        self.iCloudMaxEverBytesMB = iCloudMaxEverBytesMB
+        self.appearance = appearance
+        self.deletionBacklogAlertThreshold = deletionBacklogAlertThreshold
     }
 
     /// The factory defaults. Kept as a single constant so tests and the
     /// "reset to defaults" UI path reference the same source of truth.
     public static let defaults: CairnSettings = CairnSettings()
+
+    // Custom Codable so legacy payloads (written before newer fields
+    // existed) decode cleanly: missing keys fall back to the current
+    // default, matching how a fresh install would experience them.
+    private enum CodingKeys: String, CodingKey {
+        case maxDeletePercent, minDeleteFloor, notifyOnAbort
+        case verboseLogging, deletionStrictness, quarantineDays
+        case iCloudDownloadLimitMB, iCloudMaxEverBytesMB, appearance
+        case deletionBacklogAlertThreshold
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = CairnSettings.defaults
+        self.maxDeletePercent = try c.decodeIfPresent(Double.self, forKey: .maxDeletePercent) ?? d.maxDeletePercent
+        self.minDeleteFloor = try c.decodeIfPresent(Int.self, forKey: .minDeleteFloor) ?? d.minDeleteFloor
+        self.notifyOnAbort = try c.decodeIfPresent(Bool.self, forKey: .notifyOnAbort) ?? d.notifyOnAbort
+        self.verboseLogging = try c.decodeIfPresent(Bool.self, forKey: .verboseLogging) ?? d.verboseLogging
+        self.deletionStrictness = try c.decodeIfPresent(DeletionStrictness.self, forKey: .deletionStrictness) ?? d.deletionStrictness
+        self.quarantineDays = try c.decodeIfPresent(Int.self, forKey: .quarantineDays) ?? d.quarantineDays
+        self.iCloudDownloadLimitMB = try c.decodeIfPresent(Int.self, forKey: .iCloudDownloadLimitMB) ?? d.iCloudDownloadLimitMB
+        self.iCloudMaxEverBytesMB = try c.decodeIfPresent(Int.self, forKey: .iCloudMaxEverBytesMB) ?? d.iCloudMaxEverBytesMB
+        self.appearance = try c.decodeIfPresent(AppearanceOverride.self, forKey: .appearance) ?? d.appearance
+        self.deletionBacklogAlertThreshold = try c.decodeIfPresent(Int.self, forKey: .deletionBacklogAlertThreshold) ?? d.deletionBacklogAlertThreshold
+    }
+}
+
+/// User-facing override for the system color scheme. Serialized as the
+/// raw string (`"system"` / `"light"` / `"dark"`) so the on-disk format
+/// is stable and human-readable.
+public enum AppearanceOverride: String, Sendable, Codable, Equatable, CaseIterable {
+    /// Follow iOS Settings → Display & Brightness (the default).
+    case system
+    /// Force light mode regardless of the system preference.
+    case light
+    /// Force dark mode regardless of the system preference.
+    case dark
 }
 
 /// How aggressively cairn translates "no longer in the local library"
 /// into "trash on the server."
 ///
-/// `.strict` requires a positive deletion signal — the checksum has been
-/// observed in iOS's Recently Deleted album — before any candidate is
-/// trashed. Diff-discovered candidates that lack the positive signal are
-/// held in a "pending review" set the user manually approves or skips.
-/// This is the safe default and the right choice for any user with iCloud
-/// Photo Library, iCloud-Optimized Storage, or a possibility of partial
-/// library restores.
+/// `.strict` requires a positive deletion signal — a
+/// `PHPhotoLibrary.fetchPersistentChanges` event that named the
+/// checksum's `localIdentifier` as deleted — before any candidate is
+/// trashed. Diff-discovered candidates that lack the positive signal
+/// are held in pending review for manual approval. The right choice
+/// for users who want both signals required in parallel.
 ///
-/// `.trusting` skips the confirmed-deletion gate. Any diff-discovered
-/// candidate flows through the normal trash pipeline. Faster operationally
-/// but vulnerable to gradual library-loss failure modes (sync degradation,
-/// "Remove from this iPhone," partial restores).
+/// `.trusting` skips the positive-signal gate. Any diff-discovered
+/// candidate flows through the normal pipeline, gated only by the
+/// quarantine window. The default since Wave 4b — quarantine alone
+/// gives a large recovery margin without blocking happy-path users
+/// behind a "pending review" queue.
 public enum DeletionStrictness: String, Sendable, Codable, Equatable, CaseIterable {
     case strict
     case trusting

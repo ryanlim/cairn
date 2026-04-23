@@ -1,15 +1,24 @@
 import Foundation
 
-/// Minimal write-side surface of the Immich API. Conformed to by `ImmichClient`
-/// and by test fakes. Defining it here (not on the client) keeps the orchestrator
-/// independent of HTTP plumbing.
+/// Write-side surface of the Immich API the orchestrators depend on. Conformed
+/// to by `ImmichClient` and by test fakes. Kept separate from the client so
+/// the orchestrator has no knowledge of HTTP plumbing and so tests can
+/// substitute deterministic fakes.
 public protocol ImmichWriter: Sendable {
+    /// Create a tag (or return the existing one) for the given canonical value.
+    /// Calls `POST /api/tags`.
     func upsertTag(value: String) async throws -> ImmichTag
+    /// Attach `tagIds` to every asset in `assetIds`. Calls `PUT /api/tags/assets`.
     func bulkTagAssets(tagIds: [String], assetIds: [String]) async throws
+    /// Move assets to Immich's Trash folder (30-day retention), not a hard
+    /// delete. Calls `DELETE /api/assets` with `force: false`.
     func trashAssets(ids: [String]) async throws
+    /// Pull assets back out of Trash. Calls `POST /api/trash/restore/assets`.
     func restoreAssets(ids: [String]) async throws
 }
 
+/// A tag as returned by the Immich API. Only the fields cairn reads are
+/// modelled; everything else on the server-side DTO is ignored.
 public struct ImmichTag: Sendable, Equatable {
     public let id: String
     public let value: String
@@ -26,6 +35,8 @@ public struct ImmichTag: Sendable, Equatable {
 
 extension ImmichClient: ImmichWriter {}
 
+/// Outcome of a single `TrashOrchestrator.run` invocation. `breadcrumbTag` is
+/// nil when the run was a dry-run or had zero candidates (no tag was created).
 public struct TrashRunSummary: Sendable, Equatable {
     public let runId: String
     public let trashedAssetIds: [String]
@@ -34,9 +45,19 @@ public struct TrashRunSummary: Sendable, Equatable {
     public let abortReason: String?
 }
 
+/// Moves a set of server assets into Immich's Trash and writes the journal
+/// entries that let `RestoreOrchestrator` (and `cairn history`) reconstruct
+/// what happened.
+///
+/// The destructive path is split across multiple API calls so partial progress
+/// is visible in the journal even if the process is killed mid-run. The tag
+/// is applied *before* the DELETE so restore still has a breadcrumb if the
+/// DELETE itself half-succeeds on the server.
 public struct TrashOrchestrator: Sendable {
     public let writer: ImmichWriter
     public let journal: DeletionJournal
+    /// Clock used for journal timestamps. Injectable so tests get
+    /// deterministic output.
     public let now: @Sendable () -> Date
 
     public init(
@@ -49,15 +70,27 @@ public struct TrashOrchestrator: Sendable {
         self.now = now
     }
 
-    /// Executes the destructive path for a set of candidates. Order is fixed:
-    /// 1. Journal `runStarted` and `planningTrash` (write-ahead log).
-    /// 2. Create/upsert breadcrumb tag, bulk-apply to candidates, journal it.
-    /// 3. DELETE assets (force=false → trash), journal success or failure.
+    /// Move `candidates` to Immich's Trash. Fixed sequence:
+    ///
+    /// 1. Journal `runStarted`, then `planningTrash` (write-ahead log — if we
+    ///    crash after this, the restore path still knows what was in-flight).
+    /// 2. Upsert `cairn/v1/run/<runId>` as a tag, bulk-apply it to every
+    ///    affected asset via `PUT /api/tags/assets`, journal `tagApplied`.
+    /// 3. `DELETE /api/assets {force: false}` — moves to Trash (30-day
+    ///    retention), not a hard delete. Journal `trashSucceeded` or
+    ///    `trashFailed`.
     /// 4. Journal `runCompleted`.
     ///
-    /// Live Photo: any candidate with a non-nil `livePhotoVideoId` includes that
-    /// linked video UUID in the trash batch (the still and motion video are
-    /// separate Immich assets; we want both gone together).
+    /// Live Photos: a still and its motion video are two separate Immich
+    /// assets linked by `livePhotoVideoId`. The server does NOT cascade trash
+    /// through that link (verified empirically; pinned by
+    /// `TrashOrchestratorTests.livePhotoVideoIncluded`). Every candidate's
+    /// linked video UUID is added to the batch so the pair moves together —
+    /// otherwise a restore that pulls back the still would orphan the video.
+    ///
+    /// `assetsInPurview` is recorded into the journal for safety-rail context
+    /// and is not otherwise used to gate the run; the caller is responsible
+    /// for having already run `SafetyRails.evaluate`.
     public func run(
         runId: String,
         candidates: [ServerAsset],
@@ -78,72 +111,107 @@ public struct TrashOrchestrator: Sendable {
             )
         ))
 
-        if candidates.isEmpty {
-            try await journal.append(.init(
-                timestamp: now(),
-                runId: runId,
-                event: .runCompleted(deletedCount: 0)
-            ))
-            return TrashRunSummary(runId: runId, trashedAssetIds: [], breadcrumbTag: nil, aborted: false, abortReason: nil)
-        }
-
-        let targets = candidates.map { JournalEntry.TrashTarget(
-            assetId: $0.id,
-            checksum: $0.checksum.base64,
-            livePhotoVideoId: $0.livePhotoVideoId
-        ) }
-        try await journal.append(.init(
-            timestamp: now(),
-            runId: runId,
-            event: .planningTrash(targets: targets)
-        ))
-
-        if dryRun {
-            try await journal.append(.init(
-                timestamp: now(),
-                runId: runId,
-                event: .runCompleted(deletedCount: 0)
-            ))
-            return TrashRunSummary(runId: runId, trashedAssetIds: [], breadcrumbTag: nil, aborted: false, abortReason: nil)
-        }
-
-        let tagValue = TagSchema.runTagValue(runId: runId)
-        let tag = try await writer.upsertTag(value: tagValue)
-        try await writer.bulkTagAssets(tagIds: [tag.id], assetIds: allIds)
-        try await journal.append(.init(
-            timestamp: now(),
-            runId: runId,
-            event: .tagApplied(tagId: tag.id, tagValue: tag.value, assetIds: allIds)
-        ))
-
+        // `runStarted` is on disk. From here on, every throwable step is
+        // wrapped so the run terminates with a matching journal event
+        // (runCompleted / trashFailed / runAborted) even on an unhandled
+        // throw. Without this, a network glitch on `upsertTag` or
+        // `bulkTagAssets` would leave a dangling `runStarted` and the summary
+        // stuck in `.inProgress` limbo.
+        //
+        // `emittedTerminal` tracks whether a more-specific terminal
+        // (trashFailed, trashSucceeded, runCompleted) already fired; the
+        // outer catch only falls back to `runAborted` when nothing else
+        // summarized the run.
+        var emittedTerminal = false
         do {
-            try await writer.trashAssets(ids: allIds)
+            if candidates.isEmpty {
+                try await journal.append(.init(
+                    timestamp: now(),
+                    runId: runId,
+                    event: .runCompleted(deletedCount: 0)
+                ))
+                emittedTerminal = true
+                return TrashRunSummary(runId: runId, trashedAssetIds: [], breadcrumbTag: nil, aborted: false, abortReason: nil)
+            }
+
+            let targets = candidates.map { JournalEntry.TrashTarget(
+                assetId: $0.id,
+                checksum: $0.checksum.base64,
+                livePhotoVideoId: $0.livePhotoVideoId,
+                originalFileName: $0.originalFileName,
+                fileCreatedAt: $0.fileCreatedAt
+            ) }
             try await journal.append(.init(
                 timestamp: now(),
                 runId: runId,
-                event: .trashSucceeded(assetIds: allIds)
+                event: .planningTrash(targets: targets)
             ))
+
+            if dryRun {
+                try await journal.append(.init(
+                    timestamp: now(),
+                    runId: runId,
+                    event: .runCompleted(deletedCount: 0)
+                ))
+                emittedTerminal = true
+                return TrashRunSummary(runId: runId, trashedAssetIds: [], breadcrumbTag: nil, aborted: false, abortReason: nil)
+            }
+
+            let tagValue = TagSchema.runTagValue(runId: runId)
+            let tag = try await writer.upsertTag(value: tagValue)
+            try await writer.bulkTagAssets(tagIds: [tag.id], assetIds: allIds)
+            try await journal.append(.init(
+                timestamp: now(),
+                runId: runId,
+                event: .tagApplied(tagId: tag.id, tagValue: tag.value, assetIds: allIds)
+            ))
+
+            do {
+                try await writer.trashAssets(ids: allIds)
+                try await journal.append(.init(
+                    timestamp: now(),
+                    runId: runId,
+                    event: .trashSucceeded(assetIds: allIds)
+                ))
+            } catch {
+                try? await journal.append(.init(
+                    timestamp: now(),
+                    runId: runId,
+                    event: .trashFailed(assetIds: allIds, message: String(describing: error))
+                ))
+                emittedTerminal = true
+                throw error
+            }
+
+            try await journal.append(.init(
+                timestamp: now(),
+                runId: runId,
+                event: .runCompleted(deletedCount: allIds.count)
+            ))
+            emittedTerminal = true
+
+            return TrashRunSummary(
+                runId: runId,
+                trashedAssetIds: allIds,
+                breadcrumbTag: tag,
+                aborted: false,
+                abortReason: nil
+            )
         } catch {
-            try await journal.append(.init(
-                timestamp: now(),
-                runId: runId,
-                event: .trashFailed(assetIds: allIds, message: String(describing: error))
-            ))
+            // Anything thrown between `runStarted` and an expected terminal:
+            // emit `runAborted` so the journal summary resolves to `.aborted`
+            // instead of `.inProgress`. Skip if a more-specific terminal
+            // (`trashFailed`) already fired — JournalReader orders `aborted`
+            // above `trashFailed`, so emitting both would mask the useful
+            // diagnostic.
+            if !emittedTerminal {
+                try? await journal.append(.init(
+                    timestamp: now(),
+                    runId: runId,
+                    event: .runAborted(reason: "unexpected failure: \(error)")
+                ))
+            }
             throw error
         }
-
-        try await journal.append(.init(
-            timestamp: now(),
-            runId: runId,
-            event: .runCompleted(deletedCount: allIds.count)
-        ))
-
-        return TrashRunSummary(
-            runId: runId,
-            trashedAssetIds: allIds,
-            breadcrumbTag: tag,
-            aborted: false,
-            abortReason: nil
-        )
     }
 }

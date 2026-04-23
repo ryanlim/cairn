@@ -2,6 +2,13 @@ import ArgumentParser
 import Foundation
 import CairnCore
 
+/// `cairn journal` — inspect the local append-only deletion journal.
+///
+/// The journal (`deletion-journal.jsonl` by default, one JSON object per line)
+/// is written by every trash and restore run. Unlike `cairn history`, it
+/// lives entirely on disk — no API calls, no `tag.read` required — and it
+/// preserves events the server can't (e.g. `runAborted` when safety rails
+/// stop a run before any DELETE fires).
 struct Journal: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "journal",
@@ -11,6 +18,7 @@ struct Journal: AsyncParsableCommand {
     )
 }
 
+/// Options shared by every `journal` subcommand.
 struct JournalOptions: ParsableArguments {
     @Option(name: .long, help: "Path to the deletion journal (JSONL).")
     var journal: String = "deletion-journal.jsonl"
@@ -18,6 +26,12 @@ struct JournalOptions: ParsableArguments {
 
 // MARK: - journal list
 
+/// `cairn journal list` — one-line-per-run summary, most recent first.
+///
+/// Runs each journal entry through `JournalReader.summarize`, which derives a
+/// status + counts from the event sequence (e.g. a `trashSucceeded` after a
+/// `runStarted` → `.trashed`; a `runStarted` with no terminal event →
+/// `.inProgress`).
 struct JournalList: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "list",
@@ -57,6 +71,10 @@ struct JournalList: AsyncParsableCommand {
 
 // MARK: - journal show
 
+/// `cairn journal show` — pretty-print every event for one run.
+///
+/// Omit `--run-id` (or pass `--last`) to show the most recent run. Each
+/// event type has a dedicated pretty-printer in `describe(_:)`.
 struct JournalShow: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "show",
@@ -104,6 +122,9 @@ struct JournalShow: AsyncParsableCommand {
         }
     }
 
+    /// UTC `HH:mm:ss` formatter for the per-event timestamp column. UTC so
+    /// output is stable across machines in different time zones (journal
+    /// files are portable).
     private func timeFormatter() -> DateFormatter {
         let f = DateFormatter()
         f.dateFormat = "HH:mm:ss"
@@ -111,6 +132,8 @@ struct JournalShow: AsyncParsableCommand {
         return f
     }
 
+    /// Render one journal event as `(kind, detail)`. `detail` may contain
+    /// newlines; `run()` indents continuation lines under the detail column.
     private func describe(_ event: JournalEntry.Event) -> (String, String) {
         switch event {
         case .runStarted(let dry, let cands, let purview):
@@ -140,6 +163,23 @@ struct JournalShow: AsyncParsableCommand {
             return ("assetsExcluded", "\(cks.count) checksum(s)\(context)")
         case .pendingReview(let assetIds, let cks):
             return ("pendingReview", "\(assetIds.count) asset(s) held for manual approval (strict-mode); \(cks.count) checksum(s)")
+        case .syncCompleted(let indexed, let candidates, let pending, let large, let largeBytes, let timeout, let elapsedMs):
+            var parts = ["indexed=\(indexed)", "candidates=\(candidates)"]
+            if pending > 0 { parts.append("pendingReview=\(pending)") }
+            if large > 0 {
+                if largeBytes > 0 {
+                    let mb = Double(largeBytes) / (1024 * 1024)
+                    let sizeStr = mb >= 1024
+                        ? String(format: "%.1fGB", mb / 1024)
+                        : String(format: "%.1fMB", mb)
+                    parts.append("deferredLarge=\(large) (\(sizeStr))")
+                } else {
+                    parts.append("deferredLarge=\(large)")
+                }
+            }
+            if timeout > 0 { parts.append("deferredTimeout=\(timeout)") }
+            parts.append(String(format: "elapsed=%.2fs", Double(elapsedMs) / 1000))
+            return ("syncCompleted", parts.joined(separator: " "))
         }
     }
 }

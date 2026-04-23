@@ -25,7 +25,15 @@ let package = Package(
         .target(name: "CairnCore"),
         .target(
             name: "CairnIOSCore",
-            dependencies: ["CairnCore"]
+            dependencies: ["CairnCore"],
+            resources: [
+                .process("Resources/Media.xcassets"),
+                // Bundled font for the hero wordmark. SwiftUI can't
+                // load bundled fonts by name directly on iOS; we
+                // register via CoreText at app launch. See
+                // `CairnFonts.registerBundledFonts()`.
+                .process("Resources/FiraCode-VariableFont_wght.ttf"),
+            ]
         ),
         .executableTarget(
             name: "CairnCLI",

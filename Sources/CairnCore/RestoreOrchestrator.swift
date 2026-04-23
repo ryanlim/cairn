@@ -1,13 +1,25 @@
 import Foundation
 
+/// Outcome of a `RestoreOrchestrator.restore` call. `restoredAssetIds` is the
+/// final set sent to `POST /api/trash/restore/assets` — it is a superset of
+/// any user-supplied IDs, expanded to keep Live Photo pairs together.
 public struct RestoreRunSummary: Sendable, Equatable {
     public let fromRunId: String
     public let restoredAssetIds: [String]
 }
 
+/// Failure modes for `RestoreOrchestrator.restore`. Each carries enough
+/// context for the CLI to print an actionable error and exit non-zero.
 public enum RestoreError: Error, CustomStringConvertible, Equatable {
+    /// No journal entries match the given run ID. Usually means a typo or the
+    /// user is pointing at the wrong journal file.
     case runNotFoundInJournal(runId: String)
+    /// The run exists but never reached `trashSucceeded` — dry-run or aborted
+    /// before the DELETE landed. Nothing on the server needs restoring.
     case runHasNoTrashedAssets(runId: String)
+    /// The user asked to restore specific asset IDs, but some aren't in this
+    /// run's `trashSucceeded` event. Thrown instead of silently dropping them
+    /// so the caller knows they picked the wrong run.
     case assetIdsNotInRun(runId: String, unknownIds: [String])
 
     public var description: String {
@@ -24,9 +36,15 @@ public enum RestoreError: Error, CustomStringConvertible, Equatable {
     }
 }
 
+/// Undoes a prior `TrashOrchestrator` run by pulling its assets back out of
+/// Immich's Trash. Reads the journal to figure out what was trashed, expands
+/// Live Photo pairs so halves don't get orphaned, calls the server, and
+/// journals the outcome.
 public struct RestoreOrchestrator: Sendable {
     public let writer: ImmichWriter
     public let journal: DeletionJournal
+    /// Clock used for journal timestamps. Injectable so tests get
+    /// deterministic output.
     public let now: @Sendable () -> Date
 
     public init(
@@ -39,14 +57,18 @@ public struct RestoreOrchestrator: Sendable {
         self.now = now
     }
 
-    /// Restore assets that were trashed by a prior run. If `assetIds` is nil,
-    /// every asset the run trashed is restored. If provided, restoration is
-    /// narrowed to those IDs — with two guards:
-    ///   1. Each ID must appear in that run's `trashSucceeded` event, else
-    ///      `.assetIdsNotInRun` is thrown (no silent no-ops).
-    ///   2. Live Photo halves auto-expand: requesting a still implicitly
-    ///      includes its linked motion video and vice versa, so partial
-    ///      restores don't orphan motion videos.
+    /// Restore assets trashed by a prior run.
+    ///
+    /// - If `explicitIds` is nil, every asset in the run's `trashSucceeded`
+    ///   event is restored.
+    /// - If `explicitIds` is provided, restoration narrows to that set, with
+    ///   two guards:
+    ///   1. Each ID must appear in the run's `trashSucceeded` event, else
+    ///      `.assetIdsNotInRun` is thrown. No silent no-ops — a typo in
+    ///      `--asset-id` should fail loudly.
+    ///   2. Live Photo halves auto-expand: asking for a still pulls its
+    ///      linked motion video along and vice versa, so a partial restore
+    ///      never orphans the other half. See `expandLivePhotoPairs`.
     public func restore(
         fromRunId: String,
         assetIds explicitIds: Set<String>? = nil
@@ -85,31 +107,64 @@ public struct RestoreOrchestrator: Sendable {
             event: .restoreStarted(fromRunId: fromRunId, assetIds: idsToRestore)
         ))
 
+        // `restoreStarted` is on disk. Guarantee a matching terminal
+        // (`restoreSucceeded` / `restoreFailed`) even if a journal-append
+        // throws after the writer call, so the run's summary doesn't drift
+        // into `.inProgress` limbo. Use `try?` on the failure-path journal
+        // write because there's no recovery if that throws — we still
+        // re-throw the original error up to the caller.
+        var emittedTerminal = false
         do {
-            try await writer.restoreAssets(ids: idsToRestore)
-        } catch {
+            do {
+                try await writer.restoreAssets(ids: idsToRestore)
+            } catch {
+                try? await journal.append(.init(
+                    timestamp: now(),
+                    runId: fromRunId,
+                    event: .restoreFailed(fromRunId: fromRunId, assetIds: idsToRestore, message: String(describing: error))
+                ))
+                emittedTerminal = true
+                throw error
+            }
+
             try await journal.append(.init(
                 timestamp: now(),
                 runId: fromRunId,
-                event: .restoreFailed(fromRunId: fromRunId, assetIds: idsToRestore, message: String(describing: error))
+                event: .restoreSucceeded(fromRunId: fromRunId, assetIds: idsToRestore)
             ))
+            emittedTerminal = true
+
+            return RestoreRunSummary(fromRunId: fromRunId, restoredAssetIds: idsToRestore)
+        } catch {
+            // Catch-all: if the `restoreSucceeded` append itself throws (disk
+            // full, permission loss), the restore on Immich already happened
+            // but the forensic record is incomplete. Emit `restoreFailed`
+            // with a self-describing message so `RunSummary` resolves to a
+            // terminal status rather than `.inProgress`.
+            if !emittedTerminal {
+                try? await journal.append(.init(
+                    timestamp: now(),
+                    runId: fromRunId,
+                    event: .restoreFailed(
+                        fromRunId: fromRunId,
+                        assetIds: idsToRestore,
+                        message: "journal write failed after restore completed: \(error)"
+                    )
+                ))
+            }
             throw error
         }
-
-        try await journal.append(.init(
-            timestamp: now(),
-            runId: fromRunId,
-            event: .restoreSucceeded(fromRunId: fromRunId, assetIds: idsToRestore)
-        ))
-
-        return RestoreRunSummary(fromRunId: fromRunId, restoredAssetIds: idsToRestore)
     }
 
-    /// Given a user-supplied set of asset IDs and the run's planningTrash
-    /// targets, return a superset that always includes both halves of any
-    /// Live Photo the user touched — requesting the still includes its
-    /// linked motion video, and requesting the video includes the still.
-    /// Prevents partial-restore from leaving orphaned motion videos.
+    /// Expand `requested` so both halves of any Live Photo are present: a
+    /// still implicitly includes its linked motion video, and a motion video
+    /// implicitly includes its still. The `planningTrash` targets carry the
+    /// still ↔ video mapping, so this works from the journal alone without
+    /// needing a fresh server query.
+    ///
+    /// Without this expansion, a user restoring only the still would leave
+    /// the motion video stuck in Trash and produce a broken Live Photo on
+    /// the server.
     public static func expandLivePhotoPairs(
         _ requested: Set<String>,
         from targets: [JournalEntry.TrashTarget]
@@ -128,9 +183,10 @@ public struct RestoreOrchestrator: Sendable {
         return out
     }
 
-    /// ServerAsset-flavored overload for when the source of truth is a
-    /// server query (e.g. `cairn restore --file-name-matches`) rather than
-    /// the local journal. Same pairing rules; different input shape.
+    /// Overload for callers whose pairing source is a live server query
+    /// (e.g. `cairn restore --file-name-matches`) rather than the journal.
+    /// Same pairing rules — adapts `ServerAsset` into `TrashTarget` and
+    /// delegates.
     public static func expandLivePhotoPairs(
         _ requested: Set<String>,
         from serverAssets: [ServerAsset]

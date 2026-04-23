@@ -2,6 +2,14 @@ import ArgumentParser
 import Foundation
 import CairnCore
 
+/// `cairn history` — server-side view of every cairn run.
+///
+/// Reconstructs run history from the breadcrumb tags (`cairn/v1/run/<run_id>`)
+/// cairn attaches at trash time. Works on any machine with API access — the
+/// local `deletion-journal.jsonl` is not required. Complement to `cairn
+/// journal`, which is local-only.
+///
+/// Requires `tag.read` on the API key.
 struct History: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "history",
@@ -11,12 +19,19 @@ struct History: AsyncParsableCommand {
     )
 }
 
+/// Options shared by every `history` subcommand.
 struct HistoryGlobals: ParsableArguments {
     @OptionGroup var globals: GlobalOptions
 }
 
 // MARK: - history list
 
+/// `cairn history list` — enumerate every run the server knows about.
+///
+/// One line per tag matching `cairn/v1/run/*`, most recent first (by tag
+/// `createdAt`). Pass `--detailed` to fetch each run's tagged asset list and
+/// show the current trashed/restored split — costs one extra round-trip per
+/// run.
 struct HistoryList: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "list",
@@ -79,6 +94,12 @@ struct HistoryList: AsyncParsableCommand {
 
 // MARK: - history show
 
+/// `cairn history show` — drill into a specific run.
+///
+/// Looks up the `cairn/v1/run/<run_id>` tag, lists every asset attached to
+/// it, and splits them into "still trashed" vs "back in timeline" (the latter
+/// being assets that `restore` brought back). Prints up to 30 assets with
+/// their current state.
 struct HistoryShow: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "show",

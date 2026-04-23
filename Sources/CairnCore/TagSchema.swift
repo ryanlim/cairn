@@ -1,32 +1,41 @@
 import Foundation
 
-/// Canonical tag-namespace schema for the server-side breadcrumbs cairn writes
-/// into Immich. The schema is versioned at the path level — if we ever need
-/// to change semantics, we bump to `v2` and old tooling understands old tags.
+/// Canonical tag namespace cairn writes onto the Immich server as a
+/// breadcrumb after each trash run. Versioned at the path level so a future
+/// schema change can bump to `v2` without breaking tools reading old tags.
 ///
 ///   Shape:   cairn/v1/run/<run_id>
-///   Where:   run_id = <iso-8601 timestamp>-<short device id>
+///   run_id:  <iso-8601 timestamp>-<short device id>
 ///
-/// One tag per trash run. Every trashed asset in that run (including linked
-/// Live Photo motion videos) gets this single tag. See the plan doc's
-/// "Tag schema" section for the full rationale and what's deliberately NOT
-/// in the schema.
+/// One tag per run; every asset the run trashed (including linked Live Photo
+/// motion videos) receives that single tag. Downstream tools use the tag to
+/// reconstruct runs server-side — `cairn history` lists them, `cairn restore`
+/// can look them up when the local journal is gone. See the plan doc's "Tag
+/// schema" section for what is deliberately NOT captured in the schema.
 public enum TagSchema {
+    /// Top-level namespace. Lowercase to match the product name and to keep
+    /// tag paths case-predictable across tooling.
     public static let root = "cairn"
+    /// Schema version. Bump to `v2` only for breaking changes; additive
+    /// evolution should happen inside v1.
     public static let version = "v1"
+    /// Category under which per-run tags live. Leaves room for other
+    /// categories (e.g. `cairn/v1/exclusion/...`) without a schema bump.
     public static let runCategory = "run"
 
-    /// Full tag value applied to every asset trashed in `runId`.
+    /// Build the full tag value for a given `runId`. This is the string
+    /// handed to `POST /api/tags` and later queried by `cairn history`.
     public static func runTagValue(runId: String) -> String {
         "\(root)/\(version)/\(runCategory)/\(runId)"
     }
 
-    /// Path prefix under which all v1 runs live. Useful for server-side
-    /// queries that want "all cairn runs ever" (e.g., the `history` command).
+    /// Path prefix covering every v1 run tag. Used by `cairn history` to
+    /// filter the server's tag list down to "all cairn runs ever".
     public static let runsPrefix = "\(root)/\(version)/\(runCategory)/"
 
-    /// Extract the run ID out of a `cairn/v1/run/<id>` tag value, or nil if
-    /// the value isn't a v1 run tag. Tolerant of trailing slashes.
+    /// Parse a tag value back to its run ID, or return nil if the value
+    /// isn't a v1 run tag. Tolerant of a trailing slash because the Immich
+    /// server occasionally echoes one.
     public static func runId(fromTagValue value: String) -> String? {
         guard value.hasPrefix(runsPrefix) else { return nil }
         let suffix = value.dropFirst(runsPrefix.count)

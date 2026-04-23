@@ -2,6 +2,13 @@ import ArgumentParser
 import Foundation
 import CairnCore
 
+/// Top-level `cairn` CLI.
+///
+/// Reconciles a local-photo checksum set against an Immich server and trashes
+/// assets that have left the local set. Every subcommand reads `IMMICH_URL`
+/// and `IMMICH_API_KEY` from a `.env` in the current directory (override with
+/// `--env-file`). `dry-run` is the default subcommand; `trash` is the only
+/// destructive one and refuses to run on a fresh ever-seen store.
 @main
 struct Cairn: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -12,12 +19,16 @@ struct Cairn: AsyncParsableCommand {
     )
 }
 
-/// Shared options applied to every subcommand.
+/// Options shared by every subcommand via `@OptionGroup`.
 struct GlobalOptions: ParsableArguments {
     @Option(name: .long, help: "Path to a .env file with IMMICH_URL and IMMICH_API_KEY (default: ./.env in current directory).")
     var envFile: String = ".env"
 }
 
+/// Load the `.env` at `opts.envFile` into the process environment and build an
+/// `ImmichClient` from `IMMICH_URL` + `IMMICH_API_KEY`. Throws if either
+/// secret is missing; the resulting error message surfaces to the user
+/// through `ExitCode.failure` with the message shown by ArgumentParser.
 func loadClient(_ opts: GlobalOptions) throws -> ImmichClient {
     EnvFileLoader.load(fromPath: opts.envFile)
     let secrets = EnvSecretStore()
@@ -26,6 +37,11 @@ func loadClient(_ opts: GlobalOptions) throws -> ImmichClient {
 
 // MARK: - verify
 
+/// `cairn verify` — connectivity + auth smoke test.
+///
+/// Lists assets through the server's `POST /api/search/metadata`. Success
+/// proves the URL resolves, the API key is accepted, and `asset.read` scope
+/// is present. Does not write anything.
 struct Verify: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "Confirm connectivity and that the API key is valid by listing assets."
@@ -42,6 +58,13 @@ struct Verify: AsyncParsableCommand {
 
 // MARK: - dump-server-checksums
 
+/// `cairn dump-server-checksums` — emit every server asset's SHA1 as a
+/// reconciliation input for `dry-run` / `trash`.
+///
+/// Writes one base64 SHA1 per line, sorted. Used to simulate an iPhone
+/// library against a real server when validating the reconciliation
+/// algorithm — pass the same file to `--local-checksums-file` and the
+/// engine reports zero candidates (every server asset "still on device").
 struct DumpServerChecksums: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "dump-server-checksums",
@@ -65,8 +88,69 @@ struct DumpServerChecksums: AsyncParsableCommand {
     }
 }
 
+// MARK: - snapshot-diff helper (shared by dry-run and trash)
+
+/// Derive the positive-deletion signal from between-run diffs of the local
+/// checksum set.
+///
+/// The iOS app gets its positive signal from `PHPhotoLibrary.fetchPersistentChanges`;
+/// the CLI has no equivalent, so it diffs the caller-supplied checksum file
+/// against the previous run's snapshot. Loads the previous snapshot (empty if
+/// missing), computes `removed = previous - current` (checksums that vanished
+/// → positive deletion) and `added = current - previous` (checksums that
+/// re-appeared → previously-confirmed deletions need un-confirming). Unions
+/// `removed` into the confirmed-deleted store at `now`, removes `added`, and
+/// writes the current set back to disk for the next run.
+///
+/// File format: one base64 SHA1 per line, sorted, trailing newline. Same
+/// parser semantics as `--local-checksums-file` (blank lines and `#`
+/// comments ignored on read). Atomic write.
+@discardableResult
+func updateConfirmedFromSnapshotDiff(
+    currentLocal: Set<Checksum>,
+    snapshotPath: String,
+    confirmed: some ConfirmedDeletedStore
+) async throws -> (removed: Set<Checksum>, added: Set<Checksum>) {
+    let snapshotURL = URL(fileURLWithPath: snapshotPath)
+    let previous: Set<Checksum>
+    if FileManager.default.fileExists(atPath: snapshotURL.path) {
+        let raw = try String(contentsOf: snapshotURL, encoding: .utf8)
+        let values = raw.split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty && !$0.hasPrefix("#") }
+        previous = Set(values.map { Checksum(base64: $0) })
+    } else {
+        previous = []
+    }
+
+    let removed = previous.subtracting(currentLocal)
+    let added = currentLocal.subtracting(previous)
+
+    if !removed.isEmpty {
+        try await confirmed.union(removed, at: Date())
+    }
+    if !added.isEmpty {
+        try await confirmed.remove(added)
+    }
+
+    // Write the current set back so the next run's diff is well-defined.
+    let sorted = currentLocal.map(\.base64).sorted()
+    let payload = sorted.joined(separator: "\n") + "\n"
+    try payload.write(to: snapshotURL, atomically: true, encoding: .utf8)
+
+    return (removed, added)
+}
+
 // MARK: - dry-run
 
+/// `cairn dry-run` — non-mutating reconciliation.
+///
+/// Runs the full pipeline (snapshot-diff → persistent stores → reconciliation
+/// engine → safety rails) and prints what `trash` would do, without issuing
+/// any DELETE calls. Persists updated `ever-seen.json` + `confirmed-deleted.json`
+/// + `local-snapshot.json` so repeated dry-runs converge; only the DELETE is
+/// suppressed. Required as the first run on a fresh ever-seen store — `trash`
+/// refuses until ever-seen has been seeded.
 struct DryRun: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "dry-run",
@@ -96,44 +180,42 @@ struct DryRun: AsyncParsableCommand {
     @Option(name: .long, help: "Path to the persistent exclusion store (JSON). Checksums in this file are protected from trashing on every run.")
     var exclusionsStore: String = "exclusions.json"
 
-    @Option(name: .long, help: "Path to the persistent confirmed-deleted store (JSON). Wave 4: append-only set of checksums positively observed in iOS Recently Deleted.")
+    @Option(name: .long, help: "Path to the persistent confirmed-deleted store (JSON). Accumulates positive deletion signals derived from snapshot-diff between runs.")
     var confirmedDeletedStore: String = "confirmed-deleted.json"
 
-    @Option(name: .long, help: "Optional file of base64 SHA1 checksums representing assets currently in iOS Recently Deleted. Unioned into the confirmed-deleted store on this run.")
-    var recentlyDeletedChecksumsFile: String?
+    @Option(name: .long, help: "Path to the persistent local-snapshot file (JSON list of base64 SHA1s). Diffed against --local-checksums-file between runs to produce the positive-deletion signal.")
+    var localSnapshotFile: String = "local-snapshot.json"
 
-    @Option(name: .long, help: "Deletion strictness: strict (only confirmed-deleted candidates trash; rest go to pending review) or trusting (any diff candidate eligible). Default: strict.")
-    var strictness: DeletionStrictness = .strict
+    @Option(name: .long, help: "Days a confirmed-deleted checksum must age before it's eligible to trash. 0 disables quarantine. Default: 14.")
+    var quarantineDays: Int = 14
+
+    @Option(name: .long, help: "Deletion strictness: trusting (diff candidates eligible once past quarantine; default) or strict (additionally holds unconfirmed diff candidates for manual review). Quarantine provides the primary safety window; .strict is an extra-paranoid layer on top.")
+    var strictness: DeletionStrictness = .trusting
 
     func run() async throws {
         let client = try loadClient(globals)
-        let photos = ChecksumFilePhotoEnumerator(
-            filePath: localChecksumsFile,
-            recentlyDeletedFilePath: recentlyDeletedChecksumsFile
-        )
+        let photos = ChecksumFilePhotoEnumerator(filePath: localChecksumsFile)
         let store = JSONFileEverSeenStore(filePath: everSeenStore)
         let exclusions = JSONFileExclusionStore(filePath: exclusionsStore)
         let confirmed = JSONFileConfirmedDeletedStore(filePath: confirmedDeletedStore)
 
         let local = try await photos.currentChecksums()
-        let confirmedBefore = try await confirmed.snapshot()
-        // Refresh confirmed-deleted with anything currently in Recently Deleted.
-        let recentlyDeleted = try await photos.recentlyDeletedChecksums()
-        let newlyConfirmed = recentlyDeleted.subtracting(confirmedBefore)
-        if !newlyConfirmed.isEmpty {
-            try await confirmed.union(newlyConfirmed)
-        }
+        let (removed, added) = try await updateConfirmedFromSnapshotDiff(
+            currentLocal: local,
+            snapshotPath: localSnapshotFile,
+            confirmed: confirmed
+        )
 
         let everSeenBefore = try await store.snapshot()
         let excludedSet = Set(try await exclusions.snapshot().keys)
-        let confirmedSet = try await confirmed.snapshot()
+        let confirmedMap = try await confirmed.snapshot()
         let isFirstRun = everSeenBefore.isEmpty
 
         print("local checksums: \(local.count)")
         print("ever-seen (before): \(everSeenBefore.count)\(isFirstRun ? "  [first run]" : "")")
         if !excludedSet.isEmpty { print("excluded checksums: \(excludedSet.count)") }
-        print("confirmed-deleted: \(confirmedSet.count)\(newlyConfirmed.isEmpty ? "" : "  (+\(newlyConfirmed.count) from this scan)")")
-        print("strictness: \(strictness.rawValue)")
+        print("confirmed-deleted: \(confirmedMap.count)  (+\(removed.count) confirmed, -\(added.count) un-confirmed on this scan)")
+        print("strictness: \(strictness.rawValue)  quarantineDays: \(quarantineDays)")
         print("fetching server assets…")
 
         let allServer = try await client.listAllAssets()
@@ -144,7 +226,9 @@ struct DryRun: AsyncParsableCommand {
             currentLocalChecksums: local,
             everSeenChecksums: everSeenBefore,
             excludedChecksums: excludedSet,
-            confirmedDeletedChecksums: confirmedSet,
+            confirmedDeletedAt: confirmedMap,
+            now: Date(),
+            quarantineDays: quarantineDays,
             strictness: strictness
         ))
 
@@ -156,6 +240,9 @@ struct DryRun: AsyncParsableCommand {
         print("delete candidates: \(result.deleteCandidates.count)")
         if !result.pendingReviewCandidates.isEmpty {
             print("pending review (strict-mode holdback, not yet confirmed deleted): \(result.pendingReviewCandidates.count)")
+        }
+        if !result.heldByQuarantineCandidates.isEmpty {
+            print("held by quarantine: \(result.heldByQuarantineCandidates.count)")
         }
 
         let safety = SafetyRails.evaluate(
@@ -206,6 +293,19 @@ extension DeletionStrictness: ExpressibleByArgument {}
 
 // MARK: - trash (the destructive path)
 
+/// `cairn trash` — the destructive reconciliation path.
+///
+/// Same pipeline as `dry-run`, but actually issues `DELETE /api/assets` with
+/// `force: false` (so assets land in Immich's 30-day trash, not hard-deleted).
+/// Before deleting, applies a `cairn/v1/run/<run_id>` breadcrumb tag to every
+/// candidate so `restore` and `history` can find them later. Writes a
+/// `runStarted` / `planningTrash` / `tagApplied` / `trashSucceeded` /
+/// `runCompleted` sequence to `deletion-journal.jsonl`.
+///
+/// Refuses to run on a fresh ever-seen store — the user must run `dry-run`
+/// first to seed it. Otherwise day-one would trash every server asset not
+/// currently on the device. Also requires a two-confirm prompt (suppressed
+/// with `--yes`) mirroring the iOS "Yes, trash N" rust-banner pattern.
 struct Trash: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "trash",
@@ -238,36 +338,35 @@ struct Trash: AsyncParsableCommand {
     @Option(name: .long, help: "Path to the persistent exclusion store (JSON). Checksums in this file are protected from trashing on every run.")
     var exclusionsStore: String = "exclusions.json"
 
-    @Option(name: .long, help: "Path to the persistent confirmed-deleted store (JSON). Wave 4: append-only set of checksums positively observed in iOS Recently Deleted.")
+    @Option(name: .long, help: "Path to the persistent confirmed-deleted store (JSON). Accumulates positive deletion signals derived from snapshot-diff between runs.")
     var confirmedDeletedStore: String = "confirmed-deleted.json"
 
-    @Option(name: .long, help: "Optional file of base64 SHA1 checksums representing assets currently in iOS Recently Deleted. Unioned into the confirmed-deleted store on this run.")
-    var recentlyDeletedChecksumsFile: String?
+    @Option(name: .long, help: "Path to the persistent local-snapshot file (JSON list of base64 SHA1s). Diffed against --local-checksums-file between runs to produce the positive-deletion signal.")
+    var localSnapshotFile: String = "local-snapshot.json"
 
-    @Option(name: .long, help: "Deletion strictness: strict (only confirmed-deleted candidates trash; rest go to pending review) or trusting (any diff candidate eligible). Default: strict.")
-    var strictness: DeletionStrictness = .strict
+    @Option(name: .long, help: "Days a confirmed-deleted checksum must age before it's eligible to trash. 0 disables quarantine. Default: 14.")
+    var quarantineDays: Int = 14
+
+    @Option(name: .long, help: "Deletion strictness: trusting (diff candidates eligible once past quarantine; default) or strict (additionally holds unconfirmed diff candidates for manual review). Quarantine provides the primary safety window; .strict is an extra-paranoid layer on top.")
+    var strictness: DeletionStrictness = .trusting
 
     func run() async throws {
         let client = try loadClient(globals)
-        let photos = ChecksumFilePhotoEnumerator(
-            filePath: localChecksumsFile,
-            recentlyDeletedFilePath: recentlyDeletedChecksumsFile
-        )
+        let photos = ChecksumFilePhotoEnumerator(filePath: localChecksumsFile)
         let store = JSONFileEverSeenStore(filePath: everSeenStore)
         let exclusions = JSONFileExclusionStore(filePath: exclusionsStore)
         let confirmed = JSONFileConfirmedDeletedStore(filePath: confirmedDeletedStore)
 
         let local = try await photos.currentChecksums()
-        let confirmedBefore = try await confirmed.snapshot()
-        let recentlyDeleted = try await photos.recentlyDeletedChecksums()
-        let newlyConfirmed = recentlyDeleted.subtracting(confirmedBefore)
-        if !newlyConfirmed.isEmpty {
-            try await confirmed.union(newlyConfirmed)
-        }
+        let (removed, added) = try await updateConfirmedFromSnapshotDiff(
+            currentLocal: local,
+            snapshotPath: localSnapshotFile,
+            confirmed: confirmed
+        )
 
         let everSeenBefore = try await store.snapshot()
         let excludedSet = Set(try await exclusions.snapshot().keys)
-        let confirmedSet = try await confirmed.snapshot()
+        let confirmedMap = try await confirmed.snapshot()
         let isFirstRun = everSeenBefore.isEmpty
 
         if isFirstRun {
@@ -277,8 +376,8 @@ struct Trash: AsyncParsableCommand {
         print("local checksums: \(local.count)")
         print("ever-seen (before): \(everSeenBefore.count)")
         if !excludedSet.isEmpty { print("excluded checksums: \(excludedSet.count)") }
-        print("confirmed-deleted: \(confirmedSet.count)\(newlyConfirmed.isEmpty ? "" : "  (+\(newlyConfirmed.count) from this scan)")")
-        print("strictness: \(strictness.rawValue)")
+        print("confirmed-deleted: \(confirmedMap.count)  (+\(removed.count) confirmed, -\(added.count) un-confirmed on this scan)")
+        print("strictness: \(strictness.rawValue)  quarantineDays: \(quarantineDays)")
         print("fetching server assets…")
         let allServer = try await client.listAllAssets()
         print("server assets (excluding trashed): \(allServer.count)")
@@ -288,7 +387,9 @@ struct Trash: AsyncParsableCommand {
             currentLocalChecksums: local,
             everSeenChecksums: everSeenBefore,
             excludedChecksums: excludedSet,
-            confirmedDeletedChecksums: confirmedSet,
+            confirmedDeletedAt: confirmedMap,
+            now: Date(),
+            quarantineDays: quarantineDays,
             strictness: strictness
         ))
         if recon.excludedCandidateCount > 0 {
@@ -297,6 +398,9 @@ struct Trash: AsyncParsableCommand {
         print("delete candidates: \(recon.deleteCandidates.count)")
         if !recon.pendingReviewCandidates.isEmpty {
             print("pending review (strict-mode holdback, not yet confirmed deleted): \(recon.pendingReviewCandidates.count)")
+        }
+        if !recon.heldByQuarantineCandidates.isEmpty {
+            print("held by quarantine: \(recon.heldByQuarantineCandidates.count)")
         }
 
         let safety = SafetyRails.evaluate(
@@ -397,6 +501,19 @@ struct Trash: AsyncParsableCommand {
 
 // MARK: - restore (undo a trash run)
 
+/// `cairn restore` — undo a prior trash run via `POST /api/trash/restore/assets`.
+///
+/// Three modes:
+///   - Whole-run restore: just `--run-id`. Uses the `trashSucceeded` entry
+///     from the journal as the asset-id list.
+///   - Targeted by asset id: `--asset-id` (repeatable). Live Photo halves
+///     auto-expand from the journal's `planningTrash` event — passing a still
+///     also restores its paired motion video.
+///   - Targeted by filename regex: `--file-name-matches`. Requires `tag.read`
+///     on the API key because it looks up the run's breadcrumb tag on the
+///     server and matches against each asset's originalFileName.
+///
+/// `--asset-id` and `--file-name-matches` are mutually exclusive.
 struct Restore: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "restore",
@@ -526,6 +643,13 @@ struct Restore: AsyncParsableCommand {
 
 // MARK: - diagnose (observability only — no mutation)
 
+/// `cairn diagnose` — read-only server inspection.
+///
+/// Lists assets per `AssetVisibility` class (`timeline` / `archive` /
+/// `hidden`), then checks Live Photo integrity: every motion video
+/// referenced by a still should exist in `hidden`, and every `hidden` asset
+/// should be referenced by at least one still. Surfaces dangling references
+/// and orphaned hidden assets as diagnostic output. Never mutates.
 struct Diagnose: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "diagnose",

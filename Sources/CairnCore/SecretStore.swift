@@ -1,8 +1,15 @@
 import Foundation
 
-/// Narrow protocol over the two secrets cairn needs: the Immich server URL
-/// and the API key. The iOS target will back this with Keychain; the CLI
-/// reads from process environment (populated from a `.env` file).
+/// Narrow protocol over the two secrets cairn needs: the Immich server
+/// URL and the API key. The iOS target backs this with Keychain (so a
+/// device wipe or app delete removes credentials); the CLI reads from
+/// process environment, typically populated from a `.env` file via
+/// `EnvFileLoader`.
+///
+/// Both accessors throw `SecretStoreError.missing` on absence rather
+/// than returning optionals — callers treat missing credentials as a
+/// hard failure, and a thrown error carries the variable name for the
+/// user-facing message.
 public protocol SecretStore: Sendable {
     func serverURL() throws -> URL
     func apiKey() throws -> String
@@ -22,8 +29,11 @@ public enum SecretStoreError: Error, CustomStringConvertible, Equatable {
     }
 }
 
-/// Reads from process environment under the usual variable names.
-/// Populate via `.env` file before constructing, e.g. through `EnvFileLoader`.
+/// `SecretStore` backed by `ProcessInfo.processInfo.environment`. The
+/// CLI is the primary consumer; an iOS app would use a Keychain-backed
+/// implementation instead. Populate the environment before
+/// constructing — typically via `EnvFileLoader.load(fromPath:)` at
+/// process start.
 public struct EnvSecretStore: SecretStore {
     public let urlVariable: String
     public let keyVariable: String
