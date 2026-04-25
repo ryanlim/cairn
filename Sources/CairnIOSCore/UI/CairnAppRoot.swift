@@ -374,7 +374,6 @@ public struct CairnAppRoot: View {
                 lastCheckedAt: model.reconciliation?.computedAt,
                 missingPermissions: model.missingPermissions,
                 indexed: model.library.indexed,
-                deferredQueueCount: model.deferredQueue.count,
                 syncPhase: model.syncPhase,
                 onStartSync: {
                     presentDryRunSheet(forceTripped: model.appState == .thresholdTripped)

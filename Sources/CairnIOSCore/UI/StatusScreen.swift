@@ -88,8 +88,6 @@ public struct StatusScreen: View {
     public let missingPermissions: [String]
     /// Live indexed count (checksums in the hash store).
     public let indexed: Int
-    /// Items in the deferred queue (will retry in background).
-    public let deferredQueueCount: Int
     public let syncPhase: CairnAppModel.SyncPhase
     public let onStartSync: () -> Void
     public let onCancelSync: () -> Void
@@ -137,7 +135,6 @@ public struct StatusScreen: View {
         lastCheckedAt: Date? = nil,
         missingPermissions: [String] = [],
         indexed: Int = 0,
-        deferredQueueCount: Int = 0,
         syncPhase: CairnAppModel.SyncPhase = .idle,
         onStartSync: @escaping () -> Void = {},
         onCancelSync: @escaping () -> Void = {},
@@ -169,7 +166,6 @@ public struct StatusScreen: View {
         self.lastCheckedAt = lastCheckedAt
         self.missingPermissions = missingPermissions
         self.indexed = indexed
-        self.deferredQueueCount = deferredQueueCount
         self.syncPhase = syncPhase
         self.onStartSync = onStartSync
         self.onCancelSync = onCancelSync
@@ -573,7 +569,7 @@ public struct StatusScreen: View {
                         fraction: min(1.0, Double(progress.hashed) / Double(progress.total)),
                         tone: .pending
                     )
-                    ProcessingBreakdown(indexed: indexed, deferredQueueCount: deferredQueueCount, processed: progress.hashed)
+                    ProcessingBreakdown(indexed: indexed, deferredQueueCount: deferredQueue.count, processed: progress.hashed)
                 } else {
                     ProgressBar(
                         fraction: min(1.0, pct / max(0.001, maxDeletePercent)),
