@@ -404,7 +404,10 @@ public struct CairnAppRoot: View {
                 },
                 deferredQueue: model.deferredQueue,
                 onForceDrainDeferred: {
-                    Task { await model.actions.forceDrainDeferred() }
+                    activeSyncTask?.cancel()
+                    activeSyncTask = Task { @MainActor in
+                        await model.actions.forceDrainDeferred()
+                    }
                 }
             )
         case "runs":
