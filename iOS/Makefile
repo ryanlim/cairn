@@ -4,7 +4,7 @@
 # the day-to-day commands stay short and discoverable. Run `make help` to
 # see what's available.
 
-.PHONY: help install generate open clean test build beta release setup-certs sync-certs screenshots export-wordmark device device-run device-list device-logs
+.PHONY: help install generate open clean test build beta release setup-certs sync-certs screenshots export-wordmark device device-run device-list device-logs sim-run sim-seed
 
 # Bundle identifier — must match PRODUCT_BUNDLE_IDENTIFIER in project.yml.
 BUNDLE_ID := app.cairn.ios
@@ -163,3 +163,40 @@ device-run: generate  ## Like `make device` but attaches the app's stdout/stderr
 device-logs:   ## Open macOS Console.app pre-positioned for device logs. `make device-run` is usually better for timing experiments.
 	@open -a Console
 	@echo "ℹ️  In Console.app: pick your device in the sidebar, then filter by 'subsystem:app.cairn.ios' to see the structured hash perf logs."
+
+# Simulator support — uses the booted sim or SIM=<name> to pick.
+SIM ?= $(shell xcrun simctl list devices booted -j 2>/dev/null | python3 -c "import sys,json; ds=json.load(sys.stdin)['devices']; udids=[d['udid'] for v in ds.values() for d in v if d['state']=='Booted']; print(udids[0] if udids else '')" 2>/dev/null)
+
+sim-seed:      ## Add 500 test photos to the booted simulator. SIM=<udid> to pick.
+	@if [ -z "$(SIM)" ]; then echo "❌ No booted simulator. Boot one first."; exit 1; fi
+	@echo "🖼  Generating 500 test images…"
+	@python3 -c "\
+	import struct, zlib, os, random; random.seed(42); os.makedirs('/tmp/cairn-sim-photos', exist_ok=True); \
+	[open(f'/tmp/cairn-sim-photos/test_{i:04d}.png','wb').write( \
+	  b'\x89PNG\r\n\x1a\n' + \
+	  (lambda d: struct.pack('>I',len(d)) + b'IHDR' + d + struct.pack('>I',zlib.crc32(b'IHDR'+d)&0xffffffff))(struct.pack('>IIBBBBB',200,200,8,2,0,0,0)) + \
+	  (lambda d: struct.pack('>I',len(d)) + b'IDAT' + d + struct.pack('>I',zlib.crc32(b'IDAT'+d)&0xffffffff))(zlib.compress(b''.join(b'\x00'+bytes([random.randint(30,255),random.randint(30,255),random.randint(30,255)])*200 for _ in range(200)))) + \
+	  struct.pack('>I',0) + b'IEND' + struct.pack('>I',zlib.crc32(b'IEND')&0xffffffff) \
+	) for i in range(500)]"
+	@echo "📲 Adding to simulator $(SIM)…"
+	@xcrun simctl addmedia "$(SIM)" /tmp/cairn-sim-photos/*.png
+	@echo "✅ 500 test photos added."
+
+sim-run: generate  ## Build + run on the booted simulator with console output. SIM=<udid> to pick. RESET=1 wipes state. CAP=N caps hashing.
+	@if [ -z "$(SIM)" ]; then echo "❌ No booted simulator. Boot one first."; exit 1; fi
+	@echo "📱 Building for simulator $(SIM)"
+	@xcodebuild -project Cairn.xcodeproj \
+		-scheme Cairn \
+		-configuration Debug \
+		-sdk iphonesimulator \
+		-destination "id=$(SIM)" \
+		-derivedDataPath build/sim \
+		CODE_SIGNING_ALLOWED=NO \
+		build
+	@xcrun simctl install "$(SIM)" build/sim/Build/Products/Debug-iphonesimulator/Cairn.app
+	@echo "ℹ️  Launching with console attached. Ctrl-C to stop."
+	@SIMCTL_CHILD_CAIRN_ASSET_CAP=$(CAP) \
+		SIMCTL_CHILD_CAIRN_DEV_SEED_URL="$(DEV_SEED_URL)" \
+		SIMCTL_CHILD_CAIRN_DEV_SEED_KEY="$(DEV_SEED_KEY)" \
+		SIMCTL_CHILD_CAIRN_RESET=$(RESET) \
+		xcrun simctl launch --console-pty "$(SIM)" $(BUNDLE_ID)
