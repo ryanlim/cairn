@@ -81,6 +81,9 @@ public struct StatusScreen: View {
     /// Optional hashing progress, surfaced in the CTA label when the
     /// full-enumeration path is running ("Hashing 1,245 / 4,218").
     public let syncProgress: (hashed: Int, total: Int)?
+    /// When the last reconciliation ran. Surfaces as "Last checked N ago"
+    /// so stale data has context.
+    public let lastCheckedAt: Date?
     /// Required API permissions the key is missing. Empty = all good.
     public let missingPermissions: [String]
     /// Live indexed count (checksums in the hash store).
@@ -131,6 +134,7 @@ public struct StatusScreen: View {
         initialScanPending: Bool = false,
         isSyncing: Bool = false,
         syncProgress: (hashed: Int, total: Int)? = nil,
+        lastCheckedAt: Date? = nil,
         missingPermissions: [String] = [],
         indexed: Int = 0,
         deferredQueueCount: Int = 0,
@@ -162,6 +166,7 @@ public struct StatusScreen: View {
         self.initialScanPending = initialScanPending
         self.isSyncing = isSyncing
         self.syncProgress = syncProgress
+        self.lastCheckedAt = lastCheckedAt
         self.missingPermissions = missingPermissions
         self.indexed = indexed
         self.deferredQueueCount = deferredQueueCount
@@ -544,6 +549,12 @@ public struct StatusScreen: View {
                     }
                 }
 
+                if !isSyncing, let checked = lastCheckedAt {
+                    Text("Last checked \(Self.relativeTime(checked))")
+                        .font(.system(size: 11))
+                        .foregroundStyle(t.textHint)
+                }
+
                 if quarantineCount > 0 {
                     quarantineLine
                 }
@@ -708,6 +719,17 @@ public struct StatusScreen: View {
             }
             .buttonStyle(CairnPressStyle())
         }
+    }
+
+    static func relativeTime(_ date: Date) -> String {
+        let seconds = Int(Date().timeIntervalSince(date))
+        if seconds < 60 { return "just now" }
+        let minutes = seconds / 60
+        if minutes < 60 { return "\(minutes)m ago" }
+        let hours = minutes / 60
+        if hours < 24 { return "\(hours)h ago" }
+        let days = hours / 24
+        return "\(days)d ago"
     }
 
     static func relativeDay(_ date: Date) -> String {

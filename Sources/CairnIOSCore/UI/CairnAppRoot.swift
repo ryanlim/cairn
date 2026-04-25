@@ -358,6 +358,7 @@ public struct CairnAppRoot: View {
                 initialScanPending: !model.hasCompletedInitialScan && !model.isSyncing,
                 isSyncing: model.isSyncing,
                 syncProgress: model.syncProgress.map { (hashed: $0.hashed, total: $0.total) },
+                lastCheckedAt: model.reconciliation?.computedAt,
                 missingPermissions: model.missingPermissions,
                 indexed: model.library.indexed,
                 deferredQueueCount: model.deferredQueue.count,
