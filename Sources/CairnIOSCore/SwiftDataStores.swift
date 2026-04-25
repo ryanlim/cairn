@@ -539,6 +539,19 @@ public actor SwiftDataLocalHashStore: LocalHashStore {
         return ids
     }
 
+    /// Flat union of every cached checksum. Skips the per-row Live
+    /// Photo grouping that `snapshot()` does — cheap when callers
+    /// only need a `Set<Checksum>` for reconciliation diffs.
+    public func allChecksums() async throws -> Set<Checksum> {
+        let rows = try context.fetch(FetchDescriptor<StoredLocalHashEntry>())
+        var out = Set<Checksum>()
+        out.reserveCapacity(rows.count)
+        for row in rows {
+            out.insert(Checksum(base64: row.base64))
+        }
+        return out
+    }
+
     public func checksums(for localIdentifier: String) async throws -> Set<Checksum> {
         let descriptor = FetchDescriptor<StoredLocalHashEntry>(
             predicate: #Predicate<StoredLocalHashEntry> { $0.localIdentifier == localIdentifier }

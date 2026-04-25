@@ -39,6 +39,13 @@ public protocol LocalHashStore: Sendable {
     /// with a cheaper aggregate query should override.
     func allLocalIdentifiers() async throws -> Set<String>
 
+    /// Flat union of every cached checksum across all identifiers.
+    /// Cheap alternative to `snapshot()` when callers only need the
+    /// checksum set for reconciliation diffs (no per-id mapping).
+    /// Default impl materializes the snapshot; concrete stores
+    /// should override.
+    func allChecksums() async throws -> Set<Checksum>
+
     /// Checksums cached for a specific identifier. Empty set when unknown.
     func checksums(for localIdentifier: String) async throws -> Set<Checksum>
 
@@ -88,5 +95,13 @@ public extension LocalHashStore {
     /// as `indexedCount`'s fallback — concrete stores should override.
     func allLocalIdentifiers() async throws -> Set<String> {
         Set(try await snapshot().keys)
+    }
+
+    /// Fallback implementation of `allChecksums()`. Materializes the
+    /// snapshot; concrete stores should override.
+    func allChecksums() async throws -> Set<Checksum> {
+        var out = Set<Checksum>()
+        for (_, cks) in try await snapshot() { out.formUnion(cks) }
+        return out
     }
 }

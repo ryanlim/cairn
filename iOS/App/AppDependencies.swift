@@ -437,10 +437,7 @@ final class AppDependencies {
             let nonTrashed = assets.filter { !$0.isTrashed }.count
             // Seed matched from already-cached hashes so a resumed scan
             // doesn't show 0 matched until the final reconciliation.
-            let cached = (try? await hashStoreRef.snapshot()) ?? [:]
-            var localChecksums = Set<Checksum>()
-            localChecksums.reserveCapacity(cached.count)
-            for (_, cs) in cached { localChecksums.formUnion(cs) }
+            let localChecksums = (try? await hashStoreRef.allChecksums()) ?? []
             let initialMatched = checksums.intersection(localChecksums).count
             await MainActor.run {
                 self?.serverChecksumSet = checksums
@@ -463,12 +460,8 @@ final class AppDependencies {
         try Task.checkCancellation()
         model.syncPhase = .fetchingServer
         let t1 = Date()
-        let hashMap = try await self.localHashStore.snapshot()
-        var local: Set<Checksum> = []
-        local.reserveCapacity(hashMap.count)
-        for (_, checksums) in hashMap {
-            local.formUnion(checksums)
-        }
+        let local = try await self.localHashStore.allChecksums()
+        let indexedCount = try await self.localHashStore.indexedCount()
 
         let visibleFetchOptions = PHFetchOptions()
         visibleFetchOptions.includeHiddenAssets = false
@@ -479,7 +472,7 @@ final class AppDependencies {
             totalVisibleAssets = cap
         }
 
-        syncLog.info("[cairn.sync] hashMap snapshot took \(Int(Date().timeIntervalSince(t1) * 1000))ms (\(hashMap.count) entries)")
+        syncLog.info("[cairn.sync] local checksums fetched in \(Int(Date().timeIntervalSince(t1) * 1000))ms (\(indexedCount) entries)")
         let t2 = Date()
         let everSeenSet = try await everSeen.snapshot()
         let exclusionSet = Set(try await exclusions.snapshot().keys)
@@ -518,7 +511,7 @@ final class AppDependencies {
         let serverNonTrashed = serverAssets.filter { !$0.isTrashed }.count
         let liveLibrary = CairnFixtures.LibrarySize(
             local: totalVisibleAssets,
-            indexed: hashMap.count,
+            indexed: indexedCount,
             server: serverNonTrashed,
             matched: result.assetsInEverSeen,
             candidates: result.deleteCandidates.count
@@ -544,7 +537,7 @@ final class AppDependencies {
                 try await journal.append(.init(
                     runId: runId,
                     event: .syncCompleted(
-                        indexed: hashMap.count,
+                        indexed: indexedCount,
                         candidates: result.deleteCandidates.count,
                         pendingReview: result.pendingReviewCandidates.count,
                         deferredLarge: scan.deferredLarge,
@@ -567,7 +560,7 @@ final class AppDependencies {
         await refreshQuarantineCount()
 
         if result.deleteCandidates.isEmpty && result.pendingReviewCandidates.isEmpty {
-            showStatusToast(.upToDate(indexed: hashMap.count, total: totalVisibleAssets))
+            showStatusToast(.upToDate(indexed: indexedCount, total: totalVisibleAssets))
         } else {
             model.syncToast = nil
         }
