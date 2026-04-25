@@ -201,12 +201,20 @@ public final class PhotoKitPersistentChangeReconciler {
     /// screen overrides), `foregroundDrainBudget` at 25 (quick skim
     /// without stalling the UI). `clock` is injectable for
     /// time-sensitive tests.
+    /// Optional metadata store. When wired, the reconciler records
+    /// `(filename, creationDate, …)` for every observed insert/update
+    /// before attempting to hash. Lets the orphan-reconciliation path
+    /// recover identity for assets that were deleted before cairn
+    /// could finish hashing them.
+    private let metadataStore: (any LocalAssetMetadataStore)?
+
     public init(
         hashStore: any LocalHashStore,
         confirmedDeleted: any ConfirmedDeletedStore,
         everSeen: any EverSeenStore,
         tokens: any PersistentChangeTokenStore,
         deferredStore: (any DeferredHashStore)? = nil,
+        metadataStore: (any LocalAssetMetadataStore)? = nil,
         maxAssets: Int? = nil,
         maxICloudBytesPerAsset: Int64? = 100 * 1024 * 1024,
         hardCeilingBytes: Int64? = nil,
@@ -219,6 +227,7 @@ public final class PhotoKitPersistentChangeReconciler {
         self.everSeen = everSeen
         self.tokens = tokens
         self.deferredStore = deferredStore
+        self.metadataStore = metadataStore
         self.maxAssets = maxAssets
         self.maxICloudBytesPerAsset = maxICloudBytesPerAsset
         self.hardCeilingBytes = hardCeilingBytes
@@ -316,6 +325,13 @@ public final class PhotoKitPersistentChangeReconciler {
             let cached = try await hashStore.checksums(for: id)
             removedChecksums.formUnion(cached)
         }
+
+        // Capture cheap PHAsset metadata (filename, creationDate, size)
+        // before hashing. If the asset is deleted before the hash
+        // completes (or before the BG slot expires), the metadata
+        // cache still has enough info to correlate against the server
+        // for the orphan-reconciliation path.
+        try await recordObservedMetadata(ids: insertedIds.union(updatedIds))
 
         // Inserted: hash the new assets, stash in local cache + ever-seen.
         // Defer counts from both inserted + updated batches accumulate
@@ -708,6 +724,12 @@ public final class PhotoKitPersistentChangeReconciler {
             assets = Array(assets.prefix(cap))
         }
 
+        // Record metadata up-front for the entire enumeration set —
+        // even if hashing is interrupted (cancellation, BG slot
+        // expiration), we'll still have filename + creationDate for
+        // every observed asset, ready for the orphan-correlation path.
+        try await recordFullEnumerationMetadata(assets: assets)
+
         // Resume: split assets into "already hashed" (skip) and "need
         // hashing" (actual work). The cached subset still counts toward
         // progress — otherwise a resumed scan would show 0/N initially
@@ -766,6 +788,66 @@ public final class PhotoKitPersistentChangeReconciler {
         // computed — cached assets aren't deferred, they're already done.
         fresh.checksumsByID.merge(cached) { new, _ in new }
         return fresh
+    }
+
+    /// Bulk-record metadata for a list of PHAssets (full enumeration
+    /// path). Same as `recordObservedMetadata(ids:)` but skips the
+    /// PhotoKit fetch — we already have the assets in hand.
+    private func recordFullEnumerationMetadata(assets: [PHAsset]) async throws {
+        guard let metadataStore, !assets.isEmpty else { return }
+        let now = clock()
+        var entries: [LocalAssetMetadata] = []
+        entries.reserveCapacity(assets.count)
+        for asset in assets {
+            let resources = PHAssetResource.assetResources(for: asset)
+            let primary = resources.first
+            let size = (primary?.value(forKey: "fileSize") as? NSNumber)?.int64Value
+            entries.append(LocalAssetMetadata(
+                localIdentifier: asset.localIdentifier,
+                originalFileName: primary?.originalFilename,
+                creationDate: asset.creationDate,
+                modificationDate: asset.modificationDate,
+                fileSize: size,
+                observedAt: now
+            ))
+        }
+        try await metadataStore.record(entries)
+    }
+
+    /// Eagerly record `(filename, creationDate, fileSize)` for the
+    /// given ids — cheap PHAsset property reads, microseconds each. The
+    /// goal is to have *something* on disk before we attempt the
+    /// expensive hash, so a deletion that arrives before hashing
+    /// completes still leaves a correlation key for the orphan-
+    /// reconciliation path.
+    ///
+    /// No-op when `metadataStore` is unwired (e.g. tests).
+    private func recordObservedMetadata(ids: Set<String>) async throws {
+        guard let metadataStore, !ids.isEmpty else { return }
+        let fetch = PHAsset.fetchAssets(withLocalIdentifiers: Array(ids), options: nil)
+        let now = clock()
+        var entries: [LocalAssetMetadata] = []
+        entries.reserveCapacity(fetch.count)
+        fetch.enumerateObjects { asset, _, _ in
+            let resources = PHAssetResource.assetResources(for: asset)
+            let primary = resources.first
+            let filename = primary?.originalFilename
+            // PHAssetResource exposes `fileSize` via KVC on iOS — it's
+            // a documented private-but-public field used by every
+            // backup app. Falls back to nil if missing.
+            let size = (primary?.value(forKey: "fileSize") as? NSNumber)?.int64Value
+            entries.append(LocalAssetMetadata(
+                localIdentifier: asset.localIdentifier,
+                originalFileName: filename,
+                creationDate: asset.creationDate,
+                modificationDate: asset.modificationDate,
+                fileSize: size,
+                observedAt: now
+            ))
+        }
+        if !entries.isEmpty {
+            try await metadataStore.record(entries)
+        }
     }
 
     /// Filter the given updated-id set down to ids whose PhotoKit

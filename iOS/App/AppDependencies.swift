@@ -29,6 +29,7 @@ final class AppDependencies {
     let globalContainer: ModelContainer
     let localHashStore: SwiftDataLocalHashStore
     let deferredHashStore: SwiftDataDeferredHashStore
+    let localAssetMetadataStore: SwiftDataLocalAssetMetadataStore
 
     // MARK: - Per-server stores (nil until activateServer runs)
 
@@ -60,6 +61,7 @@ final class AppDependencies {
             everSeen: everSeen,
             tokens: tokens,
             deferredStore: deferredHashStore,
+            metadataStore: localAssetMetadataStore,
             maxAssets: Self.resolveTestingAssetCap(),
             maxICloudBytesPerAsset: bytesLimit,
             hardCeilingBytes: ceilingBytes,
@@ -149,6 +151,7 @@ final class AppDependencies {
         self.globalContainer = container
         self.localHashStore = SwiftDataLocalHashStore(container: container)
         self.deferredHashStore = SwiftDataDeferredHashStore(container: container)
+        self.localAssetMetadataStore = SwiftDataLocalAssetMetadataStore(container: container)
 
         let actions = AppDependencies.makePreviewActions()
         self.model = CairnAppModel(
