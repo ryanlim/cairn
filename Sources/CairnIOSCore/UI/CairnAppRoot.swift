@@ -89,7 +89,9 @@ public struct CairnAppRoot: View {
     @ViewBuilder
     private var bodyContent: some View {
         Group {
-            if model.needsOnboarding {
+            if model.isBootstrapping {
+                Color.clear
+            } else if model.needsOnboarding {
                 onboarding
             } else if !model.hasCompletedInitialScan && !model.hasDismissedInitialScan {
                 // First-run path: hashing the whole library is substantial
@@ -243,9 +245,14 @@ public struct CairnAppRoot: View {
                 }
             }
         )
-        // No auto-start. The scan is user-initiated so first-launch
-        // users can review Settings — especially the iCloud download
-        // limits — before committing to a full hash pass.
+        #if DEBUG
+        .task {
+            if ProcessInfo.processInfo.environment["CAIRN_AUTO_SCAN"] == "1"
+                || UserDefaults.standard.bool(forKey: "CAIRN_AUTO_SCAN") {
+                startTrackedSync()
+            }
+        }
+        #endif
     }
 
     // MARK: - Main tabs

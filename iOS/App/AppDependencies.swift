@@ -1,8 +1,11 @@
 import Foundation
 import SwiftData
 import Photos
+import os
 import CairnCore
 import CairnIOSCore
+
+private let syncLog = Logger(subsystem: "app.cairn.ios", category: "sync")
 
 @MainActor
 @Observable
@@ -133,9 +136,10 @@ final class AppDependencies {
 
         let actions = AppDependencies.makePreviewActions()
         self.model = CairnAppModel(
-            needsOnboarding: true,
+            needsOnboarding: false,
             actions: actions
         )
+        model.isBootstrapping = true
 
         rewireActions()
     }
@@ -188,20 +192,27 @@ final class AppDependencies {
         }
         #endif
 
+
+        var url = try? secretStore.serverURL()
+        var apiKey = try? secretStore.apiKey()
         #if DEBUG
-        if (try? secretStore.serverURL()) == nil || (try? secretStore.apiKey()) == nil,
-           let seedURL = ProcessInfo.processInfo.environment["CAIRN_DEV_SEED_URL"].flatMap(URL.init(string:)),
-           let seedKey = ProcessInfo.processInfo.environment["CAIRN_DEV_SEED_KEY"],
-           !seedKey.isEmpty {
-            try? secretStore.setServerURL(seedURL)
-            try? secretStore.setAPIKey(seedKey)
+        if url == nil || apiKey == nil {
+            let ud = UserDefaults.standard
+            let env = ProcessInfo.processInfo.environment
+            if let seedURL = (env["CAIRN_DEV_SEED_URL"] ?? ud.string(forKey: "CAIRN_DEV_SEED_URL")).flatMap(URL.init(string:)),
+               let seedKey = env["CAIRN_DEV_SEED_KEY"] ?? ud.string(forKey: "CAIRN_DEV_SEED_KEY"),
+               !seedKey.isEmpty {
+                syncLog.info("[cairn.boot] using seed credentials (Keychain unavailable or empty)")
+                url = seedURL
+                apiKey = seedKey
+                try? secretStore.setServerURL(seedURL)
+                try? secretStore.setAPIKey(seedKey)
+            }
         }
         #endif
-
-        let url = try? secretStore.serverURL()
-        let apiKey = try? secretStore.apiKey()
         guard let url, let apiKey else {
             model.needsOnboarding = true
+            model.isBootstrapping = false
             return
         }
 
@@ -229,11 +240,11 @@ final class AppDependencies {
             do {
                 let pong = try await client.ping()
                 let latencyMs = Int(Date().timeIntervalSince(start) * 1000)
-                print("[cairn.boot] server healthy: ping=\(pong), \(latencyMs)ms")
+                syncLog.info("[cairn.boot] server healthy: ping=\(pong), \(latencyMs)ms")
                 model.connectionStatus = .healthy(latencyMs: latencyMs)
                 model.degraded = .none
             } catch {
-                print("[cairn.boot] ping failed: \(error)")
+                syncLog.info("[cairn.boot] ping failed: \(error)")
                 if let degraded = Self.degradedState(for: error) {
                     model.degraded = degraded
                     model.connectionStatus = degraded == .authStale ? .authStale : .offline
@@ -246,7 +257,7 @@ final class AppDependencies {
                 let missing = ImmichClient.missingPermissions(granted: keyInfo.permissions)
                 model.missingPermissions = missing
                 if !missing.isEmpty {
-                    print("[cairn.boot] missing permissions: \(missing.joined(separator: ", "))")
+                    syncLog.info("[cairn.boot] missing permissions: \(missing.joined(separator: ", "))")
                 }
             }
         }
@@ -260,9 +271,9 @@ final class AppDependencies {
         await refreshLibrarySizeStats()
 
         if let cap = Self.resolveTestingAssetCap() {
-            print("[cairn.boot] testing asset cap in effect: \(cap)")
+            syncLog.info("[cairn.boot] testing asset cap in effect: \(cap)")
         } else {
-            print("[cairn.boot] no asset cap — full library will be hashed")
+            syncLog.info("[cairn.boot] no asset cap — full library will be hashed")
         }
 
         if let journal, let recent = try? await journal.lastEntries(limit: 40) {
@@ -273,6 +284,7 @@ final class AppDependencies {
         await refreshRunsList()
 
         rewireActions()
+        model.isBootstrapping = false
     }
 
     // MARK: - Scheduled scan (called by BGAppRefreshTask)
@@ -345,11 +357,14 @@ final class AppDependencies {
             throw CancellationError()
         }
         model.syncPhase = .hashing
+        let t0 = Date()
         let scan = try await reconciler.runDeletionScan(skipDrain: true)
+        syncLog.info("[cairn.sync] scan took \(Int(Date().timeIntervalSince(t0) * 1000))ms (events=\(scan.changeEventsProcessed))")
         let burst = scan.newlyConfirmedDeleted.count
 
         try Task.checkCancellation()
         model.syncPhase = .fetchingServer
+        let t1 = Date()
         let hashMap = try await self.localHashStore.snapshot()
         var local: Set<Checksum> = []
         local.reserveCapacity(hashMap.count)
@@ -366,10 +381,15 @@ final class AppDependencies {
             totalVisibleAssets = cap
         }
 
+        syncLog.info("[cairn.sync] hashMap snapshot took \(Int(Date().timeIntervalSince(t1) * 1000))ms (\(hashMap.count) entries)")
+        let t2 = Date()
         let everSeenSet = try await everSeen.snapshot()
         let exclusionSet = Set(try await exclusions.snapshot().keys)
         let confirmedMap = try await confirmed.snapshot()
+        syncLog.info("[cairn.sync] store snapshots took \(Int(Date().timeIntervalSince(t2) * 1000))ms")
+        let t3 = Date()
         let serverAssets = try await serverAssetsTask.value
+        syncLog.info("[cairn.sync] server fetch took \(Int(Date().timeIntervalSince(t3) * 1000))ms (\(serverAssets.count) assets)")
 
         try Task.checkCancellation()
         model.syncPhase = .reconciling
@@ -706,7 +726,7 @@ final class AppDependencies {
                 } catch {
                     let degraded = Self.degradedState(for: error)
                     let desc = Self.describeSyncError(error)
-                    print("[cairn.sync] requestSync failed: \(desc)")
+                    syncLog.info("[cairn.sync] requestSync failed: \(desc)")
                     await MainActor.run {
                         self.model.lastError = desc
                         self.model.isSyncing = false

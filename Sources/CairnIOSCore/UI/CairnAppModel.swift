@@ -27,6 +27,11 @@ public final class CairnAppModel {
 
     // MARK: - Auth / onboarding
 
+    /// True while bootstrap() is running. The UI shows a blank/loading
+    /// state until this flips to false, preventing the onboarding screen
+    /// from rendering before credentials are checked.
+    public var isBootstrapping: Bool = false
+
     /// True if the host has no stored API key — drives setup-vs-main routing.
     public var needsOnboarding: Bool
 
