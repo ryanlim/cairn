@@ -66,8 +66,8 @@ final class AppDependencies {
             maxICloudBytesPerAsset: bytesLimit,
             hardCeilingBytes: ceilingBytes,
             onHashProgress: { [weak self] done, total, newChecksums in
-                let (hashStore, serverSet) = await MainActor.run {
-                    (self?.localHashStore, self?.serverChecksumSet)
+                let (hashStore, serverSet, deferredStore) = await MainActor.run {
+                    (self?.localHashStore, self?.serverChecksumSet, self?.deferredHashStore)
                 }
                 guard let hashStore else {
                     await MainActor.run { self?.model.syncProgress = .init(hashed: done, total: total) }
@@ -78,12 +78,41 @@ final class AppDependencies {
                     guard let serverSet else { return 0 }
                     return newChecksums.filter { serverSet.contains($0) }.count
                 }()
+                // Recompute deferred queue counts so the sync card's
+                // "queued" line ticks down live as items get removed
+                // per-asset by the drain loop. Without this the label
+                // stays stale until end-of-drain.
+                let queue: (count: Int, aboveCeiling: Int, totalKnownBytes: Int64)? = await {
+                    guard let deferredStore else { return nil }
+                    let entries = (try? await deferredStore.snapshot()) ?? []
+                    let ceilingMB = await MainActor.run { self?.model.settings.iCloudMaxEverBytesMB ?? nil }
+                    let ceilingBytes: Int64? = ceilingMB.flatMap { $0 > 0 ? Int64($0) * 1024 * 1024 : nil }
+                    var actionable = 0
+                    var aboveCeiling = 0
+                    var bytes: Int64 = 0
+                    for entry in entries {
+                        if let ceilingBytes, let size = entry.sizeBytes, size > ceilingBytes {
+                            aboveCeiling += 1
+                        } else {
+                            actionable += 1
+                            if let size = entry.sizeBytes { bytes += size }
+                        }
+                    }
+                    return (actionable, aboveCeiling, bytes)
+                }()
                 await MainActor.run {
                     guard let self else { return }
                     self.model.syncProgress = .init(hashed: done, total: total)
                     let prevMatched = self.model.library.matched
                     self.model.library = self.model.library
                         .with(indexed: indexed, matched: prevMatched + batchMatched)
+                    if let queue {
+                        self.model.deferredQueue = .init(
+                            count: queue.count,
+                            aboveCeiling: queue.aboveCeiling,
+                            totalKnownBytes: queue.totalKnownBytes
+                        )
+                    }
                 }
             }
         )
