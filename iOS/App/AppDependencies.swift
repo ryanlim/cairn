@@ -66,51 +66,64 @@ final class AppDependencies {
             maxICloudBytesPerAsset: bytesLimit,
             hardCeilingBytes: ceilingBytes,
             onHashProgress: { [weak self] done, total, newChecksums in
-                let (hashStore, serverSet, deferredStore) = await MainActor.run {
-                    (self?.localHashStore, self?.serverChecksumSet, self?.deferredHashStore)
+                // Fetch all MainActor-isolated state in one hop.
+                struct Snapshot {
+                    let hashStore: SwiftDataLocalHashStore?
+                    let serverSet: Set<Checksum>?
+                    let deferredStore: SwiftDataDeferredHashStore?
+                    let ceilingBytes: Int64?
                 }
-                guard let hashStore else {
+                let snap: Snapshot = await MainActor.run {
+                    guard let self else {
+                        return Snapshot(hashStore: nil, serverSet: nil, deferredStore: nil, ceilingBytes: nil)
+                    }
+                    let mb = self.model.settings.iCloudMaxEverBytesMB
+                    let bytes: Int64? = (mb.map { $0 > 0 } ?? false) ? Int64(mb!) * 1024 * 1024 : nil
+                    return Snapshot(
+                        hashStore: self.localHashStore,
+                        serverSet: self.serverChecksumSet,
+                        deferredStore: self.deferredHashStore,
+                        ceilingBytes: bytes
+                    )
+                }
+                guard let hashStore = snap.hashStore else {
                     await MainActor.run { self?.model.syncProgress = .init(hashed: done, total: total) }
                     return
                 }
                 let indexed = (try? await hashStore.indexedCount()) ?? 0
                 let batchMatched: Int = {
-                    guard let serverSet else { return 0 }
+                    guard let serverSet = snap.serverSet else { return 0 }
                     return newChecksums.filter { serverSet.contains($0) }.count
                 }()
                 // Recompute deferred queue counts so the sync card's
                 // "queued" line ticks down live as items get removed
                 // per-asset by the drain loop. Without this the label
                 // stays stale until end-of-drain.
-                let queue: (count: Int, aboveCeiling: Int, totalKnownBytes: Int64)? = await {
-                    guard let deferredStore else { return nil }
+                var queueCount = 0
+                var queueAboveCeiling = 0
+                var queueBytes: Int64 = 0
+                if let deferredStore = snap.deferredStore {
                     let entries = (try? await deferredStore.snapshot()) ?? []
-                    let ceilingMB = await MainActor.run { self?.model.settings.iCloudMaxEverBytesMB ?? nil }
-                    let ceilingBytes: Int64? = ceilingMB.flatMap { $0 > 0 ? Int64($0) * 1024 * 1024 : nil }
-                    var actionable = 0
-                    var aboveCeiling = 0
-                    var bytes: Int64 = 0
                     for entry in entries {
-                        if let ceilingBytes, let size = entry.sizeBytes, size > ceilingBytes {
-                            aboveCeiling += 1
+                        if let cb = snap.ceilingBytes, let size = entry.sizeBytes, size > cb {
+                            queueAboveCeiling += 1
                         } else {
-                            actionable += 1
-                            if let size = entry.sizeBytes { bytes += size }
+                            queueCount += 1
+                            if let size = entry.sizeBytes { queueBytes += size }
                         }
                     }
-                    return (actionable, aboveCeiling, bytes)
-                }()
+                }
                 await MainActor.run {
                     guard let self else { return }
                     self.model.syncProgress = .init(hashed: done, total: total)
                     let prevMatched = self.model.library.matched
                     self.model.library = self.model.library
                         .with(indexed: indexed, matched: prevMatched + batchMatched)
-                    if let queue {
+                    if snap.deferredStore != nil {
                         self.model.deferredQueue = .init(
-                            count: queue.count,
-                            aboveCeiling: queue.aboveCeiling,
-                            totalKnownBytes: queue.totalKnownBytes
+                            count: queueCount,
+                            aboveCeiling: queueAboveCeiling,
+                            totalKnownBytes: queueBytes
                         )
                     }
                 }
