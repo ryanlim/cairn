@@ -165,6 +165,10 @@ public enum ReconciliationEngine {
         let pending: [ServerAsset]
         let held: [ServerAsset]
         switch input.strictness {
+        case .autonomous:
+            candidates = postExclusion
+            pending = []
+            held = []
         case .trusting:
             held = postExclusion.filter { inQuarantine.contains($0.checksum) }
             candidates = postExclusion.filter { !inQuarantine.contains($0.checksum) }
@@ -172,9 +176,6 @@ public enum ReconciliationEngine {
         case .strict:
             held = postExclusion.filter { inQuarantine.contains($0.checksum) }
             candidates = postExclusion.filter { pastQuarantine.contains($0.checksum) }
-            // Strict-mode pending = held (confirmed-but-fresh) plus
-            // unconfirmed (never positively signalled). Expressed as the
-            // negation of `pastQuarantine` so both groups fall in together.
             pending = postExclusion.filter { !pastQuarantine.contains($0.checksum) }
         }
 

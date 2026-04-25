@@ -673,22 +673,23 @@ private struct StrictnessRow: View {
                     .font(.system(size: 15))
                     .foregroundStyle(t.textBody)
                 HelpPopover {
-                    Text("**Strict** requires a *positive* deletion signal (PhotoKit reported the asset as deleted) before any asset moves to Immich's Trash. Ambiguous candidates go to Pending Review for manual approval.")
-                    Text("**Trusting** moves past-quarantine candidates to Immich's Trash even without the positive signal. Faster, but vulnerable to library-loss scenarios (iCloud re-sync hiccups, partial restores).")
-                    Text("Switch to Strict if you've ever lost photos unexpectedly.")
+                    Text("**Strict** requires a positive deletion signal before trashing. Ambiguous candidates go to Pending Review.")
+                    Text("**Trusting** trashes past-quarantine candidates automatically. Held deletions still wait out the window.")
+                    Text("**Auto** skips quarantine entirely. Every candidate trashes on the next sync. Rely on Immich's 30-day Trash for recovery.")
                 }
                 Spacer()
             }
             CairnSegmentedPicker(
                 selection: $strictness,
                 options: [
-                    .init(value: DeletionStrictness.strict,   label: "Strict"),
-                    .init(value: DeletionStrictness.trusting, label: "Trusting"),
+                    .init(value: DeletionStrictness.strict,     label: "Strict"),
+                    .init(value: DeletionStrictness.trusting,   label: "Trusting"),
+                    .init(value: DeletionStrictness.autonomous, label: "Auto"),
                 ]
             )
             Text(explanation)
                 .font(.system(size: 12))
-                .foregroundStyle(t.textMuted)
+                .foregroundStyle(strictness == .autonomous ? t.dangerInk : t.textMuted)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.horizontal, 14)
@@ -698,9 +699,11 @@ private struct StrictnessRow: View {
     private var explanation: String {
         switch strictness {
         case .strict:
-            return "Strict: even past-quarantine candidates wait in pending review if there's no positive deletion signal."
+            return "Past-quarantine candidates wait in pending review if there's no positive deletion signal."
         case .trusting:
-            return "Trusting: past-quarantine candidates move to Immich's Trash automatically. Held deletions still wait out the window below."
+            return "Past-quarantine candidates move to Immich's Trash automatically. Held deletions still wait out the quarantine window."
+        case .autonomous:
+            return "All candidates move to Immich's Trash on sync. No quarantine, no review. Immich keeps items in Trash for 30 days."
         }
     }
 }

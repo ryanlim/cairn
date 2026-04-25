@@ -217,6 +217,7 @@ public enum AppearanceOverride: String, Sendable, Codable, Equatable, CaseIterab
 public enum DeletionStrictness: String, Sendable, Codable, Equatable, CaseIterable {
     case strict
     case trusting
+    case autonomous
 }
 
 /// Narrow protocol over settings persistence. The iOS target may back
