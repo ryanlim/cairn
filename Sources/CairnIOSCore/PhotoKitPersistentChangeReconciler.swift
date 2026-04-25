@@ -326,12 +326,19 @@ public final class PhotoKitPersistentChangeReconciler {
             removedChecksums.formUnion(cached)
         }
 
-        // Capture cheap PHAsset metadata (filename, creationDate, size)
-        // before hashing. If the asset is deleted before the hash
-        // completes (or before the BG slot expires), the metadata
-        // cache still has enough info to correlate against the server
-        // for the orphan-reconciliation path.
-        try await recordObservedMetadata(ids: insertedIds.union(updatedIds))
+        // Single PHAsset.fetchAssets pass that records metadata for
+        // every observed id (so a deletion-before-hash still has
+        // correlation data) AND filters update events whose
+        // modificationDate didn't actually advance — PhotoKit fires
+        // updates for metadata-only changes (favorites, hidden, album
+        // moves) that don't change pixel bytes. Skipping those here
+        // saves 2,000+ unnecessary re-hashes on a typical relaunch.
+        let observed = try await observeAndFilter(insertedIds: insertedIds, updatedIds: updatedIds)
+        let staleUpdates = observed.staleUpdates
+        if updatedIds.count > 0 && staleUpdates.count != updatedIds.count {
+            let skipped = updatedIds.count - staleUpdates.count
+            hashLog.notice("[cairn.recon] skipped \(skipped, privacy: .public) update events with unchanged modDate")
+        }
 
         // Inserted: hash the new assets, stash in local cache + ever-seen.
         // Defer counts from both inserted + updated batches accumulate
@@ -346,17 +353,6 @@ public final class PhotoKitPersistentChangeReconciler {
             try await everSeen.union(addedChecksums)
         }
 
-        // Updated: PhotoKit's `updatedLocalIdentifiers` is noisy — it
-        // fires on metadata-only changes (favorites, hidden, album
-        // membership) that don't change pixel bytes. Filter to only
-        // ids whose `modificationDate` actually advanced past what we
-        // recorded last time. Without this, a build redeploy can
-        // trigger 2,000+ unnecessary re-hashes.
-        let staleUpdates = try await filterStaleUpdates(ids: updatedIds)
-        if updatedIds.count > 0 && staleUpdates.count != updatedIds.count {
-            let skipped = updatedIds.count - staleUpdates.count
-            hashLog.notice("[cairn.recon] skipped \(skipped, privacy: .public) update events with unchanged modDate")
-        }
         let updatedBatch = try await hashAssets(ids: staleUpdates)
         var updatedChecksums: Set<Checksum> = []
         for (id, checksums) in updatedBatch.checksumsByID {
@@ -833,62 +829,60 @@ public final class PhotoKitPersistentChangeReconciler {
         try await metadataStore.record(entries)
     }
 
-    /// Eagerly record `(filename, creationDate, fileSize)` for the
-    /// given ids — cheap PHAsset property reads, microseconds each. The
-    /// goal is to have *something* on disk before we attempt the
-    /// expensive hash, so a deletion that arrives before hashing
-    /// completes still leaves a correlation key for the orphan-
-    /// reconciliation path.
-    ///
-    /// No-op when `metadataStore` is unwired (e.g. tests).
-    private func recordObservedMetadata(ids: Set<String>) async throws {
-        guard let metadataStore, !ids.isEmpty else { return }
-        let fetch = PHAsset.fetchAssets(withLocalIdentifiers: Array(ids), options: nil)
+    /// Result of a combined metadata-record + stale-filter pass:
+    /// metadata for every id has been recorded, and `staleUpdates`
+    /// contains the subset of `updatedIds` whose modificationDate
+    /// actually advanced past the cached one (i.e. real edits, not
+    /// metadata-only PhotoKit churn).
+    private struct ObservationResult {
+        let staleUpdates: Set<String>
+    }
+
+    /// Single-pass observer for incremental insert/update events:
+    ///   1. Fetch PHAssets for `insertedIds ∪ updatedIds` once.
+    ///   2. Record metadata (filename, creationDate, size) for each
+    ///      so we have correlation data even if hashing later fails.
+    ///   3. Compare `modificationDate` against the cache to skip
+    ///      no-op update events (PhotoKit fires for favorites, hidden,
+    ///      album moves — none change pixel bytes).
+    /// Reading PHAsset properties + PHAssetResource is fast; we want
+    /// to do it once, not three times across separate helpers.
+    private func observeAndFilter(
+        insertedIds: Set<String>,
+        updatedIds: Set<String>
+    ) async throws -> ObservationResult {
+        let allIds = insertedIds.union(updatedIds)
+        guard !allIds.isEmpty else { return ObservationResult(staleUpdates: []) }
+        let fetch = PHAsset.fetchAssets(withLocalIdentifiers: Array(allIds), options: nil)
         let now = clock()
         var entries: [LocalAssetMetadata] = []
+        var currentDates: [String: Date] = [:]
         entries.reserveCapacity(fetch.count)
+        currentDates.reserveCapacity(fetch.count)
         fetch.enumerateObjects { asset, _, _ in
             let resources = PHAssetResource.assetResources(for: asset)
             let primary = resources.first
-            let filename = primary?.originalFilename
-            // PHAssetResource exposes `fileSize` via KVC on iOS — it's
-            // a documented private-but-public field used by every
-            // backup app. Falls back to nil if missing.
             let size = (primary?.value(forKey: "fileSize") as? NSNumber)?.int64Value
             entries.append(LocalAssetMetadata(
                 localIdentifier: asset.localIdentifier,
-                originalFileName: filename,
+                originalFileName: primary?.originalFilename,
                 creationDate: asset.creationDate,
                 modificationDate: asset.modificationDate,
                 fileSize: size,
                 observedAt: now
             ))
-        }
-        if !entries.isEmpty {
-            try await metadataStore.record(entries)
-        }
-    }
-
-    /// Filter the given updated-id set down to ids whose PhotoKit
-    /// `modificationDate` has actually advanced past the cached one.
-    /// PhotoKit emits update events for metadata-only changes
-    /// (favorites, hidden, album membership) that don't touch pixel
-    /// bytes — re-hashing those would waste time and iCloud bandwidth.
-    /// Ids missing from the cache or with no recorded modDate are
-    /// kept (treated as needing re-hash for safety).
-    private func filterStaleUpdates(ids: Set<String>) async throws -> Set<String> {
-        guard !ids.isEmpty else { return [] }
-        let fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: Array(ids), options: nil)
-        var currentDates: [String: Date] = [:]
-        currentDates.reserveCapacity(fetchResult.count)
-        fetchResult.enumerateObjects { asset, _, _ in
             if let date = asset.modificationDate {
                 currentDates[asset.localIdentifier] = date
             }
         }
+        if let metadataStore, !entries.isEmpty {
+            try await metadataStore.record(entries)
+        }
+        // Stale-filter just the update set. Inserts always need hashing;
+        // updates only when modDate actually advanced.
         var stale: Set<String> = []
-        stale.reserveCapacity(ids.count)
-        for id in ids {
+        stale.reserveCapacity(updatedIds.count)
+        for id in updatedIds {
             let cachedDate = try? await hashStore.modificationDate(for: id)
             let currentDate = currentDates[id]
             if let cachedDate, let currentDate, cachedDate == currentDate {
@@ -896,8 +890,9 @@ public final class PhotoKitPersistentChangeReconciler {
             }
             stale.insert(id)
         }
-        return stale
+        return ObservationResult(staleUpdates: stale)
     }
+
 
     /// Hash specific assets by local identifier. Identifiers PhotoKit
     /// no longer resolves (asset was deleted between detection and
