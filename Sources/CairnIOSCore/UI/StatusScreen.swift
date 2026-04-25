@@ -681,9 +681,9 @@ public struct StatusScreen: View {
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(t.infoInk)
                     if deferredQueue.count > 0 {
-                        Text("\(deferredQueue.count.formatted(.number)) queued")
+                        Text("\(deferredQueue.count.formatted(.number)) not yet indexed")
                             .font(.system(size: 13, weight: .medium))
-                            .foregroundStyle(t.infoInk)
+                            .foregroundStyle(t.textMuted)
                     }
                     if deferredQueue.aboveCeiling > 0 {
                         if deferredQueue.count > 0 {
@@ -691,7 +691,7 @@ public struct StatusScreen: View {
                         }
                         Text("\(deferredQueue.aboveCeiling.formatted(.number)) above cap")
                             .font(.system(size: 13, weight: .medium))
-                            .foregroundStyle(t.textMuted)
+                            .foregroundStyle(t.textHint)
                     }
                     Spacer()
                     if deferredQueue.count > 0 {
