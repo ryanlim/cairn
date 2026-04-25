@@ -129,6 +129,35 @@ final class StoredPersistentChangeToken {
     }
 }
 
+/// Lightweight per-asset metadata captured at insert/update time for
+/// the deletion-correlation fallback. See
+/// `CairnCore/LocalAssetMetadataStore.swift` for the rationale.
+@Model
+final class StoredLocalAssetMetadata {
+    @Attribute(.unique) var localIdentifier: String
+    var originalFileName: String?
+    var creationDate: Date?
+    var modificationDate: Date?
+    var fileSize: Int64?
+    var observedAt: Date
+
+    init(
+        localIdentifier: String,
+        originalFileName: String?,
+        creationDate: Date?,
+        modificationDate: Date?,
+        fileSize: Int64?,
+        observedAt: Date
+    ) {
+        self.localIdentifier = localIdentifier
+        self.originalFileName = originalFileName
+        self.creationDate = creationDate
+        self.modificationDate = modificationDate
+        self.fileSize = fileSize
+        self.observedAt = observedAt
+    }
+}
+
 @Model
 final class StoredThumbnail {
     @Attribute(.unique) var assetId: String
@@ -157,6 +186,7 @@ public enum CairnSwiftDataContainer {
         let schema = Schema([
             StoredLocalHashEntry.self,
             StoredDeferredHash.self,
+            StoredLocalAssetMetadata.self,
         ])
         return try container(schema: schema, url: url, inMemory: inMemory)
     }
@@ -185,6 +215,7 @@ public enum CairnSwiftDataContainer {
             StoredDeferredHash.self,
             StoredPersistentChangeToken.self,
             StoredThumbnail.self,
+            StoredLocalAssetMetadata.self,
         ])
         return try container(schema: schema, url: url, inMemory: inMemory)
     }
@@ -642,6 +673,94 @@ public actor SwiftDataDeferredHashStore: DeferredHashStore {
             reason: reason,
             sizeBytes: row.sizeBytes,
             firstDeferredAt: row.firstDeferredAt
+        )
+    }
+}
+
+// MARK: - SwiftDataLocalAssetMetadataStore
+
+/// SwiftData-backed `LocalAssetMetadataStore`. Records cheap PHAsset
+/// metadata at observation time so we have something to correlate
+/// against the server when an asset is deleted before it could be
+/// hashed.
+public actor SwiftDataLocalAssetMetadataStore: LocalAssetMetadataStore {
+    private let context: ModelContext
+
+    public init(container: ModelContainer) {
+        self.context = ModelContext(container)
+    }
+
+    public func metadata(for localIdentifier: String) async throws -> LocalAssetMetadata? {
+        var descriptor = FetchDescriptor<StoredLocalAssetMetadata>(
+            predicate: #Predicate<StoredLocalAssetMetadata> { $0.localIdentifier == localIdentifier }
+        )
+        descriptor.fetchLimit = 1
+        guard let row = try context.fetch(descriptor).first else { return nil }
+        return Self.toEntry(row)
+    }
+
+    public func record(_ entries: [LocalAssetMetadata]) async throws {
+        guard !entries.isEmpty else { return }
+        for entry in entries {
+            let id = entry.localIdentifier
+            var descriptor = FetchDescriptor<StoredLocalAssetMetadata>(
+                predicate: #Predicate<StoredLocalAssetMetadata> { $0.localIdentifier == id }
+            )
+            descriptor.fetchLimit = 1
+            if let existing = try context.fetch(descriptor).first {
+                // Preserve `observedAt` — it represents first observation,
+                // useful for tracking how long ago we cached this entry.
+                existing.originalFileName = entry.originalFileName
+                existing.creationDate = entry.creationDate
+                existing.modificationDate = entry.modificationDate
+                existing.fileSize = entry.fileSize
+            } else {
+                context.insert(StoredLocalAssetMetadata(
+                    localIdentifier: entry.localIdentifier,
+                    originalFileName: entry.originalFileName,
+                    creationDate: entry.creationDate,
+                    modificationDate: entry.modificationDate,
+                    fileSize: entry.fileSize,
+                    observedAt: entry.observedAt
+                ))
+            }
+        }
+        try context.save()
+    }
+
+    public func remove(_ localIdentifiers: Set<String>) async throws {
+        guard !localIdentifiers.isEmpty else { return }
+        var changed = false
+        for id in localIdentifiers {
+            var descriptor = FetchDescriptor<StoredLocalAssetMetadata>(
+                predicate: #Predicate<StoredLocalAssetMetadata> { $0.localIdentifier == id }
+            )
+            descriptor.fetchLimit = 1
+            if let row = try context.fetch(descriptor).first {
+                context.delete(row)
+                changed = true
+            }
+        }
+        if changed { try context.save() }
+    }
+
+    public func clear() async throws {
+        var changed = false
+        for row in try context.fetch(FetchDescriptor<StoredLocalAssetMetadata>()) {
+            context.delete(row)
+            changed = true
+        }
+        if changed { try context.save() }
+    }
+
+    private static func toEntry(_ row: StoredLocalAssetMetadata) -> LocalAssetMetadata {
+        LocalAssetMetadata(
+            localIdentifier: row.localIdentifier,
+            originalFileName: row.originalFileName,
+            creationDate: row.creationDate,
+            modificationDate: row.modificationDate,
+            fileSize: row.fileSize,
+            observedAt: row.observedAt
         )
     }
 }
