@@ -552,6 +552,31 @@ public actor SwiftDataLocalHashStore: LocalHashStore {
         return out
     }
 
+    /// Batch lookup of `(checksums, modificationDate)` for a known id
+    /// set. One SQL fetch with a `localIdentifier IN (...)` predicate
+    /// instead of N per-id queries. Used by drain pre-filtering and
+    /// other batch paths.
+    public func entries(forIdentifiers ids: Set<String>) async throws -> [String: (checksums: Set<Checksum>, modificationDate: Date?)] {
+        guard !ids.isEmpty else { return [:] }
+        let descriptor = FetchDescriptor<StoredLocalHashEntry>(
+            predicate: #Predicate<StoredLocalHashEntry> { ids.contains($0.localIdentifier) }
+        )
+        let rows = try context.fetch(descriptor)
+        var out: [String: (checksums: Set<Checksum>, modificationDate: Date?)] = [:]
+        for row in rows {
+            if var existing = out[row.localIdentifier] {
+                existing.checksums.insert(Checksum(base64: row.base64))
+                out[row.localIdentifier] = existing
+            } else {
+                out[row.localIdentifier] = (
+                    [Checksum(base64: row.base64)],
+                    row.modificationDate
+                )
+            }
+        }
+        return out
+    }
+
     public func checksums(for localIdentifier: String) async throws -> Set<Checksum> {
         let descriptor = FetchDescriptor<StoredLocalHashEntry>(
             predicate: #Predicate<StoredLocalHashEntry> { $0.localIdentifier == localIdentifier }

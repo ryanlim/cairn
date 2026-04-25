@@ -602,12 +602,13 @@ public final class PhotoKitPersistentChangeReconciler {
         // before the bulk deferred-queue removal completed). Match by
         // modificationDate so PhotoKit edits trigger a re-hash. This
         // avoids re-downloading large iCloud assets every retry.
+        let cachedEntries = try await hashStore.entries(forIdentifiers: Set(assets.map(\.localIdentifier)))
         var alreadyHashed: Set<String> = []
         for asset in assets {
-            let cached = try await hashStore.checksums(for: asset.localIdentifier)
-            guard !cached.isEmpty else { continue }
-            let cachedDate = try? await hashStore.modificationDate(for: asset.localIdentifier)
-            if let cachedDate, let currentDate = asset.modificationDate, cachedDate == currentDate {
+            guard let entry = cachedEntries[asset.localIdentifier], !entry.checksums.isEmpty else { continue }
+            if let cachedDate = entry.modificationDate,
+               let currentDate = asset.modificationDate,
+               cachedDate == currentDate {
                 alreadyHashed.insert(asset.localIdentifier)
             }
         }

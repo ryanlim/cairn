@@ -46,6 +46,13 @@ public protocol LocalHashStore: Sendable {
     /// should override.
     func allChecksums() async throws -> Set<Checksum>
 
+    /// Batch lookup for a known id set. Returns only entries that
+    /// exist (missing ids drop out). Cheaper than calling
+    /// `checksums(for:)` and `modificationDate(for:)` in a loop —
+    /// one query instead of 2*N. Default impl falls back to per-id
+    /// lookups; concrete stores should override.
+    func entries(forIdentifiers ids: Set<String>) async throws -> [String: (checksums: Set<Checksum>, modificationDate: Date?)]
+
     /// Checksums cached for a specific identifier. Empty set when unknown.
     func checksums(for localIdentifier: String) async throws -> Set<Checksum>
 
@@ -102,6 +109,19 @@ public extension LocalHashStore {
     func allChecksums() async throws -> Set<Checksum> {
         var out = Set<Checksum>()
         for (_, cks) in try await snapshot() { out.formUnion(cks) }
+        return out
+    }
+
+    /// Fallback `entries(forIdentifiers:)` — falls back to per-id
+    /// queries. Concrete stores should override with one batched fetch.
+    func entries(forIdentifiers ids: Set<String>) async throws -> [String: (checksums: Set<Checksum>, modificationDate: Date?)] {
+        var out: [String: (checksums: Set<Checksum>, modificationDate: Date?)] = [:]
+        for id in ids {
+            let cks = try await checksums(for: id)
+            guard !cks.isEmpty else { continue }
+            let date = try await modificationDate(for: id)
+            out[id] = (cks, date)
+        }
         return out
     }
 }
