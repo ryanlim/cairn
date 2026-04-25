@@ -384,13 +384,16 @@ public final class PhotoKitPersistentChangeReconciler {
         // `reconcileCacheAgainstLibrary`) and our `hashStore.set`
         // writes can make a just-hashed asset look cache-only and
         // cause the orphan path to delete it.
-        let orphanResult = try await reconcileCacheAgainstLibrary(
-            alreadyHandledDeletedIds: deletedIds,
-            protectedIds: insertedIds.union(updatedIds),
-            now: now
-        )
-        if !orphanResult.checksums.isEmpty {
-            removedChecksums.formUnion(orphanResult.checksums)
+        let hasChanges = !insertedIds.isEmpty || !updatedIds.isEmpty || !deletedIds.isEmpty
+        if hasChanges {
+            let orphanResult = try await reconcileCacheAgainstLibrary(
+                alreadyHandledDeletedIds: deletedIds,
+                protectedIds: insertedIds.union(updatedIds),
+                now: now
+            )
+            if !orphanResult.checksums.isEmpty {
+                removedChecksums.formUnion(orphanResult.checksums)
+            }
         }
 
         // Restoration: when an insert/update surfaces a checksum that was
