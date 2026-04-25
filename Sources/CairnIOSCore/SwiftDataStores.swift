@@ -129,6 +129,21 @@ final class StoredPersistentChangeToken {
     }
 }
 
+@Model
+final class StoredThumbnail {
+    @Attribute(.unique) var assetId: String
+    var thumbhashData: Data?
+    var thumbnailData: Data?
+    var createdAt: Date
+
+    init(assetId: String, thumbhashData: Data? = nil, thumbnailData: Data? = nil, createdAt: Date = Date()) {
+        self.assetId = assetId
+        self.thumbhashData = thumbhashData
+        self.thumbnailData = thumbnailData
+        self.createdAt = createdAt
+    }
+}
+
 // MARK: - Container helper
 
 /// Factory for the shared `ModelContainer` behind the iOS app's
@@ -136,14 +151,31 @@ final class StoredPersistentChangeToken {
 /// share one container so they end up writing to a single underlying
 /// SQLite file.
 public enum CairnSwiftDataContainer {
-    /// Build a `ModelContainer` covering every `@Model` type in this file.
-    ///
-    /// - Parameters:
-    ///   - url: Explicit on-disk location for the SQLite store. `nil`
-    ///     uses SwiftData's default app-support location. Tests
-    ///     should pass `inMemory: true` rather than a temp URL.
-    ///   - inMemory: When true, the container lives only in RAM —
-    ///     tests get full isolation with no filesystem cleanup.
+    /// Build a `ModelContainer` for device-local state shared across
+    /// all servers (local hash cache, deferred hash queue).
+    public static func makeGlobal(url: URL? = nil, inMemory: Bool = false) throws -> ModelContainer {
+        let schema = Schema([
+            StoredLocalHashEntry.self,
+            StoredDeferredHash.self,
+        ])
+        return try container(schema: schema, url: url, inMemory: inMemory)
+    }
+
+    /// Build a `ModelContainer` for per-server state (ever-seen,
+    /// exclusions, confirmed-deleted, persistent-change token).
+    public static func makePerServer(url: URL, inMemory: Bool = false) throws -> ModelContainer {
+        let schema = Schema([
+            StoredEverSeenChecksum.self,
+            StoredExclusion.self,
+            StoredConfirmedDeletedChecksum.self,
+            StoredPersistentChangeToken.self,
+            StoredThumbnail.self,
+        ])
+        return try container(schema: schema, url: inMemory ? nil : url, inMemory: inMemory)
+    }
+
+    /// Legacy factory — all six model types in one container. Used
+    /// only by tests and the one-shot migration path.
     public static func make(url: URL? = nil, inMemory: Bool = false) throws -> ModelContainer {
         let schema = Schema([
             StoredEverSeenChecksum.self,
@@ -152,7 +184,12 @@ public enum CairnSwiftDataContainer {
             StoredLocalHashEntry.self,
             StoredDeferredHash.self,
             StoredPersistentChangeToken.self,
+            StoredThumbnail.self,
         ])
+        return try container(schema: schema, url: url, inMemory: inMemory)
+    }
+
+    private static func container(schema: Schema, url: URL?, inMemory: Bool) throws -> ModelContainer {
         let configuration: ModelConfiguration
         if inMemory {
             configuration = ModelConfiguration(isStoredInMemoryOnly: true)
@@ -229,6 +266,19 @@ public actor SwiftDataEverSeenStore: EverSeenStore {
     /// Not on the `EverSeenStore` protocol — wiping the index is an
     /// iOS-specific affordance; no Kotlin port or CLI invocation
     /// needs it.
+    public func remove(_ checksums: Set<Checksum>) async throws {
+        guard !checksums.isEmpty else { return }
+        let targets = Set(checksums.map(\.base64))
+        var changed = false
+        for row in try context.fetch(FetchDescriptor<StoredEverSeenChecksum>()) {
+            if targets.contains(row.base64) {
+                context.delete(row)
+                changed = true
+            }
+        }
+        if changed { try context.save() }
+    }
+
     public func clear() async throws {
         var changed = false
         for row in try context.fetch(FetchDescriptor<StoredEverSeenChecksum>()) {
@@ -635,6 +685,109 @@ public actor SwiftDataPersistentChangeTokenStore: PersistentChangeTokenStore {
 
     public func clear() async throws {
         for row in try context.fetch(FetchDescriptor<StoredPersistentChangeToken>()) {
+            context.delete(row)
+        }
+        try context.save()
+    }
+}
+
+// MARK: - SwiftDataThumbnailStore
+
+public actor SwiftDataThumbnailStore {
+    private let context: ModelContext
+
+    public init(container: ModelContainer) {
+        self.context = ModelContext(container)
+        self.context.autosaveEnabled = false
+    }
+
+    public func thumbhash(for assetId: String) async throws -> Data? {
+        var desc = FetchDescriptor<StoredThumbnail>(predicate: #Predicate { $0.assetId == assetId })
+        desc.fetchLimit = 1
+        return try context.fetch(desc).first?.thumbhashData
+    }
+
+    public func thumbnail(for assetId: String) async throws -> Data? {
+        var desc = FetchDescriptor<StoredThumbnail>(predicate: #Predicate { $0.assetId == assetId })
+        desc.fetchLimit = 1
+        return try context.fetch(desc).first?.thumbnailData
+    }
+
+    public func saveThumbhashes(_ entries: [(assetId: String, data: Data)]) async throws {
+        for entry in entries {
+            let id = entry.assetId
+            var desc = FetchDescriptor<StoredThumbnail>(predicate: #Predicate<StoredThumbnail> { $0.assetId == id })
+            desc.fetchLimit = 1
+            if let existing = try context.fetch(desc).first {
+                if existing.thumbhashData == nil {
+                    existing.thumbhashData = entry.data
+                }
+            } else {
+                context.insert(StoredThumbnail(assetId: id, thumbhashData: entry.data))
+            }
+        }
+        try context.save()
+    }
+
+    public func saveThumbnail(assetId: String, data: Data) async throws {
+        let id = assetId
+        var desc = FetchDescriptor<StoredThumbnail>(predicate: #Predicate<StoredThumbnail> { $0.assetId == id })
+        desc.fetchLimit = 1
+        if let existing = try context.fetch(desc).first {
+            existing.thumbnailData = data
+            existing.createdAt = Date()
+        } else {
+            context.insert(StoredThumbnail(assetId: assetId, thumbnailData: data))
+        }
+        try context.save()
+    }
+
+    public func evictThumbnails(overCapBytes: Int) async throws {
+        let allRows = try context.fetch(FetchDescriptor<StoredThumbnail>(sortBy: [SortDescriptor(\.createdAt, order: .forward)]))
+        var totalBytes = 0
+        for row in allRows {
+            totalBytes += row.thumbnailData?.count ?? 0
+        }
+        guard totalBytes > overCapBytes else { return }
+        for row in allRows {
+            guard totalBytes > overCapBytes else { break }
+            if let size = row.thumbnailData?.count {
+                row.thumbnailData = nil
+                totalBytes -= size
+            }
+        }
+        try context.save()
+    }
+
+    public func evictThumbhashes(overCapBytes: Int) async throws {
+        let allRows = try context.fetch(FetchDescriptor<StoredThumbnail>(sortBy: [SortDescriptor(\.createdAt, order: .forward)]))
+        var totalBytes = 0
+        for row in allRows {
+            totalBytes += row.thumbhashData?.count ?? 0
+        }
+        guard totalBytes > overCapBytes else { return }
+        for row in allRows {
+            guard totalBytes > overCapBytes else { break }
+            if let size = row.thumbhashData?.count {
+                row.thumbhashData = nil
+                totalBytes -= size
+            }
+        }
+        try context.save()
+    }
+
+    public func thumbnailCacheBytes() async throws -> Int {
+        let allRows = try context.fetch(FetchDescriptor<StoredThumbnail>())
+        return allRows.reduce(0) { $0 + ($1.thumbnailData?.count ?? 0) }
+    }
+
+    public func thumbhashBytes() async throws -> Int {
+        let allRows = try context.fetch(FetchDescriptor<StoredThumbnail>())
+        return allRows.reduce(0) { $0 + ($1.thumbhashData?.count ?? 0) }
+    }
+
+    public func clear() async throws {
+        for row in try context.fetch(FetchDescriptor<StoredThumbnail>()) {
             context.delete(row)
         }
         try context.save()

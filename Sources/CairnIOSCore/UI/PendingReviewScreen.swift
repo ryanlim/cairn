@@ -34,6 +34,7 @@ public struct PendingReviewScreen: View {
     public let onBack: () -> Void
     public let onApprove: ([String]) -> Void
     public let onExclude: ([String]) -> Void
+    public let onDismiss: ([String]) -> Void
     public let onBulkExcludeOffload: () -> Void
 
     @Environment(\.cairnTokens) private var t
@@ -44,17 +45,23 @@ public struct PendingReviewScreen: View {
     private enum PendingAction: Identifiable {
         case approve(filename: String)
         case exclude(filename: String)
+        case dismiss(filename: String)
         case bulkOffload(count: Int)
         case bulkApprove(count: Int)
         case bulkExcludeSelected(count: Int)
+        case bulkDismiss(count: Int)
+        case trashAll(count: Int)
 
         var id: String {
             switch self {
             case .approve(let name): return "approve-\(name)"
             case .exclude(let name): return "exclude-\(name)"
+            case .dismiss(let name): return "dismiss-\(name)"
             case .bulkOffload(let n): return "bulk-\(n)"
             case .bulkApprove(let n): return "bulk-approve-\(n)"
             case .bulkExcludeSelected(let n): return "bulk-exclude-\(n)"
+            case .bulkDismiss(let n): return "bulk-dismiss-\(n)"
+            case .trashAll(let n): return "trash-all-\(n)"
             }
         }
     }
@@ -69,6 +76,7 @@ public struct PendingReviewScreen: View {
         onBack: @escaping () -> Void = {},
         onApprove: @escaping ([String]) -> Void = { _ in },
         onExclude: @escaping ([String]) -> Void = { _ in },
+        onDismiss: @escaping ([String]) -> Void = { _ in },
         onBulkExcludeOffload: @escaping () -> Void = {}
     ) {
         self.heldCandidates = heldCandidates
@@ -80,6 +88,7 @@ public struct PendingReviewScreen: View {
         self.onBack = onBack
         self.onApprove = onApprove
         self.onExclude = onExclude
+        self.onDismiss = onDismiss
         self.onBulkExcludeOffload = onBulkExcludeOffload
     }
 
@@ -96,6 +105,9 @@ public struct PendingReviewScreen: View {
                     } else {
                         if showsMassOffloadBanner {
                             massOffloadCallout
+                        }
+                        if !selectionMode && totalCount > 1 {
+                            trashAllButton
                         }
                         if !heldCandidates.isEmpty {
                             heldSection
@@ -240,6 +252,12 @@ public struct PendingReviewScreen: View {
                     action: { pendingAction = .bulkApprove(count: selectedFilenames.count) }
                 )
                 bulkChip(
+                    label: "Dismiss \(selectedFilenames.count)",
+                    foreground: t.textBody,
+                    disabled: selectedFilenames.isEmpty,
+                    action: { pendingAction = .bulkDismiss(count: selectedFilenames.count) }
+                )
+                bulkChip(
                     label: "Exclude \(selectedFilenames.count)",
                     foreground: t.textBody,
                     disabled: selectedFilenames.isEmpty,
@@ -280,6 +298,27 @@ public struct PendingReviewScreen: View {
             parts.append("\(unconfirmedCandidates.count) unconfirmed")
         }
         return parts.joined(separator: " · ")
+    }
+
+    // MARK: - Trash all
+
+    private var trashAllButton: some View {
+        Button(action: { pendingAction = .trashAll(count: totalCount) }) {
+            HStack(spacing: 8) {
+                Image(systemName: "trash")
+                    .font(.system(size: 14, weight: .semibold))
+                Text("Trash all \(totalCount) now")
+                    .font(.system(size: 15, weight: .semibold))
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 12)
+            .foregroundStyle(t.dangerInk)
+            .background(t.dangerSoft)
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        }
+        .buttonStyle(CairnPressStyle())
+        .padding(.horizontal, 16)
+        .padding(.bottom, 12)
     }
 
     // MARK: - Empty state
@@ -352,7 +391,8 @@ public struct PendingReviewScreen: View {
                             isSelected: selectedFilenames.contains(c.name),
                             onToggleSelect: { toggleSelection(c.name) },
                             onApprove: { pendingAction = .approve(filename: c.name) },
-                            onExclude: { pendingAction = .exclude(filename: c.name) }
+                            onExclude: { pendingAction = .exclude(filename: c.name) },
+                            onDismiss: { pendingAction = .dismiss(filename: c.name) }
                         )
                         if idx < heldCandidates.count - 1 {
                             RowDivider()
@@ -389,7 +429,8 @@ public struct PendingReviewScreen: View {
                             isSelected: selectedFilenames.contains(c.name),
                             onToggleSelect: { toggleSelection(c.name) },
                             onApprove: { pendingAction = .approve(filename: c.name) },
-                            onExclude: { pendingAction = .exclude(filename: c.name) }
+                            onExclude: { pendingAction = .exclude(filename: c.name) },
+                            onDismiss: { pendingAction = .dismiss(filename: c.name) }
                         )
                         if idx < unconfirmedCandidates.count - 1 {
                             RowDivider()
@@ -418,9 +459,12 @@ public struct PendingReviewScreen: View {
         switch pendingAction {
         case .approve(let name): return "Move \(name) to Trash now?"
         case .exclude(let name): return "Exclude \(name) from future runs?"
+        case .dismiss(let name): return "Dismiss \(name)?"
         case .bulkOffload(let n): return "Exclude all \(n) recent deletions?"
         case .bulkApprove(let n): return "Move \(n) selected item\(n == 1 ? "" : "s") to Trash now?"
         case .bulkExcludeSelected(let n): return "Exclude \(n) selected item\(n == 1 ? "" : "s")?"
+        case .bulkDismiss(let n): return "Dismiss \(n) selected item\(n == 1 ? "" : "s")?"
+        case .trashAll(let n): return "Move all \(n) item\(n == 1 ? "" : "s") to Trash now?"
         case .none:              return ""
         }
     }
@@ -431,12 +475,18 @@ public struct PendingReviewScreen: View {
             return Text("Skips the quarantine wait. Immich keeps it in Trash for 30 days.")
         case .exclude:
             return Text("Future runs will skip this one. You can unexclude later from Settings.")
+        case .dismiss:
+            return Text("Removes it from the pending list. If you delete the same photo again, it will reappear.")
         case .bulkOffload:
             return Text("All \(massOffloadCount) recent deletions will move to the excluded list. ") + .cairnWord + Text(" will stop considering them.")
         case .bulkApprove:
             return Text("Skips the quarantine wait for every selected item. Immich keeps them in Trash for 30 days.")
         case .bulkExcludeSelected:
             return Text("Future runs will skip every selected item. You can unexclude later from Settings.")
+        case .bulkDismiss:
+            return Text("Removes selected items from the pending list. If you delete them again, they will reappear.")
+        case .trashAll:
+            return Text("Skips the quarantine wait for every item. Immich keeps them in Trash for 30 days.")
         case .none:
             return Text("")
         }
@@ -451,6 +501,9 @@ public struct PendingReviewScreen: View {
         case .exclude(let name):
             Button("Exclude", role: .destructive) { onExclude([name]) }
             Button("Cancel", role: .cancel) {}
+        case .dismiss(let name):
+            Button("Dismiss") { onDismiss([name]) }
+            Button("Cancel", role: .cancel) {}
         case .bulkOffload:
             Button("Exclude all", role: .destructive) { onBulkExcludeOffload() }
             Button("Cancel", role: .cancel) {}
@@ -464,6 +517,17 @@ public struct PendingReviewScreen: View {
             Button("Exclude selected", role: .destructive) {
                 onExclude(Array(selectedFilenames))
                 exitSelectionMode()
+            }
+            Button("Cancel", role: .cancel) {}
+        case .bulkDismiss:
+            Button("Dismiss selected") {
+                onDismiss(Array(selectedFilenames))
+                exitSelectionMode()
+            }
+            Button("Cancel", role: .cancel) {}
+        case .trashAll:
+            Button("Move all to Trash", role: .destructive) {
+                onApprove(allFilenames)
             }
             Button("Cancel", role: .cancel) {}
         case .none:
@@ -488,6 +552,7 @@ private struct PendingReviewRow: View {
     let onToggleSelect: () -> Void
     let onApprove: () -> Void
     let onExclude: () -> Void
+    let onDismiss: () -> Void
 
     @Environment(\.cairnTokens) private var t
 
@@ -526,6 +591,12 @@ private struct PendingReviewRow: View {
                         tone: .danger,
                         accessibilityLabel: "Move \(candidate.name) to Trash",
                         action: onApprove
+                    )
+                    RowIconButton(
+                        systemName: "xmark.circle",
+                        tone: .neutral,
+                        accessibilityLabel: "Dismiss \(candidate.name)",
+                        action: onDismiss
                     )
                     RowIconButton(
                         systemName: "shield",

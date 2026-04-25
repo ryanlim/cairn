@@ -18,6 +18,7 @@ public actor ImmichThumbnailLoader {
     public let apiKey: String
     private let session: URLSession
     private let maxCacheBytes: Int
+    public let onFetched: (@Sendable (String, Data) async -> Void)?
 
     private var cache: [String: Data] = [:]
     private var currentCacheBytes: Int = 0
@@ -27,12 +28,14 @@ public actor ImmichThumbnailLoader {
         baseURL: URL,
         apiKey: String,
         session: URLSession = .shared,
-        maxCacheBytes: Int = 50 * 1024 * 1024
+        maxCacheBytes: Int = 50 * 1024 * 1024,
+        onFetched: (@Sendable (String, Data) async -> Void)? = nil
     ) {
         self.baseURL = Self.normalize(baseURL)
         self.apiKey = apiKey
         self.session = session
         self.maxCacheBytes = maxCacheBytes
+        self.onFetched = onFetched
     }
 
     /// Immich serves its API under `/api`. Accept either form from callers —
@@ -62,6 +65,7 @@ public actor ImmichThumbnailLoader {
 
         let data = try await task.value
         insertIntoCache(assetId: assetId, data: data)
+        await onFetched?(assetId, data)
         return data
     }
 

@@ -46,6 +46,12 @@ public struct StatusScreen: View {
     /// unconfirmed). When > 0 the screen surfaces a compact pending-review
     /// card directly below the sync card.
     public let pendingReviewCount: Int
+    /// Items confirmed-deleted but still within the quarantine window.
+    /// Shown as a secondary line under the big number.
+    public let quarantineCount: Int
+    /// Earliest date a quarantined item becomes eligible, if any.
+    /// Drives the "earliest eligible in N days" annotation.
+    public let earliestQuarantineEligible: Date?
     /// Sum of every bucket awaiting user action (held-by-quarantine +
     /// pending-review + eligible-to-trash candidates). Drives the
     /// backlog-alert banner when it crosses
@@ -75,11 +81,23 @@ public struct StatusScreen: View {
     /// Optional hashing progress, surfaced in the CTA label when the
     /// full-enumeration path is running ("Hashing 1,245 / 4,218").
     public let syncProgress: (hashed: Int, total: Int)?
+    /// Required API permissions the key is missing. Empty = all good.
+    public let missingPermissions: [String]
+    /// Live indexed count (checksums in the hash store).
+    public let indexed: Int
+    /// Items in the deferred queue (will retry in background).
+    public let deferredQueueCount: Int
+    public let syncPhase: CairnAppModel.SyncPhase
     public let onStartSync: () -> Void
     public let onCancelSync: () -> Void
     public let onOpenRun: (CairnFixtures.RunFixture) -> Void
     public let onSeeAllRuns: () -> Void
     public let onOpenPendingReview: () -> Void
+    /// Tapping the big "ready to trash" number opens a read-only view of
+    /// the current delete queue (DryRunSheet with cached reconciliation).
+    public let onOpenDeleteQueue: () -> Void
+    /// Tapping the deferred queue line opens the queue detail sheet.
+    public let onOpenDeferredQueue: () -> Void
 
     @Environment(\.cairnTokens) private var t
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -95,8 +113,6 @@ public struct StatusScreen: View {
     /// cleanly tests "dismissed at this exact value".
     @AppStorage("cairn.status.dismissedBacklogAtCount")
     private var dismissedBacklogAtCount: Int = -1
-    @AppStorage("cairn.status.dismissedDeferredAtCount")
-    private var dismissedDeferredAtCount: Int = -1
 
     public init(
         appState: AppState = .steady,
@@ -107,17 +123,25 @@ public struct StatusScreen: View {
         serverHost: String = "immich.home.arpa",
         maxDeletePercent: Double = 1.0,
         pendingReviewCount: Int = 0,
+        quarantineCount: Int = 0,
+        earliestQuarantineEligible: Date? = nil,
         deletionBacklog: Int = 0,
         backlogAlertThreshold: Int = 25,
         syncToast: CairnAppModel.SyncToast? = nil,
         initialScanPending: Bool = false,
         isSyncing: Bool = false,
         syncProgress: (hashed: Int, total: Int)? = nil,
+        missingPermissions: [String] = [],
+        indexed: Int = 0,
+        deferredQueueCount: Int = 0,
+        syncPhase: CairnAppModel.SyncPhase = .idle,
         onStartSync: @escaping () -> Void = {},
         onCancelSync: @escaping () -> Void = {},
         onOpenRun: @escaping (CairnFixtures.RunFixture) -> Void = { _ in },
         onSeeAllRuns: @escaping () -> Void = {},
         onOpenPendingReview: @escaping () -> Void = {},
+        onOpenDeleteQueue: @escaping () -> Void = {},
+        onOpenDeferredQueue: @escaping () -> Void = {},
         onResumeInitialScan: @escaping () -> Void = {},
         deferredQueue: CairnAppModel.DeferredQueueSummary = .empty,
         onForceDrainDeferred: @escaping () -> Void = {}
@@ -130,17 +154,25 @@ public struct StatusScreen: View {
         self.serverHost = serverHost
         self.maxDeletePercent = maxDeletePercent
         self.pendingReviewCount = pendingReviewCount
+        self.quarantineCount = quarantineCount
+        self.earliestQuarantineEligible = earliestQuarantineEligible
         self.deletionBacklog = deletionBacklog
         self.backlogAlertThreshold = backlogAlertThreshold
         self.syncToast = syncToast
         self.initialScanPending = initialScanPending
         self.isSyncing = isSyncing
         self.syncProgress = syncProgress
+        self.missingPermissions = missingPermissions
+        self.indexed = indexed
+        self.deferredQueueCount = deferredQueueCount
+        self.syncPhase = syncPhase
         self.onStartSync = onStartSync
         self.onCancelSync = onCancelSync
         self.onOpenRun = onOpenRun
         self.onSeeAllRuns = onSeeAllRuns
         self.onOpenPendingReview = onOpenPendingReview
+        self.onOpenDeleteQueue = onOpenDeleteQueue
+        self.onOpenDeferredQueue = onOpenDeferredQueue
         self.onResumeInitialScan = onResumeInitialScan
         self.deferredQueue = deferredQueue
         self.onForceDrainDeferred = onForceDrainDeferred
@@ -170,7 +202,6 @@ public struct StatusScreen: View {
             initialScanPending,
             backlogAlertThreshold > 0 && deletionBacklog >= backlogAlertThreshold && !initialScanPending && dismissedBacklogAtCount != deletionBacklog,
             syncToast != nil,
-            deferredQueue.count > 0 && !initialScanPending && dismissedDeferredAtCount != deferredQueue.count,
         ]
     }
 
@@ -179,13 +210,12 @@ public struct StatusScreen: View {
             VStack(alignment: .leading, spacing: 0) {
                 wordmarkHeader
                 degradedBanner
+                missingPermissionsBanner
                 stateBanner
                 initialScanPendingBanner
                 backlogAlertBanner
                 syncToastBanner
-                deferredQueueBanner
                 syncCard
-                pendingReviewCard
                 KeylineSection("Library")
                 libraryStats
                 KeylineSection("Recent runs")
@@ -203,48 +233,6 @@ public struct StatusScreen: View {
             .cairnBannerAnimation(value: bannerVisibilityKey)
         }
         .background(t.bg)
-    }
-
-    // MARK: - Pending review card
-
-    @ViewBuilder
-    private var pendingReviewCard: some View {
-        if pendingReviewCount > 0 {
-            // Wrapped in a Button so we pick up `CairnPressStyle`'s
-            // scale + dim on press. Previous `.onTapGesture` rendered
-            // no feedback, which made the card feel like decoration
-            // rather than a tappable row.
-            Button(action: onOpenPendingReview) {
-                CairnCard {
-                    HStack(alignment: .center, spacing: 14) {
-                        ZStack {
-                            Circle()
-                                .fill(t.pendingSoft)
-                                .frame(width: 44, height: 44)
-                            Image(systemName: "tray.and.arrow.down")
-                                .font(.system(size: 18, weight: .semibold))
-                                .foregroundStyle(t.pendingInk)
-                        }
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Pending review")
-                                .font(.system(size: 15, weight: .semibold))
-                                .foregroundStyle(t.text)
-                            (Text("\(pendingReviewCount) \(pendingReviewCount == 1 ? "item needs" : "items need") your review before ") + .cairnWord + Text(" moves them to Immich's Trash."))
-                                .font(.system(size: 12))
-                                .foregroundStyle(t.textMuted)
-                                .fixedSize(horizontal: false, vertical: true)
-                                .multilineTextAlignment(.leading)
-                        }
-                        Spacer(minLength: 0)
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(t.textHint)
-                    }
-                }
-            }
-            .buttonStyle(CairnPressStyle())
-            .padding(.top, 12)
-        }
     }
 
     // MARK: - Header
@@ -301,8 +289,22 @@ public struct StatusScreen: View {
     private var bannerTransition: AnyTransition { .cairnBanner }
 
     @ViewBuilder
+    private var missingPermissionsBanner: some View {
+        Group { if !missingPermissions.isEmpty {
+            Callout(.pending, icon: "exclamationmark.shield") {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("API key missing permissions").fontWeight(.semibold)
+                    Text("Required: \(missingPermissions.joined(separator: ", ")). Update your key in Immich to include these scopes.")
+                        .opacity(0.88).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(.horizontal, 16).padding(.bottom, 12)
+            .transition(bannerTransition)
+        } }
+    }
+
     private var degradedBanner: some View {
-        switch degraded {
+        Group { switch degraded {
         case .none: EmptyView()
         case .serverDown:
             Callout(.danger, icon: "server.rack") {
@@ -344,7 +346,7 @@ public struct StatusScreen: View {
             }
             .padding(.horizontal, 16).padding(.bottom, 12)
             .transition(bannerTransition)
-        }
+        } }
     }
 
     @ViewBuilder
@@ -451,48 +453,6 @@ public struct StatusScreen: View {
     /// can leave orphan deferred rows on disk, and showing both the
     /// "Initial scan pending" banner AND a "queued for background
     /// hashing" banner reads as contradictory. Once the user runs
-    /// the initial scan to completion, the deferred queue (whatever's
-    /// left) becomes a valid call-to-action.
-    @ViewBuilder
-    private var deferredQueueBanner: some View {
-        if deferredQueue.count > 0
-            && !initialScanPending
-            && dismissedDeferredAtCount != deferredQueue.count {
-            Callout(.info, icon: "tray.and.arrow.down") {
-                HStack(alignment: .top, spacing: 12) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("\(deferredQueue.count) \(deferredQueue.count == 1 ? "asset" : "assets") queued for background hashing")
-                            .fontWeight(.semibold)
-                        Group {
-                            if deferredQueue.totalKnownBytes > 0 {
-                                Text("\(formatDeferredBytes(deferredQueue.totalKnownBytes)) of iCloud downloads. Waiting for a charging + Wi-Fi slot, or tap Hash now.")
-                            } else {
-                                Text("Waiting for a background slot (charging + Wi-Fi), or tap Hash now.")
-                            }
-                        }
-                        .opacity(0.88).fixedSize(horizontal: false, vertical: true)
-                    }
-                    Spacer(minLength: 4)
-                    Button(action: onForceDrainDeferred) {
-                        Text("Hash now")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(t.primaryInk)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 7)
-                            .background(t.primary)
-                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    }
-                    .buttonStyle(CairnPressStyle())
-                }
-            }
-            .padding(.horizontal, 16).padding(.bottom, 12)
-            .cairnSwipeToDismiss {
-                dismissedDeferredAtCount = deferredQueue.count
-            }
-            .transition(bannerTransition)
-        }
-    }
-
     /// Body text for the `upToDate` toast. When `indexed == total`
     /// there's no "rest to catch up" — drop that clause so the line
     /// doesn't imply missing work. When some assets are still
@@ -507,10 +467,6 @@ public struct StatusScreen: View {
             return Text("Nothing new to trash. ") + count
                 + Text(" assets indexed — the rest will catch up in the background.")
         }
-    }
-
-    private func formatDeferredBytes(_ bytes: Int64) -> String {
-        CairnTimeHelpers.formatBytes(bytes)
     }
 
     @ViewBuilder
@@ -560,14 +516,19 @@ public struct StatusScreen: View {
             VStack(alignment: .leading, spacing: 14) {
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("PENDING CANDIDATES")
+                        Text("READY TO TRASH")
                             .font(.system(size: 11, weight: .semibold)).tracking(0.9)
                             .foregroundStyle(t.textMuted)
-                        Text("\(library.candidates)")
-                            .font(.system(size: 52, weight: .semibold).monospacedDigit())
-                            .tracking(-2.0)
-                            .foregroundStyle(t.pendingInk)
-                            .lineLimit(1)
+                        Button(action: { if library.candidates > 0 { onOpenDeleteQueue() } }) {
+                            Text("\(library.candidates)")
+                                .font(.system(size: 52, weight: .semibold).monospacedDigit())
+                                .tracking(-2.0)
+                                .foregroundStyle(t.dangerInk)
+                                .lineLimit(1)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(library.candidates == 0)
+                        .accessibilityLabel("\(library.candidates) ready to trash. Tap to view.")
                         (Text("would move to ") + Text("Immich's Trash").foregroundStyle(t.text) + Text(" on next run"))
                             .font(.system(size: 13))
                             .foregroundStyle(t.textMuted)
@@ -581,6 +542,10 @@ public struct StatusScreen: View {
                             .font(.system(size: 11))
                             .foregroundStyle(t.textMuted)
                     }
+                }
+
+                if quarantineCount > 0 {
+                    quarantineLine
                 }
 
                 // Dual-purpose progress bar:
@@ -597,11 +562,16 @@ public struct StatusScreen: View {
                         fraction: min(1.0, Double(progress.hashed) / Double(progress.total)),
                         tone: .pending
                     )
+                    ProcessingBreakdown(indexed: indexed, deferredQueueCount: deferredQueueCount, processed: progress.hashed)
                 } else {
                     ProgressBar(
                         fraction: min(1.0, pct / max(0.001, maxDeletePercent)),
                         tone: withinBudget ? .pending : .danger
                     )
+                }
+
+                if !isSyncing {
+                    deferredQueueLine
                 }
 
                 Button(action: { if !syncBlocked && !isSyncing { onStartSync() } }) {
@@ -645,6 +615,8 @@ public struct StatusScreen: View {
                     }
                     .buttonStyle(CairnPressStyle())
                     .accessibilityLabel("Cancel sync")
+
+                    SyncPhaseChecklist(phase: syncPhase)
                 }
             }
             .padding(18)
@@ -652,13 +624,115 @@ public struct StatusScreen: View {
         .padding(.bottom, 14)
     }
 
+    private var quarantineLine: some View {
+        Button(action: onOpenPendingReview) {
+            HStack(spacing: 12) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Image(systemName: "clock")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(t.pendingInk)
+                    Text("\(quarantineCount)")
+                        .font(.system(size: 28, weight: .semibold).monospacedDigit())
+                        .foregroundStyle(t.pendingInk)
+                    Text("in quarantine")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(t.pendingInk)
+                }
+                Spacer()
+                VStack(alignment: .trailing, spacing: 2) {
+                    if let earliest = earliestQuarantineEligible {
+                        Text("next in \(Self.relativeDay(earliest))")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(t.textMuted)
+                    }
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(t.textMuted)
+                }
+            }
+            .padding(.vertical, 10)
+            .padding(.horizontal, 14)
+            .background(t.pendingSoft.opacity(0.45))
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(CairnPressStyle())
+        .accessibilityLabel("\(quarantineCount) items in quarantine. Tap to review.")
+    }
+
+    @ViewBuilder
+    private var deferredQueueLine: some View {
+        let total = deferredQueue.count + deferredQueue.aboveCeiling
+        if total > 0 {
+            Button(action: onOpenDeferredQueue) {
+                HStack(spacing: 8) {
+                    Image(systemName: "tray.and.arrow.down")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(t.infoInk)
+                    if deferredQueue.count > 0 {
+                        Text("\(deferredQueue.count.formatted(.number)) queued")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(t.infoInk)
+                    }
+                    if deferredQueue.aboveCeiling > 0 {
+                        if deferredQueue.count > 0 {
+                            Text("·").font(.system(size: 13)).foregroundStyle(t.textHint)
+                        }
+                        Text("\(deferredQueue.aboveCeiling.formatted(.number)) above cap")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(t.textMuted)
+                    }
+                    Spacer()
+                    if deferredQueue.count > 0 {
+                        Button(action: onForceDrainDeferred) {
+                            Text("Hash now")
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundStyle(t.primaryInk)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 5)
+                                .background(t.primary)
+                                .clipShape(Capsule())
+                        }
+                        .buttonStyle(CairnPressStyle())
+                    } else {
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(t.textMuted)
+                    }
+                }
+                .padding(.vertical, 8)
+                .padding(.horizontal, 14)
+                .background(t.infoSoft.opacity(0.4))
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(CairnPressStyle())
+        }
+    }
+
+    static func relativeDay(_ date: Date) -> String {
+        let days = max(0, Calendar.current.dateComponents([.day], from: Date(), to: date).day ?? 0)
+        if days == 0 { return "<1d" }
+        if days == 1 { return "1 day" }
+        return "\(days) days"
+    }
+
     private var syncCtaLabel: String {
         if syncBlocked { return "Can’t sync — see banner" }
         if isSyncing {
-            if let progress = syncProgress, progress.total > 0 {
-                return "Hashing \(progress.hashed.formatted(.number)) / \(progress.total.formatted(.number))"
+            switch syncPhase {
+            case .hashing:
+                if let progress = syncProgress, progress.total > 0 {
+                    return "Processing \(progress.hashed.formatted(.number)) / \(progress.total.formatted(.number))"
+                }
+                return "Indexing…"
+            case .fetchingServer:
+                return "Fetching server data…"
+            case .reconciling:
+                return "Reconciling…"
+            case .idle:
+                return "Syncing…"
             }
-            return "Syncing…"
         }
         if appState == .thresholdTripped { return "Review before syncing" }
         return "Review & sync"

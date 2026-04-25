@@ -4,7 +4,7 @@ What's left between "works end-to-end on my device" and "publicly shipped on Git
 
 Sections:
 1. [GitHub push](#github-push)
-2. [App Store submission](#app-store-submission)
+2. [App Store submission prep](#app-store-submission-prep)
 3. [Post-launch / nice-to-haves](#post-launch--nice-to-haves)
 
 Conventions:
@@ -18,15 +18,15 @@ Conventions:
 
 ### Blocking
 
-- [ ] **Commit the working tree.** _code._ ~50 modified files from recent sessions (docs, copy tweaks, docstring pass, test additions, wordmark asset). Nothing broken; just needs sensible commits. Suggested grouping: (a) docstring pass + tests, (b) docs + PRIVACY/SECURITY/CONTRIBUTING/CHANGELOG + `.github/`, (c) copy polish + fixture mode + screenshot pipeline, (d) wordmark export + brand assets.
+- [x] **Commit the working tree.** 8 commits landed: core library, iOS impls, SwiftUI screens, app shell, tests, screenshot automation, pre-launch docs, gitignore.
 - [x] **`.gitignore` covers the risky paths.** Verified: `.env`, `.dev-secrets`, `Cairn.xcodeproj/`, `vendor/`, `.bundle/`, `fastlane/screenshots/`, `.ipa`, `.dSYM`, etc.
-- [ ] **Decide on privacy-policy URL.** _external / trivial._ `docs/app-store-metadata.md` currently points at `https://github.com/glarue/cairn/blob/main/PRIVACY.md`. Apple accepts raw-GitHub URLs but prefers a rendered page. Enable GitHub Pages → Settings → Pages → Source: `main` / folder: `/docs`. Five minutes, post-push.
+- [x] **Privacy-policy URL.** GitHub Pages deployed at `https://glarue.github.io/cairn/PRIVACY`. Referenced from `docs/app-store-metadata.md`.
 
 ### Strongly recommended
 
-- [ ] **Embed screenshots in README.** _code._ `<!-- TODO: screenshots -->` still sits there. `make screenshots` produces them; inline 2–3 (Status + Pending Review + Setup Welcome) for first-impression.
-- [ ] **Repo description + topics.** _external._ On github.com: short description + topics (`immich`, `ios`, `photos`, `self-hosted`, `swift`, `photo-management`). Drives discovery. Set via GitHub UI after push.
-- [ ] **Cut `v0.1.0` tag.** _external._ `CHANGELOG.md` already has the 0.1.0 section. One `git tag v0.1.0 && git push --tags` after the initial push lands.
+- [x] **Embed screenshots in README.** Status, Pending Review, Setup Welcome — inline at 220px.
+- [ ] **Repo description + topics.** _external._ On github.com: short description + topics (`immich`, `ios`, `swift`, `swiftui`, `photos`, `photo-management`, `self-hosted`, `photo-sync`, `immich-client`, `apple-photos`). Set via GitHub UI.
+- [ ] **Cut `v0.1.0` tag.** _external._ `CHANGELOG.md` already has the 0.1.0 section. One `git tag v0.1.0 && git push --tags` after the full code push lands.
 
 ### Nice-to-haves
 
@@ -35,43 +35,58 @@ Conventions:
 
 ---
 
-## App Store submission
+## App Store submission prep
 
-### Hard prerequisites (external — not code)
+Ordered checklist — work through top to bottom.
 
-- [ ] **Paid Apple Developer membership.** _external._ $99/year. Without it, no TestFlight + no App Store. Free-tier provisioning only works on personally-owned test devices.
-- [ ] **App Store Connect app record** with bundle ID `app.cairn.ios`. **Watch for a name collision** — App Store doesn't preserve casing, and "cairn" may already be claimed or rejected as too generic. Fallback names: `cairn for Immich`, `cairn — Immich sync`, `cairn · Immich`. The trademark-safety language in `app-store-metadata.md` already uses the "for Immich" framing where nominative fair-use applies.
-- [ ] **App Store Connect API key.** _external._ Set up under Users & Access → Keys in App Store Connect. Export the three env vars Fastlane reads:
-  - `APP_STORE_CONNECT_API_KEY_KEY_ID`
-  - `APP_STORE_CONNECT_API_KEY_ISSUER_ID`
-  - `APP_STORE_CONNECT_API_KEY_KEY_FILEPATH`
-  Drop them in a shell rc file (not in the repo). `make beta` and `make release` depend on these.
-- [ ] **Fastlane Match setup** — `make setup-certs` once. Creates a private git repo (or S3 bucket) holding encrypted certs. `make sync-certs` is the read-only counterpart for other machines / CI.
-- [ ] **Set `DEVELOPMENT_TEAM` once in Xcode.** `project.yml` leaves it blank on purpose; Xcode writes it into the regenerated `.xcodeproj` on first build. Persists across `make generate` runs via XcodeGen's `attributes:` block.
-- [ ] **Hosted privacy-policy URL.** Same as "Decide on privacy-policy URL" above — GitHub Pages or external host.
+### 1. Apple Developer account
 
-### In-repo work remaining
+- [ ] **Paid Apple Developer membership.** _external._ $99/year. Without it, no TestFlight + no App Store. Enroll at [developer.apple.com/enroll](https://developer.apple.com/enroll). Can take up to 48 hours to process.
 
-- [ ] **Reviewer Immich instance.** _doc._ `docs/app-store-review-notes.md` has `REPLACE-BEFORE-SUBMISSION` placeholders for URL + API key. Either (a) spin up a dedicated Immich for review (kept live during Apple's review window, ~3–7 days), or (b) point reviewers at [demo.immich.app](https://demo.immich.app/) with a note about rate limits. Apple has historically accepted option (b).
-- [ ] **Version & build numbers.** `CFBundleShortVersionString: "0.1.0"` + `CFBundleVersion: "1"` in `iOS/project.yml`. Fine for first submission. `make beta` auto-increments build number from TestFlight after that.
-- [ ] **Category + age rating in App Store Connect.** Answers pre-drafted in `docs/app-store-metadata.md` (Photo & Video primary, Utilities secondary, 4+). Paste during submission flow.
-- [ ] **Fira Code license file.** _code._ The app bundles Fira Code via `CairnFonts.registerBundledFonts()`. Fira Code is OFL-1.1, which requires the license text be distributed with derivatives. Add `LICENSES/FiraCode.OFL.txt` to the repo. Tiny but technically required.
-- [ ] **Accessibility pass.** _code._ No audit done yet for VoiceOver labels, Dynamic Type scaling, reduced-motion handling. Not a hard Apple-review blocker, but worth an hour before shipping — the audience cares about craft. Targets: all button accessibility labels, custom gesture handlers, the custom primitives (`CairnChip`, `CairnSegmentedPicker`, `CairnRadioList`, `RowIconButton`).
+### 2. App Store Connect setup
 
-### Submission flow once prerequisites are met
+- [ ] **Create app record** in App Store Connect with bundle ID `app.cairn.ios`. Watch for name collision — "cairn" may already be claimed or rejected as too generic. Fallback names: `cairn for Immich`, `cairn — Immich sync`, `cairn · Immich`.
+- [ ] **Create App Store Connect API key.** Users & Access → Integrations → App Store Connect API. Download the `.p8` file and note the Key ID + Issuer ID. Export as env vars for Fastlane:
+  ```sh
+  export APP_STORE_CONNECT_API_KEY_KEY_ID="..."
+  export APP_STORE_CONNECT_API_KEY_ISSUER_ID="..."
+  export APP_STORE_CONNECT_API_KEY_KEY_FILEPATH="~/.appstoreconnect/AuthKey_XXXX.p8"
+  ```
 
-```
-make setup-certs     # once per team
-make beta            # builds + uploads to TestFlight
-   → wait for processing (10–30 min)
-   → smoke-test via TestFlight on a real device
-make release         # builds + uploads to App Store Connect
-   → paste metadata from docs/app-store-metadata.md
-   → paste review notes from docs/app-store-review-notes.md
-   → paste privacy labels from docs/app-store-privacy-labels.md
-   → upload screenshots from fastlane/screenshots/en-US/
-   → submit for review
-```
+### 3. Signing + provisioning
+
+- [ ] **Set `DEVELOPMENT_TEAM` in Xcode.** Open `Cairn.xcodeproj` → Signing & Capabilities → select your team. Persists across `make generate` runs.
+- [ ] **Fastlane Match setup** — `make setup-certs`. Creates a private git repo holding encrypted certs. `make sync-certs` is the read-only counterpart for other machines / CI.
+
+### 4. Build + smoke test
+
+- [ ] **First TestFlight build.** `make beta` — builds IPA, uploads to TestFlight.
+- [ ] **Smoke test on a real device** via TestFlight. Validate: PhotoKit enumeration against a real library, end-to-end s   ync against your Immich, background refresh scheduling (simulator lies about `BGAppRefreshTask`).
+
+### 5. Reviewer access
+
+- [ ] **Reviewer Immich instance.** `docs/app-store-review-notes.md` has `REPLACE-BEFORE-SUBMISSION` placeholders for URL + API key. Either (a) spin up a dedicated Immich kept live during Apple's review window (~3–7 days), or (b) point reviewers at [demo.immich.app](https://demo.immich.app/) with a note about rate limits. Apple has historically accepted option (b).
+
+### 6. Submit
+
+- [ ] **`make release`** — builds IPA, uploads to App Store Connect.
+- [ ] **Paste metadata** from `docs/app-store-metadata.md` (description, keywords, subtitle, support URL, marketing URL).
+- [ ] **Set category + age rating.** Photo & Video primary, Utilities secondary, 4+. Answers pre-drafted in `docs/app-store-metadata.md`.
+- [ ] **Paste privacy labels** from `docs/app-store-privacy-labels.md`.
+- [ ] **Paste review notes** from `docs/app-store-review-notes.md` (with real reviewer credentials filled in).
+- [ ] **Privacy policy URL.** `https://glarue.github.io/cairn/PRIVACY`
+- [ ] **Upload screenshots** from `iOS/fastlane/screenshots/en-US/`.
+- [ ] **Record and attach screen recording.** Full end-to-end flow (setup → index → delete photos → sync → confirm trash → restore). Attach as App Review Attachment.
+- [ ] **Submit for review.**
+
+### Already done
+
+- [x] **Fira Code license file.** `LICENSES/FiraCode.OFL.txt` — OFL-1.1 text with correct copyright line.
+- [x] **Accessibility pass.** VoiceOver labels on all icon-only buttons, `.accessibilityValue()` on custom controls, `accessibilityReduceMotion` gating on all animations.
+- [x] **Version & build numbers.** `CFBundleShortVersionString: "0.1.0"` + `CFBundleVersion: "1"` in `iOS/project.yml`.
+- [x] **App icon.** Light + dark variants in place.
+- [x] **Screenshot pipeline.** `make screenshots` produces light + dark sets for two device sizes.
+- [x] **Privacy policy.** Live at `https://glarue.github.io/cairn/PRIVACY`.
 
 ---
 
@@ -79,11 +94,12 @@ make release         # builds + uploads to App Store Connect
 
 Not blockers. Move up the priority list only if a user flags them.
 
-- [ ] **Snapshot tests for SwiftUI screens.** `swift-snapshot-testing` from Point-Free. Priority targets: Setup steps, DryRunSheet phases, PendingReviewScreen variants. See CLAUDE.md TODO #2.
-- [ ] **Background task validation on real device.** Simulator lies about `BGAppRefreshTask` scheduling. One overnight charging run on hardware would confirm the real behavior. See CLAUDE.md TODO #1.
-- [ ] **Local OS notifications for backlog alerts.** In-app banner exists; full implementation sketch in CLAUDE.md TODO #6 (`UNUserNotificationCenter` permission + edge-triggered fire from `handleBackgroundRefresh` + deep link).
+- [ ] **Snapshot tests for SwiftUI screens.** `swift-snapshot-testing` from Point-Free. Priority targets: Setup steps, DryRunSheet phases, PendingReviewScreen variants.
+- [ ] **Background task validation on real device.** Simulator lies about `BGAppRefreshTask` scheduling. One overnight charging run on hardware would confirm the real behavior.
+- [ ] **Local OS notifications for backlog alerts.** In-app banner exists; next step is `UNUserNotificationCenter` permission + edge-triggered fire from `handleBackgroundRefresh` + deep link.
 - [ ] **`cairn/v2` tag schema.** Currently on v1. No pressure to bump; noting the extensibility hook for when a breaking change to run-breadcrumb shape is needed.
 - [ ] **Android port.** Deliberately deferred. `CairnCore` stays pure Foundation + CryptoKit so a Kotlin port is tractable. Decision criteria and port order live in the plan doc's "Portability" section.
+- [ ] **Push full source to GitHub.** Force-push `main` over the skeleton branch once the app is in review.
 
 ---
 

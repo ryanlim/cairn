@@ -106,10 +106,8 @@ https://github.com/glarue/cairn
 
 _Required. Must resolve to the privacy policy — not the raw repo file, ideally a rendered page._
 
-Plan: publish `PRIVACY.md` via GitHub Pages from the `docs/` branch config once the repo is public. Until then:
-
 ```
-https://github.com/glarue/cairn/blob/main/PRIVACY.md
+https://glarue.github.io/cairn/PRIVACY
 ```
 
 ## Category

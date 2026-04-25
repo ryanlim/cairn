@@ -32,8 +32,10 @@ public struct DryRunSheet: View {
 
     @State private var phase: Phase = .review
     @State private var sort: Sort = .recent
+    @State private var zoomedCandidate: CairnFixtures.CandidateFixture?
 
     @Environment(\.cairnTokens) private var t
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     public init(
         candidates: [CairnFixtures.CandidateFixture] = CairnFixtures.candidates,
@@ -101,6 +103,31 @@ public struct DryRunSheet: View {
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
         .presentationBackground(t.surface)
+        .overlay {
+            if let zoomed = zoomedCandidate {
+                ZStack {
+                    Color.black.opacity(0.7)
+                        .ignoresSafeArea()
+                        .onTapGesture {
+                            withAnimation(reduceMotion ? .none : .easeOut(duration: 0.15)) {
+                                zoomedCandidate = nil
+                            }
+                        }
+                    VStack(spacing: 12) {
+                        ImmichAssetThumb(assetId: zoomed.assetId, filename: zoomed.name, size: 280, isLivePair: zoomed.isLivePair)
+                        Text(zoomed.name)
+                            .font(.system(size: 14, design: .monospaced))
+                            .foregroundStyle(.white)
+                        if !zoomed.date.isEmpty {
+                            Text(zoomed.date)
+                                .font(.system(size: 12))
+                                .foregroundStyle(.white.opacity(0.6))
+                        }
+                    }
+                }
+                .transition(.opacity)
+            }
+        }
     }
 
     // MARK: - Review
@@ -219,15 +246,22 @@ public struct DryRunSheet: View {
             CairnCard {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 78), spacing: 6)], spacing: 6) {
                     ForEach(sorted) { c in
-                        VStack(spacing: 4) {
-                            ImmichAssetThumb(assetId: c.assetId, filename: c.name, size: 76, isLivePair: c.isLivePair)
-                            Text(c.name.replacingOccurrences(of: ".HEIC", with: "").replacingOccurrences(of: ".MP4", with: ""))
-                                .font(.system(size: 9.5, design: .monospaced))
-                                .foregroundStyle(t.textMuted)
-                                .lineLimit(1)
-                                .truncationMode(.tail)
-                                .frame(maxWidth: .infinity)
+                        Button {
+                            withAnimation(reduceMotion ? .none : .easeOut(duration: 0.15)) {
+                                zoomedCandidate = c
+                            }
+                        } label: {
+                            VStack(spacing: 4) {
+                                ImmichAssetThumb(assetId: c.assetId, filename: c.name, size: 76, isLivePair: c.isLivePair)
+                                Text(c.name.replacingOccurrences(of: ".HEIC", with: "").replacingOccurrences(of: ".MP4", with: ""))
+                                    .font(.system(size: 9.5, design: .monospaced))
+                                    .foregroundStyle(t.textMuted)
+                                    .lineLimit(1)
+                                    .truncationMode(.tail)
+                                    .frame(maxWidth: .infinity)
+                            }
                         }
+                        .buttonStyle(.plain)
                     }
                 }
                 .padding(10)

@@ -183,12 +183,13 @@ public final class PhotoKitPersistentChangeReconciler {
     /// bounded by `BGProcessingTask` expiration; foreground "Hash
     /// now" is bounded by the user walking away.
     private let perAssetTimeoutSeconds: TimeInterval = 60
-    /// Progress callback invoked as `(done, total)` during hashing.
-    /// Safe to update UI from — the closure hops to MainActor
-    /// internally as the caller sees fit. Only the full-enumeration
-    /// path fires these; incremental batches are small enough not to
-    /// warrant progress UI.
-    private let onHashProgress: @Sendable (Int, Int) async -> Void
+    /// Progress callback: `(done, total, newChecksums)`. The third
+    /// parameter carries checksums produced since the last report so
+    /// the caller can maintain a running "matched against server" count
+    /// without re-scanning the store. Only the full-enumeration path
+    /// fires these; incremental batches are small enough not to warrant
+    /// progress UI.
+    private let onHashProgress: @Sendable (Int, Int, Set<Checksum>) async -> Void
 
     /// Build a reconciler. All stores are injected so tests can wire
     /// in-memory fakes and so the same type works across the
@@ -210,7 +211,7 @@ public final class PhotoKitPersistentChangeReconciler {
         maxICloudBytesPerAsset: Int64? = 100 * 1024 * 1024,
         hardCeilingBytes: Int64? = nil,
         foregroundDrainBudget: Int = 25,
-        onHashProgress: @escaping @Sendable (Int, Int) async -> Void = { _, _ in },
+        onHashProgress: @escaping @Sendable (Int, Int, Set<Checksum>) async -> Void = { _, _, _ in },
         clock: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.hashStore = hashStore
@@ -229,7 +230,10 @@ public final class PhotoKitPersistentChangeReconciler {
     /// Run one scan. Picks the incremental path when a valid saved
     /// token exists, otherwise falls through to full enumeration.
     /// Throws `Error.notAuthorized` if Photos access has been revoked.
-    public func runDeletionScan() async throws -> Result {
+    /// `skipDrain: true` skips the foreground deferred-queue drain —
+    /// use for quick auto-syncs where you don't want multi-minute
+    /// iCloud downloads blocking the UI.
+    public func runDeletionScan(skipDrain: Bool = false) async throws -> Result {
         let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
         guard status == .authorized else {
             throw Error.notAuthorized(status)
@@ -242,7 +246,7 @@ public final class PhotoKitPersistentChangeReconciler {
         if let saved = try await tokens.load(),
            let token = Self.unarchiveToken(saved.data) {
             do {
-                return try await runIncremental(since: token)
+                return try await runIncremental(since: token, skipDrain: skipDrain)
             } catch let ns as NSError where Self.isTokenExpired(ns) {
                 // Drop the stale token and re-enumerate. Next run will
                 // pick up changes against the new baseline.
@@ -266,7 +270,7 @@ public final class PhotoKitPersistentChangeReconciler {
     /// On `PHPhotosError.persistentChangeTokenExpired` the caller
     /// falls back to `runFullEnumeration()` — Apple doesn't document
     /// the retention window, so token expiry is a normal code path.
-    private func runIncremental(since token: PHPersistentChangeToken) async throws -> Result {
+    private func runIncremental(since token: PHPersistentChangeToken, skipDrain: Bool = false) async throws -> Result {
         let fetchResult = try PHPhotoLibrary.shared().fetchPersistentChanges(since: token)
 
         var insertedIds: Set<String> = []
@@ -409,13 +413,11 @@ public final class PhotoKitPersistentChangeReconciler {
 
         // Best-effort drain of queued items. Incremental scans skim the
         // top N (foregroundDrainBudget) deferred entries and try them
-        // again under foreground settings. What still can't hash
-        // (stubbornly-over-limit, still-offline) stays in the queue for
-        // the next pass. Entries that DO hash are removed by
-        // `hashAssets` via its `successfullyHashedIDs` batching.
+        // again under foreground settings. Skipped when the caller
+        // passes `skipDrain: true` (e.g. the auto-sync on launch).
         let drained = try await drainInternal(
             softLimitMode: .useSettings,
-            budget: foregroundDrainBudget
+            budget: skipDrain ? 0 : foregroundDrainBudget
         )
 
         return Result(
@@ -506,19 +508,27 @@ public final class PhotoKitPersistentChangeReconciler {
         //   - `.noHashableResources` → always retry. Cheap.
         //   - Unknown size → retry (let the pipeline re-measure).
         //
-        // For the BG `.unlimited` path, everything qualifies.
+        // For the BG `.unlimited` path, everything qualifies except
+        // items above the hard ceiling. The soft limit is a foreground
+        // budget concern; the hard ceiling is a permanent scope boundary.
         let softLimitBytes = self.maxICloudBytesPerAsset
+        let hardCeiling = self.hardCeilingBytes
         let candidates: [DeferredHashEntry]
         switch softLimitMode {
         case .unlimited:
-            candidates = queued
+            candidates = queued.filter { entry in
+                guard let hardCeiling,
+                      let size = entry.sizeBytes else { return true }
+                return size <= hardCeiling
+            }
         case .useSettings:
             candidates = queued.filter { entry in
                 guard entry.reason == .tooLarge,
-                      let size = entry.sizeBytes,
-                      let softLimitBytes else {
-                    return true   // timeout, noHashableResources, or size unknown
+                      let size = entry.sizeBytes else {
+                    return true
                 }
+                if let hardCeiling, size > hardCeiling { return false }
+                guard let softLimitBytes else { return true }
                 return size <= softLimitBytes
             }
         }
@@ -726,7 +736,7 @@ public final class PhotoKitPersistentChangeReconciler {
 
         // Seed progress with the cached count so the UI immediately
         // reflects "resumed" state rather than dropping back to 0.
-        await onHashProgress(resumedFrom, total)
+        await onHashProgress(resumedFrom, total, [])
 
         var fresh = try await hashAssets(
             assets: toHash,
@@ -806,6 +816,7 @@ public final class PhotoKitPersistentChangeReconciler {
         var lastReportedAt = Date()
         let progressEveryN = 25
         let progressEveryMs: TimeInterval = 0.25
+        var pendingChecksums: Set<Checksum> = []
 
         // Running stats so the end-of-run summary can call out whether
         // iCloud download was the bottleneck. Per-asset slow-outlier
@@ -911,6 +922,7 @@ public final class PhotoKitPersistentChangeReconciler {
                 } else if !result.checksums.isEmpty {
                     out.checksumsByID[result.assetID] = result.checksums
                     successfullyHashedIDs.insert(result.assetID)
+                    pendingChecksums.formUnion(result.checksums)
                     // Persist after each successful hash so a
                     // cancellation doesn't waste the work. Serialized
                     // inside the hashStore actor; the few-ms cost is
@@ -936,7 +948,9 @@ public final class PhotoKitPersistentChangeReconciler {
                     let ticks = done - lastReportedDone
                     let elapsed = Date().timeIntervalSince(lastReportedAt)
                     if ticks >= progressEveryN || elapsed >= progressEveryMs || done == total {
-                        await onHashProgress(done, total)
+                        let batch = pendingChecksums
+                        pendingChecksums = []
+                        await onHashProgress(done, total, batch)
                         lastReportedDone = done
                         lastReportedAt = Date()
                     }

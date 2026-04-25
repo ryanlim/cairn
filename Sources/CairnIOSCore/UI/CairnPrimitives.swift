@@ -831,19 +831,13 @@ public extension Animation {
     /// that reads as alive without feeling toy-ish.
     /// Response 0.5s / damping 0.58. Paired with `.cairnBanner`
     /// transitions at sites like StatusScreen, PendingReview, DryRun.
-    static var cairnSpring: Animation {
-        .spring(response: 0.5, dampingFraction: 0.58)
+    static func cairnSpring(response: Double = 0.5, damping: Double = 0.58) -> Animation {
+        .spring(response: response, dampingFraction: damping)
     }
 
-    /// Snappier sibling of `cairnSpring` for **direct-manipulation
-    /// selection changes** — segmented-picker pill slides, radio
-    /// indicator pops, any in-place state flip in response to a tap.
-    /// Response 0.28s / damping 0.62 — ~50% quicker than the banner
-    /// spring so tapping feels immediate while keeping enough
-    /// springiness that the motion vocabulary matches banner enter/exit.
-    static var cairnSpringSnappy: Animation {
-        .spring(response: 0.28, dampingFraction: 0.62)
-    }
+    static var cairnSpring: Animation { cairnSpring() }
+    static var cairnSpringSnappy: Animation { cairnSpring(response: 0.28, damping: 0.62) }
+    static var cairnSpringTab: Animation { cairnSpring(response: 0.22, damping: 0.68) }
 }
 
 public extension View {
@@ -1582,3 +1576,107 @@ public struct CairnRadioList<Value: Hashable>: View {
     return Host().cairnTheme()
 }
 #endif
+
+// MARK: - Sync phase checklist
+
+public struct SyncPhaseChecklist: View {
+    public let phase: CairnAppModel.SyncPhase
+
+    @Environment(\.cairnTokens) private var t
+
+    public init(phase: CairnAppModel.SyncPhase) {
+        self.phase = phase
+    }
+
+    private struct Step {
+        let label: String
+        let phase: CairnAppModel.SyncPhase
+    }
+
+    private let steps: [Step] = [
+        .init(label: "Index library", phase: .hashing),
+        .init(label: "Fetch server data", phase: .fetchingServer),
+        .init(label: "Reconcile", phase: .reconciling),
+    ]
+
+    private func state(for step: Step) -> StepState {
+        let order: [CairnAppModel.SyncPhase] = [.hashing, .fetchingServer, .reconciling]
+        guard let currentIdx = order.firstIndex(of: phase),
+              let stepIdx = order.firstIndex(of: step.phase) else {
+            return .pending
+        }
+        if stepIdx < currentIdx { return .done }
+        if stepIdx == currentIdx { return .active }
+        return .pending
+    }
+
+    private enum StepState { case pending, active, done }
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(Array(steps.enumerated()), id: \.offset) { _, step in
+                let s = state(for: step)
+                HStack(spacing: 8) {
+                    Group {
+                        switch s {
+                        case .done:
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundStyle(t.verifiedInk)
+                        case .active:
+                            Image(systemName: "circle.dotted.circle")
+                                .foregroundStyle(t.pendingInk)
+                        case .pending:
+                            Image(systemName: "circle")
+                                .foregroundStyle(t.textHint)
+                        }
+                    }
+                    .font(.system(size: 12))
+
+                    Text(step.label)
+                        .font(.system(size: 12))
+                        .foregroundStyle(s == .active ? t.textBody : t.textMuted)
+                }
+                .opacity(s == .pending ? 0.6 : 1.0)
+            }
+        }
+        .padding(.top, 4)
+    }
+}
+
+// MARK: - Processing breakdown
+
+public struct ProcessingBreakdown: View {
+    public let indexed: Int
+    public let deferredQueueCount: Int
+    public let processed: Int
+
+    @Environment(\.cairnTokens) private var t
+
+    public init(indexed: Int, deferredQueueCount: Int, processed: Int) {
+        self.indexed = indexed
+        self.deferredQueueCount = deferredQueueCount
+        self.processed = processed
+    }
+
+    private var skipped: Int { max(0, processed - indexed - deferredQueueCount) }
+
+    public var body: some View {
+        if deferredQueueCount > 0 || skipped > 0 {
+            HStack(spacing: 4) {
+                Text("\(indexed.formatted(.number)) indexed")
+                    .foregroundStyle(t.textBody)
+                if deferredQueueCount > 0 {
+                    Text("·").foregroundStyle(t.textHint)
+                    Text("\(deferredQueueCount.formatted(.number)) queued")
+                        .foregroundStyle(t.textMuted)
+                }
+                if skipped > 0 {
+                    Text("·").foregroundStyle(t.textHint)
+                    Text("\(skipped.formatted(.number)) over cap")
+                        .foregroundStyle(t.textMuted)
+                }
+            }
+            .font(.system(size: 12))
+        }
+    }
+}

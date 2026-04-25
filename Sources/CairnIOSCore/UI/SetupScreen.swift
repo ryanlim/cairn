@@ -290,6 +290,8 @@ public struct SetupScreen: View {
             // `screens/setup.jsx` step 0.
             (Text("Scopes required: ")
                 + monoCode("asset.read") + Text(", ")
+                + monoCode("asset.view") + Text(", ")
+                + monoCode("asset.download") + Text(", ")
                 + monoCode("asset.delete") + Text(", ")
                 + monoCode("tag.create") + Text(", ")
                 + monoCode("tag.asset") + Text(", ")

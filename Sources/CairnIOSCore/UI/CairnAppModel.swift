@@ -32,6 +32,8 @@ public final class CairnAppModel {
 
     /// The Immich server URL (without scheme — display-friendly, e.g. "photos.example.com").
     public var serverHost: String
+    /// Full server URL for deep-linking (e.g. opening assets in Safari).
+    public var serverURL: URL?
 
     /// Raw API key — populated at bootstrap (from Keychain) and after
     /// a successful onboarding verify. Drives the Settings → Reveal
@@ -67,6 +69,11 @@ public final class CairnAppModel {
     public var excludedChecksums: Set<String> = []
     public var appState: StatusScreen.AppState
     public var degraded: StatusScreen.Degraded
+
+    /// Required API permissions the current key is missing. Empty when
+    /// all scopes are present or when the key hasn't been checked yet.
+    /// Populated at bootstrap and on verify; surfaces a banner on Status.
+    public var missingPermissions: [String] = []
 
     // MARK: - Live reconciliation result
 
@@ -164,6 +171,17 @@ public final class CairnAppModel {
     /// Status screen's "Review & sync" button so taps don't feel dead.
     public var isSyncing: Bool = false
 
+    /// Current phase of the sync pipeline. Drives the CTA label so the
+    /// user sees what's happening after hashing finishes.
+    public var syncPhase: SyncPhase = .idle
+
+    public enum SyncPhase: Sendable, Equatable {
+        case idle
+        case hashing
+        case fetchingServer
+        case reconciling
+    }
+
     /// Hashing progress during a sync. `nil` outside sync. The
     /// full-enumeration path (first-run, token expired) populates this;
     /// incremental syncs skip it since they're already fast.
@@ -209,17 +227,28 @@ public final class CairnAppModel {
     /// `.empty` means queried and nothing queued.
     public var deferredQueue: DeferredQueueSummary = .empty
 
+    /// Snapshot of the deferred queue entries for the sheet view.
+    /// Populated when the deferred queue sheet is about to present.
+    public var deferredQueueEntries: [DeferredHashEntry] = []
+
+    /// Count of items in `ConfirmedDeletedStore` still within the
+    /// quarantine window. Populated from the store directly at
+    /// bootstrap and after each sync/trash, so the Status pending
+    /// review banner has data even before the first reconciliation.
+    public var quarantineCount: Int = 0
+
     public struct DeferredQueueSummary: Sendable, Equatable {
+        /// Items that will actually be attempted on next drain.
         public var count: Int
-        /// Summed `sizeBytes` for `.tooLarge` entries. Entries whose
-        /// size is unknown (e.g. `.timedOut`) don't contribute, but
-        /// the count still reflects the full queue.
+        /// Items in the queue but above the current hard ceiling.
+        public var aboveCeiling: Int
         public var totalKnownBytes: Int64
 
-        public static let empty = DeferredQueueSummary(count: 0, totalKnownBytes: 0)
+        public static let empty = DeferredQueueSummary(count: 0, aboveCeiling: 0, totalKnownBytes: 0)
 
-        public init(count: Int, totalKnownBytes: Int64) {
+        public init(count: Int, aboveCeiling: Int = 0, totalKnownBytes: Int64) {
             self.count = count
+            self.aboveCeiling = aboveCeiling
             self.totalKnownBytes = totalKnownBytes
         }
     }
@@ -249,12 +278,14 @@ public final class CairnAppModel {
         case dryRun(forceTripped: Bool)
         case runDetail(CairnFixtures.RunFixture, assets: [CairnFixtures.CandidateFixture])
         case pendingReview
+        case deferredQueue
 
         public var id: String {
             switch self {
             case .dryRun: "dry-run"
             case .runDetail(let r, _): "run-detail-\(r.id)"
             case .pendingReview: "pending-review"
+            case .deferredQueue: "deferred-queue"
             }
         }
     }
@@ -335,6 +366,27 @@ public final class CairnAppModel {
     }
 }
 
+public enum CairnExportScope: Sendable {
+    case currentServer
+    case allServers
+}
+
+public struct CairnImportResult: Sendable {
+    public let everSeenAdded: Int
+    public let exclusionsAdded: Int
+    public let journalLinesAppended: Int
+    public let settingsApplied: Bool
+    public let serverCount: Int
+
+    public init(everSeenAdded: Int, exclusionsAdded: Int, journalLinesAppended: Int, settingsApplied: Bool, serverCount: Int) {
+        self.everSeenAdded = everSeenAdded
+        self.exclusionsAdded = exclusionsAdded
+        self.journalLinesAppended = journalLinesAppended
+        self.settingsApplied = settingsApplied
+        self.serverCount = serverCount
+    }
+}
+
 /// Bundle of async action closures the host implements to do real work.
 /// `CairnAppRoot` calls into this type when the screens trigger user
 /// intent; the host (the Xcode-project app target) supplies real
@@ -383,6 +435,20 @@ public struct CairnAppActions: Sendable {
     /// they stop showing up in pending-review regardless.
     public var excludePending: @Sendable (_ checksums: [String]) async throws -> Void
 
+    /// Remove checksums from `ConfirmedDeletedStore` without adding to
+    /// `ExclusionStore`. The items leave the pending list but are not
+    /// permanently protected — a future deletion of the same photo
+    /// re-enters the quarantine pipeline.
+    public var dismissPending: @Sendable (_ checksums: [String]) async throws -> Void
+
+    /// Export cairn state for the given scope. Returns a temporary file URL
+    /// the caller can hand to the system share sheet.
+    public var exportData: @Sendable (_ scope: CairnExportScope) async throws -> URL
+
+    /// Import cairn state from the given file URL. `applySettings` controls
+    /// whether the payload's settings overwrite the current ones.
+    public var importData: @Sendable (_ fileURL: URL, _ applySettings: Bool) async throws -> CairnImportResult
+
     /// Wave 4: user tapped the mass-offload banner's "bulk exclude"
     /// affordance — every checksum confirmed-deleted in the recent burst
     /// is moved to the exclusion list. Host computes the set by filtering
@@ -390,6 +456,9 @@ public struct CairnAppActions: Sendable {
     /// scan window. Same semantics as `excludePending` but operates on a
     /// larger set.
     public var bulkExcludeRecentOffload: @Sendable () async throws -> Void
+
+    /// Snapshot the deferred queue entries for the detail sheet.
+    public var loadDeferredEntries: @Sendable () async throws -> [DeferredHashEntry]
 
     /// Setup wizard step: verify URL + API key against the server. Returns
     /// the asset count for the "1,204 assets visible to this key" success state.
@@ -457,6 +526,10 @@ public struct CairnAppActions: Sendable {
         unexclude: @escaping @Sendable ([String]) async throws -> Void = { _ in },
         approvePending: @escaping @Sendable ([String]) async throws -> Void = { _ in },
         excludePending: @escaping @Sendable ([String]) async throws -> Void = { _ in },
+        dismissPending: @escaping @Sendable ([String]) async throws -> Void = { _ in },
+        loadDeferredEntries: @escaping @Sendable () async throws -> [DeferredHashEntry] = { [] },
+        exportData: @escaping @Sendable (CairnExportScope) async throws -> URL = { _ in URL(fileURLWithPath: "/dev/null") },
+        importData: @escaping @Sendable (URL, Bool) async throws -> CairnImportResult = { _, _ in CairnImportResult(everSeenAdded: 0, exclusionsAdded: 0, journalLinesAppended: 0, settingsApplied: false, serverCount: 0) },
         bulkExcludeRecentOffload: @escaping @Sendable () async throws -> Void = {},
         verifyServer: @escaping @Sendable (String, String) async -> SetupScreen.ServerVerifyResult = { _, _ in
             SetupScreen.ServerVerifyResult(success: true, assetCount: 0, errorMessage: nil)
@@ -480,6 +553,10 @@ public struct CairnAppActions: Sendable {
         self.unexclude = unexclude
         self.approvePending = approvePending
         self.excludePending = excludePending
+        self.dismissPending = dismissPending
+        self.loadDeferredEntries = loadDeferredEntries
+        self.exportData = exportData
+        self.importData = importData
         self.bulkExcludeRecentOffload = bulkExcludeRecentOffload
         self.verifyServer = verifyServer
         self.requestPhotosAccess = requestPhotosAccess

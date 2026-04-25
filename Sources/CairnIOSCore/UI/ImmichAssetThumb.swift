@@ -18,10 +18,19 @@ private struct ImmichThumbnailLoaderKey: EnvironmentKey {
     static let defaultValue: ImmichThumbnailLoader? = nil
 }
 
+private struct ThumbnailStoreKey: EnvironmentKey {
+    static let defaultValue: SwiftDataThumbnailStore? = nil
+}
+
 public extension EnvironmentValues {
     var immichThumbnailLoader: ImmichThumbnailLoader? {
         get { self[ImmichThumbnailLoaderKey.self] }
         set { self[ImmichThumbnailLoaderKey.self] = newValue }
+    }
+
+    var thumbnailStore: SwiftDataThumbnailStore? {
+        get { self[ThumbnailStoreKey.self] }
+        set { self[ThumbnailStoreKey.self] = newValue }
     }
 }
 
@@ -44,6 +53,7 @@ public struct ImmichAssetThumb: View {
 
     @State private var imageData: Data?
     @Environment(\.immichThumbnailLoader) private var loader
+    @Environment(\.thumbnailStore) private var store
     @Environment(\.cairnTokens) private var t
 
     public init(
@@ -77,27 +87,31 @@ public struct ImmichAssetThumb: View {
         // view cell be reused across different assets (list virtualization)
         // without carrying stale bytes from the previous row's asset.
         .task(id: assetId) {
-            guard let assetId, let loader else {
+            guard let assetId else {
                 imageData = nil
                 return
             }
-            do {
-                let data = try await loader.load(assetId: assetId)
-                // Silent no-op if the view has been reassigned to a
-                // different asset while the request was in flight —
-                // `.task(id:)` has already cancelled this task and will
-                // relaunch for the new id, but we also guard to avoid
-                // rendering stale bytes.
-                guard !Task.isCancelled else { return }
-                imageData = data
-            } catch {
-                // Silent fallback to gradient. We deliberately don't
-                // surface a broken-image indicator — the gradient reads
-                // as "unknown content" which is accurate pre-auth or
-                // during transient failures. Real monitoring should live
-                // in logs, not the UI.
-                imageData = nil
+            if let loader {
+                do {
+                    let data = try await loader.load(assetId: assetId)
+                    guard !Task.isCancelled else { return }
+                    imageData = data
+                    return
+                } catch {
+                    guard !Task.isCancelled else { return }
+                }
             }
+            if let store, let cached = try? await store.thumbnail(for: assetId) {
+                guard !Task.isCancelled else { return }
+                imageData = cached
+                return
+            }
+            if let store, let hash = try? await store.thumbhash(for: assetId), let decoded = ThumbHashDecoder.decode(hash) {
+                guard !Task.isCancelled else { return }
+                imageData = decoded
+                return
+            }
+            imageData = nil
         }
     }
 

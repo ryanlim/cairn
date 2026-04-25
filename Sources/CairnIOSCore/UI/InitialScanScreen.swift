@@ -21,6 +21,14 @@ import CairnCore
 public struct InitialScanScreen: View {
     public let total: Int
     public let hashed: Int
+    /// Assets with actual checksums in the store. Differs from `hashed`
+    /// when assets are deferred (too large for foreground download) or
+    /// skipped (above hard ceiling).
+    public let indexed: Int
+    /// Actual count of items in the deferred queue (will retry later).
+    /// The gap `hashed - indexed - deferredQueueCount` = permanently
+    /// skipped (above hard ceiling).
+    public let deferredQueueCount: Int
     public let isActive: Bool
     public let startedAt: Date?
     /// When non-nil, the scan is *paused*: elapsed is this frozen value
@@ -40,6 +48,8 @@ public struct InitialScanScreen: View {
     public init(
         total: Int,
         hashed: Int,
+        indexed: Int = 0,
+        deferredQueueCount: Int = 0,
         isActive: Bool,
         startedAt: Date?,
         pausedElapsed: TimeInterval? = nil,
@@ -51,6 +61,8 @@ public struct InitialScanScreen: View {
     ) {
         self.total = total
         self.hashed = hashed
+        self.indexed = indexed
+        self.deferredQueueCount = deferredQueueCount
         self.isActive = isActive
         self.startedAt = startedAt
         self.pausedElapsed = pausedElapsed
@@ -144,15 +156,23 @@ public struct InitialScanScreen: View {
             .padding(.bottom, 8)
     }
 
+    private var hasCache: Bool { hashed > 0 && !isActive }
+
     private var subtext: some View {
-        (Text.cairnWord + Text(" hashes every photo once so it can tell a deletion apart from a sync hiccup. This only happens on first run."))
-            .font(.system(size: 14))
-            .foregroundStyle(t.textMuted)
-            .multilineTextAlignment(.center)
-            .lineSpacing(3)
-            .fixedSize(horizontal: false, vertical: true)
-            .padding(.horizontal, 40)
-            .padding(.bottom, 28)
+        Group {
+            if hasCache {
+                (Text.cairnWord + Text(" found \(hashed.formatted(.number)) cached hashes from a previous run. Tap resume to pick up where you left off."))
+            } else {
+                (Text.cairnWord + Text(" hashes every photo once so it can tell a deletion apart from a sync hiccup. This only happens on first run."))
+            }
+        }
+        .font(.system(size: 14))
+        .foregroundStyle(t.textMuted)
+        .multilineTextAlignment(.center)
+        .lineSpacing(3)
+        .fixedSize(horizontal: false, vertical: true)
+        .padding(.horizontal, 40)
+        .padding(.bottom, 28)
     }
 
     private var progressCard: some View {
@@ -162,7 +182,7 @@ public struct InitialScanScreen: View {
                     Text("\(hashed.formatted(.number)) / \(total.formatted(.number))")
                         .font(.system(size: 28, weight: .semibold).monospacedDigit())
                         .foregroundStyle(t.text)
-                    Text("photos")
+                    Text("processed")
                         .font(.system(size: 14))
                         .foregroundStyle(t.textMuted)
                     Spacer()
@@ -171,6 +191,7 @@ public struct InitialScanScreen: View {
                         .foregroundStyle(t.textMuted)
                 }
                 ProgressBar(fraction: fraction, tone: .pending)
+                ProcessingBreakdown(indexed: indexed, deferredQueueCount: deferredQueueCount, processed: hashed)
                 timingStrip
             }
             .padding(18)

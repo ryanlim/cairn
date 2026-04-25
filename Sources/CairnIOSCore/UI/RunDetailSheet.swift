@@ -61,6 +61,7 @@ public struct RunDetailSheet: View {
     /// or nil set there means "restore the whole run," which is NOT
     /// what the user asked for when they made a partial selection.
     public let onRestore: ([CairnFixtures.CandidateFixture]) -> Void
+    public let serverURL: URL?
 
     public init(
         run: CairnFixtures.RunFixture = CairnFixtures.runs[0],
@@ -69,7 +70,8 @@ public struct RunDetailSheet: View {
         onClose: @escaping () -> Void = {},
         onExclude: @escaping ([CairnFixtures.CandidateFixture]) -> Void = { _ in },
         onUnexclude: @escaping ([CairnFixtures.CandidateFixture]) -> Void = { _ in },
-        onRestore: @escaping ([CairnFixtures.CandidateFixture]) -> Void = { _ in }
+        onRestore: @escaping ([CairnFixtures.CandidateFixture]) -> Void = { _ in },
+        serverURL: URL? = nil
     ) {
         self.run = run
         self.assets = assets
@@ -78,6 +80,7 @@ public struct RunDetailSheet: View {
         self.onExclude = onExclude
         self.onUnexclude = onUnexclude
         self.onRestore = onRestore
+        self.serverURL = serverURL
     }
 
     // MARK: - Local state
@@ -670,9 +673,19 @@ public struct RunDetailSheet: View {
     }
 
     private func doOpenInImmich() {
-        // Mock: real iOS app opens a universal link via UIApplication. The
-        // selection-aware deep link logic from the prototype lives in the
-        // parent in production so it can read the configured server URL.
+        #if canImport(UIKit)
+        guard let serverURL,
+              let firstName = selected.first,
+              let match = assets.first(where: { $0.name == firstName }),
+              let assetId = match.assetId else { return }
+        var components = URLComponents()
+        components.scheme = serverURL.scheme
+        components.host = serverURL.host(percentEncoded: false)
+        components.port = serverURL.port
+        components.path = "/photos/\(assetId)"
+        guard let url = components.url else { return }
+        UIApplication.shared.open(url)
+        #endif
     }
 
     private func scheduleClearFlash(restoredCount: Int? = nil, excludedCount: Int? = nil) {
@@ -716,6 +729,14 @@ private struct AssetTile: View {
                             Image(systemName: "checkmark")
                                 .font(.system(size: 10, weight: .bold))
                                 .foregroundStyle(t.primaryInk)
+                        }
+                        .padding(4)
+                    } else if isRestored {
+                        ZStack {
+                            Circle().fill(t.verifiedSoft).frame(width: 18, height: 18)
+                            Image(systemName: "arrow.uturn.backward")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundStyle(t.verifiedInk)
                         }
                         .padding(4)
                     } else if isExcluded {

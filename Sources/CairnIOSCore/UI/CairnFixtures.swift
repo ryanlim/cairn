@@ -169,6 +169,7 @@ public enum CairnFixtures {
         /// flow (the `ExclusionStore` is checksum-keyed); without it, the
         /// run-detail Exclude button can't persist a real exclusion.
         public let checksum: String?
+        public let thumbhash: String?
 
         public enum Kind: Sendable { case photo, video, livePair }
 
@@ -179,7 +180,8 @@ public enum CairnFixtures {
             bytes: Int,
             isLivePair: Bool,
             assetId: String? = nil,
-            checksum: String? = nil
+            checksum: String? = nil,
+            thumbhash: String? = nil
         ) {
             self.name = name
             self.kind = kind
@@ -188,6 +190,7 @@ public enum CairnFixtures {
             self.isLivePair = isLivePair
             self.assetId = assetId
             self.checksum = checksum
+            self.thumbhash = thumbhash
         }
 
         /// Build a fixture from a journal `TrashTarget`. Used to
@@ -250,7 +253,8 @@ public enum CairnFixtures {
                 bytes: 0,
                 isLivePair: isLivePair,
                 assetId: server.id,
-                checksum: server.checksum.base64
+                checksum: server.checksum.base64,
+                thumbhash: server.thumbhash
             )
         }
     }

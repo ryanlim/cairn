@@ -17,6 +17,9 @@ public protocol EverSeenStore: Sendable {
 
     /// Merge `additions` into the store. Idempotent.
     func union(_ additions: Set<Checksum>) async throws
+
+    /// Remove `checksums` from the store. Silent no-op on absence.
+    func remove(_ checksums: Set<Checksum>) async throws
 }
 
 /// Default CLI-friendly implementation: JSON array at a fixed path.
@@ -45,6 +48,17 @@ public actor JSONFileEverSeenStore: EverSeenStore {
         let newCount = additions.subtracting(current).count
         guard newCount > 0 else { return }
         current.formUnion(additions)
+        let sorted = current.map(\.base64).sorted()
+        let data = try JSONEncoder().encode(sorted)
+        try data.write(to: path, options: .atomic)
+    }
+
+    public func remove(_ checksums: Set<Checksum>) async throws {
+        guard !checksums.isEmpty else { return }
+        var current = try await snapshot()
+        let before = current.count
+        current.subtract(checksums)
+        guard current.count < before else { return }
         let sorted = current.map(\.base64).sorted()
         let data = try JSONEncoder().encode(sorted)
         try data.write(to: path, options: .atomic)

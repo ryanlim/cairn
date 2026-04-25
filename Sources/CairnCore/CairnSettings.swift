@@ -102,6 +102,17 @@ public struct CairnSettings: Sendable, Codable, Equatable {
     /// for "you've accumulated a lot — come take a look."
     public var deletionBacklogAlertThreshold: Int
 
+    /// Max disk space for cached full-resolution thumbnails (per server).
+    /// FIFO eviction when exceeded. Default 100 MB.
+    public var thumbnailCacheCapMB: Int
+
+    /// Max disk space for thumbhash placeholders (per server). Default 5 MB.
+    /// ~180K assets at 28 bytes each — a safety net, not a practical limit.
+    public var thumbhashCapMB: Int
+
+    public static let thumbnailCacheCapMBRange: ClosedRange<Int> = 10...500
+    public static let thumbhashCapMBRange: ClosedRange<Int> = 1...20
+
     /// Permitted range for `deletionBacklogAlertThreshold`. 0 opts
     /// out; 500 caps a truly noise-tolerant user. Count-based (not
     /// percent) so behavior doesn't drift with library size —
@@ -125,7 +136,9 @@ public struct CairnSettings: Sendable, Codable, Equatable {
         iCloudDownloadLimitMB: Int = 100,
         iCloudMaxEverBytesMB: Int? = nil,
         appearance: AppearanceOverride = .system,
-        deletionBacklogAlertThreshold: Int = 25
+        deletionBacklogAlertThreshold: Int = 25,
+        thumbnailCacheCapMB: Int = 100,
+        thumbhashCapMB: Int = 5
     ) {
         self.maxDeletePercent = maxDeletePercent
         self.minDeleteFloor = minDeleteFloor
@@ -137,6 +150,8 @@ public struct CairnSettings: Sendable, Codable, Equatable {
         self.iCloudMaxEverBytesMB = iCloudMaxEverBytesMB
         self.appearance = appearance
         self.deletionBacklogAlertThreshold = deletionBacklogAlertThreshold
+        self.thumbnailCacheCapMB = thumbnailCacheCapMB
+        self.thumbhashCapMB = thumbhashCapMB
     }
 
     /// The factory defaults. Kept as a single constant so tests and the
@@ -151,6 +166,7 @@ public struct CairnSettings: Sendable, Codable, Equatable {
         case verboseLogging, deletionStrictness, quarantineDays
         case iCloudDownloadLimitMB, iCloudMaxEverBytesMB, appearance
         case deletionBacklogAlertThreshold
+        case thumbnailCacheCapMB, thumbhashCapMB
     }
 
     public init(from decoder: Decoder) throws {
@@ -166,6 +182,8 @@ public struct CairnSettings: Sendable, Codable, Equatable {
         self.iCloudMaxEverBytesMB = try c.decodeIfPresent(Int.self, forKey: .iCloudMaxEverBytesMB) ?? d.iCloudMaxEverBytesMB
         self.appearance = try c.decodeIfPresent(AppearanceOverride.self, forKey: .appearance) ?? d.appearance
         self.deletionBacklogAlertThreshold = try c.decodeIfPresent(Int.self, forKey: .deletionBacklogAlertThreshold) ?? d.deletionBacklogAlertThreshold
+        self.thumbnailCacheCapMB = try c.decodeIfPresent(Int.self, forKey: .thumbnailCacheCapMB) ?? d.thumbnailCacheCapMB
+        self.thumbhashCapMB = try c.decodeIfPresent(Int.self, forKey: .thumbhashCapMB) ?? d.thumbhashCapMB
     }
 }
 

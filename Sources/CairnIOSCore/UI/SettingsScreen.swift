@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 import CairnCore
 
 /// The settings root screen. Mirrors the prototype's `screens/settings.jsx`.
@@ -56,6 +57,8 @@ public struct SettingsScreen: View {
     /// credentials, so the onboarding screens can be reviewed without
     /// re-typing URL + API key. Surfaced under a DEBUG-gated Advanced row.
     public let onReplayOnboarding: () -> Void
+    public let onExportData: (CairnExportScope) -> Void
+    public let onImportData: (URL, Bool) -> Void
 
     @Environment(\.cairnTokens) private var t
     @State private var pendingResetIndex: Bool = false
@@ -64,6 +67,8 @@ public struct SettingsScreen: View {
     @State private var pendingSignOut: Bool = false
     @State private var advancedExpanded: Bool = false
     @State private var howItWorksExpanded: Bool = false
+    @State private var showExportPicker = false
+    @State private var showImportPicker = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     public init(
@@ -82,7 +87,9 @@ public struct SettingsScreen: View {
         onForceDrainDeferred: @escaping () -> Void = {},
         isSyncing: Bool = false,
         syncProgress: (hashed: Int, total: Int)? = nil,
-        onReplayOnboarding: @escaping () -> Void = {}
+        onReplayOnboarding: @escaping () -> Void = {},
+        onExportData: @escaping (CairnExportScope) -> Void = { _ in },
+        onImportData: @escaping (URL, Bool) -> Void = { _, _ in }
     ) {
         self._settings = settings
         self.serverUrl = serverUrl
@@ -100,6 +107,8 @@ public struct SettingsScreen: View {
         self.isSyncing = isSyncing
         self.syncProgress = syncProgress
         self.onReplayOnboarding = onReplayOnboarding
+        self.onExportData = onExportData
+        self.onImportData = onImportData
     }
 
     public var body: some View {
@@ -114,6 +123,7 @@ public struct SettingsScreen: View {
                 appearanceSection
                 howItWorksSection
                 advancedSection
+                dataSection
                 dangerZoneSection
                 footer
             }
@@ -173,6 +183,27 @@ public struct SettingsScreen: View {
             },
             message: {
                 Text("Forgets your Immich URL and API key, and drops the cached thumbnails fetched with them. You'll land back on the onboarding flow — indexed state on this device is preserved for when you sign in again.")
+            }
+        )
+        .confirmationDialog(
+            "Export scope",
+            isPresented: $showExportPicker,
+            titleVisibility: .visible
+        ) {
+            Button("Current server") { onExportData(.currentServer) }
+            Button("All servers") { onExportData(.allServers) }
+            Button("Cancel", role: .cancel) {}
+        }
+        .fileImporter(
+            isPresented: $showImportPicker,
+            allowedContentTypes: [.json],
+            onCompletion: { result in
+                switch result {
+                case .success(let url):
+                    onImportData(url, true)
+                case .failure:
+                    break
+                }
             }
         )
     }
@@ -490,6 +521,10 @@ public struct SettingsScreen: View {
                     if advancedExpanded {
                         RowDivider()
                         CountFloorRow(floor: $settings.minDeleteFloor)
+                        RowDivider()
+                        ThumbnailCacheCapRow(mb: $settings.thumbnailCacheCapMB)
+                        RowDivider()
+                        ThumbhashCacheCapRow(mb: $settings.thumbhashCapMB)
                         #if DEBUG
                         RowDivider()
                         KeyValRow(
@@ -500,6 +535,31 @@ public struct SettingsScreen: View {
                         )
                         #endif
                     }
+                }
+            }
+        }
+    }
+
+    // MARK: - Data (export / import)
+
+    private var dataSection: some View {
+        Group {
+            KeylineSection("Data")
+            CairnCard {
+                VStack(spacing: 0) {
+                    KeyValRow(
+                        "Export data",
+                        value: { Text("Share backup").foregroundStyle(t.infoInk) },
+                        chevron: true,
+                        onTap: { showExportPicker = true }
+                    )
+                    RowDivider()
+                    KeyValRow(
+                        "Import data",
+                        value: { Text("Restore from file").foregroundStyle(t.infoInk) },
+                        chevron: true,
+                        onTap: { showImportPicker = true }
+                    )
                 }
             }
         }
@@ -750,6 +810,58 @@ private struct CountFloorRow: View {
                 parse: NumericInputParse.integer
             )
         }
+    }
+}
+
+// MARK: - Thumbnail cache cap row
+
+private struct ThumbnailCacheCapRow: View {
+    @Binding var mb: Int
+
+    private var doubleBinding: Binding<Double> {
+        Binding(
+            get: { Double(mb) },
+            set: { mb = Int($0.rounded()) }
+        )
+    }
+
+    var body: some View {
+        SliderInputRow(
+            label: "Thumbnail cache cap",
+            sub: "Max disk space for cached server thumbnails. Oldest entries evict first.",
+            value: doubleBinding,
+            range: Double(CairnSettings.thumbnailCacheCapMBRange.lowerBound)...Double(CairnSettings.thumbnailCacheCapMBRange.upperBound),
+            step: 10,
+            unitSuffix: " MB",
+            format: { String(format: "%.0f", $0) },
+            parse: NumericInputParse.integer
+        )
+    }
+}
+
+// MARK: - Thumbhash cache cap row
+
+private struct ThumbhashCacheCapRow: View {
+    @Binding var mb: Int
+
+    private var doubleBinding: Binding<Double> {
+        Binding(
+            get: { Double(mb) },
+            set: { mb = Int($0.rounded()) }
+        )
+    }
+
+    var body: some View {
+        SliderInputRow(
+            label: "Thumbhash cache cap",
+            sub: "Max disk space for thumbhash placeholders. Typically negligible.",
+            value: doubleBinding,
+            range: Double(CairnSettings.thumbhashCapMBRange.lowerBound)...Double(CairnSettings.thumbhashCapMBRange.upperBound),
+            step: 1,
+            unitSuffix: " MB",
+            format: { String(format: "%.0f", $0) },
+            parse: NumericInputParse.integer
+        )
     }
 }
 

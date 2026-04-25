@@ -9,10 +9,10 @@
 # Bundle identifier — must match PRODUCT_BUNDLE_IDENTIFIER in project.yml.
 BUNDLE_ID := app.cairn.ios
 
-# First connected + paired device, or pass DEVICE=<name-or-UDID> to override.
+# First connected device, or pass DEVICE=<name-or-UDID> to override.
 # Parses `xcrun devicectl list devices`, grabs the first line tagged
-# "available (paired)", extracts the UDID (matches Apple's 8-4-4-4-12 pattern).
-DEVICE ?= $(shell xcrun devicectl list devices 2>/dev/null | grep 'available (paired)' | grep -oE '[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}' | head -1)
+# "connected" or "available (paired)", extracts the UDID.
+DEVICE ?= $(shell xcrun devicectl list devices 2>/dev/null | grep -E 'connected|available \(paired\)' | grep -oE '[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}' | head -1)
 
 # Apple Developer Team ID used for code signing. `project.yml` leaves this
 # blank so the YAML stays repo-portable; each developer supplies their own

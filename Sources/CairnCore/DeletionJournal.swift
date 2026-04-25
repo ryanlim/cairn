@@ -89,6 +89,37 @@ public actor DeletionJournal {
         }
         return out
     }
+
+    /// Read the raw JSONL file as individual lines, preserving entries
+    /// the current schema can't decode. Used by export.
+    public func readRawLines() throws -> [String] {
+        guard FileManager.default.fileExists(atPath: path.path) else { return [] }
+        let raw = try Data(contentsOf: path)
+        guard let text = String(data: raw, encoding: .utf8) else { return [] }
+        return text.split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
+
+    /// Append pre-encoded JSONL lines from an import. Each line should
+    /// be a complete JSON object (no trailing newline — this method adds it).
+    public func appendRawLines(_ lines: [String]) throws {
+        guard !lines.isEmpty else { return }
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: path.path) {
+            fm.createFile(atPath: path.path, contents: nil)
+        }
+        let handle = try FileHandle(forWritingTo: path)
+        try handle.seekToEnd()
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            var data = Data(trimmed.utf8)
+            data.append(0x0A)
+            try handle.write(contentsOf: data)
+        }
+        try handle.close()
+    }
 }
 
 /// One row of the journal. `runId` groups entries into a single

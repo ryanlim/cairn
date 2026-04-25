@@ -82,22 +82,19 @@ struct CairnApp: App {
             // body when bootstrap completes, at which point the
             // concrete loader flows through.
             .environment(\.immichThumbnailLoader, dependencies.thumbnailLoader)
+            .environment(\.thumbnailStore, dependencies.thumbnailStore)
             .task {
                 await dependencies.bootstrap()
             }
-            .onChange(of: ScenePhaseObserver.shared.phase) { _, newPhase in
+            .onChange(of: ScenePhaseObserver.shared.phase) { oldPhase, newPhase in
                 if newPhase == .background {
                     scheduleNextBackgroundRefresh()
-                    // If the initial library scan is still running,
-                    // also queue a long processing task so iOS can
-                    // chip away at it while the device is charging
-                    // + idle (typically overnight). Safe to always
-                    // submit — `BGTaskScheduler` dedupes by
-                    // identifier, and the handler bails cheaply
-                    // once the scan is complete.
-                    if !dependencies.model.hasCompletedInitialScan {
+                    if !dependencies.model.hasCompletedInitialScan
+                        || dependencies.model.deferredQueue.count > 0 {
                         scheduleInitialHashContinuation()
                     }
+                } else if newPhase == .active && oldPhase == .background {
+                    Task { await dependencies.checkServerHealth() }
                 }
             }
     }
@@ -185,7 +182,9 @@ struct CairnApp: App {
             // Keep the chain alive while work remains. Done after
             // setTaskCompleted to avoid racing with the system's
             // bookkeeping for this slot.
-            if await !dependencies.model.hasCompletedInitialScan {
+            let needsMore = await !dependencies.model.hasCompletedInitialScan
+                || dependencies.model.deferredQueue.count > 0
+            if needsMore {
                 scheduleInitialHashContinuation()
             }
         }

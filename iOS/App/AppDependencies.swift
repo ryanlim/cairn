@@ -4,120 +4,78 @@ import Photos
 import CairnCore
 import CairnIOSCore
 
-/// The wiring layer between concrete iOS-side store implementations and the
-/// `CairnAppRoot` UI. Held by the `@main App`; exposes state through the
-/// `CairnAppModel` it produces and commands through `CairnAppActions`.
-///
-/// In scope:
-///   - Construction of every iOS-side protocol impl (`KeychainSecretStore`,
-///     `SwiftDataEverSeenStore` / `…ExclusionStore` / `…ConfirmedDeletedStore` /
-///     `…LocalHashStore` / `…DeferredHashStore` / `…PersistentChangeTokenStore`,
-///     `UserDefaultsSettingsStore`, `PhotoKitPhotoEnumerator`, `ImmichClient`,
-///     `ImmichThumbnailLoader`).
-///   - The closures in `rewireActions()` that bridge `CairnAppActions` to
-///     those impls.
-///   - `runScheduledScan` / `runBackgroundDrain` — the entry points the
-///     `BGTaskScheduler` handlers in `CairnApp.swift` call.
-///
-/// Out of scope:
-///   - UI views (ship in `CairnIOSCore`).
-///   - Reconciliation and safety-rail logic (ship in `CairnCore`).
-///   - Any PhotoKit / SwiftData detail beyond what's needed to build the
-///     dependency graph — keep leaks minimal.
-///
-/// You can read the rest of the iOS app without opening this file; you'll
-/// need to edit it when adding a new `CairnAppActions` action.
 @MainActor
 @Observable
 final class AppDependencies {
 
-    // MARK: - Concrete impls (reference iOS-side concrete types)
+    // MARK: - Global stores (shared across all servers)
 
     let secretStore: KeychainSecretStore
     let settingsStore: UserDefaultsSettingsStore
     let photos: PhotoKitPhotoEnumerator
-    let modelContainer: ModelContainer
-    let everSeenStore: SwiftDataEverSeenStore
-    let exclusionStore: SwiftDataExclusionStore
-    let confirmedDeletedStore: SwiftDataConfirmedDeletedStore
+    let globalContainer: ModelContainer
     let localHashStore: SwiftDataLocalHashStore
     let deferredHashStore: SwiftDataDeferredHashStore
-    let tokenStore: SwiftDataPersistentChangeTokenStore
-    /// Reconciler built fresh per scan. Construction is cheap (stores pass by
-    /// reference); rebuilding each call picks up the latest Settings-driven
-    /// size thresholds without a mutable shared-state dance. Computed
-    /// property rather than stored, on purpose.
-    var persistentChangeReconciler: PhotoKitPersistentChangeReconciler {
-        // Size thresholds: the Settings UI edits MB for human-friendly
-        // units; convert here to the bytes-per-asset the reconciler
-        // wants. Settings value of `0` would be absurd (nothing would
-        // hash); the slider's range clamps that out, but belt-and-
-        // suspenders we guard here too.
+
+    // MARK: - Per-server stores (nil until activateServer runs)
+
+    private(set) var currentPartitionKey: ServerPartitionKey?
+    private(set) var serverContainer: ModelContainer?
+    private(set) var everSeenStore: SwiftDataEverSeenStore?
+    private(set) var exclusionStore: SwiftDataExclusionStore?
+    private(set) var confirmedDeletedStore: SwiftDataConfirmedDeletedStore?
+    private(set) var tokenStore: SwiftDataPersistentChangeTokenStore?
+    private(set) var thumbnailStore: SwiftDataThumbnailStore?
+    private(set) var journal: DeletionJournal?
+
+    var persistentChangeReconciler: PhotoKitPersistentChangeReconciler? {
+        guard let localHash = Optional(localHashStore),
+              let confirmed = confirmedDeletedStore,
+              let everSeen = everSeenStore,
+              let tokens = tokenStore else { return nil }
+
         let limitMB = model.settings.iCloudDownloadLimitMB
         let bytesLimit: Int64? = limitMB > 0 ? Int64(limitMB) * 1024 * 1024 : nil
-        // Hard ceiling — nil when the user has it disabled (default).
         let ceilingMB = model.settings.iCloudMaxEverBytesMB
         let ceilingBytes: Int64? = (ceilingMB.map { $0 > 0 } ?? false)
             ? Int64(ceilingMB!) * 1024 * 1024
             : nil
 
         return PhotoKitPersistentChangeReconciler(
-            hashStore: localHashStore,
-            confirmedDeleted: confirmedDeletedStore,
-            everSeen: everSeenStore,
-            tokens: tokenStore,
+            hashStore: localHash,
+            confirmedDeleted: confirmed,
+            everSeen: everSeen,
+            tokens: tokens,
             deferredStore: deferredHashStore,
             maxAssets: Self.resolveTestingAssetCap(),
             maxICloudBytesPerAsset: bytesLimit,
             hardCeilingBytes: ceilingBytes,
-            onHashProgress: { [weak self] done, total in
-                // Hop to MainActor — model mutations must happen there,
-                // and SwiftUI's @Observable triggers re-eval when the
-                // published property changes.
-                await MainActor.run {
-                    self?.model.syncProgress = .init(hashed: done, total: total)
+            onHashProgress: { [weak self] done, total, newChecksums in
+                let (hashStore, serverSet) = await MainActor.run {
+                    (self?.localHashStore, self?.serverChecksumSet)
                 }
-                // Also tick the Status "Indexed" stat. LocalHashStore
-                // persists inline on every successful hash, so a
-                // `indexedCount()` read reflects real progress — the
-                // user watches the number climb in near-real-time
-                // rather than only seeing it jump at sync completion.
-                if let hashStore = await self?.localHashStore {
-                    let count = (try? await hashStore.indexedCount()) ?? 0
-                    await MainActor.run {
-                        guard let self else { return }
-                        self.model.library = self.model.library.with(indexed: count)
-                    }
+                guard let hashStore else {
+                    await MainActor.run { self?.model.syncProgress = .init(hashed: done, total: total) }
+                    return
+                }
+                let indexed = (try? await hashStore.indexedCount()) ?? 0
+                let batchMatched: Int = {
+                    guard let serverSet else { return 0 }
+                    return newChecksums.filter { serverSet.contains($0) }.count
+                }()
+                await MainActor.run {
+                    guard let self else { return }
+                    self.model.syncProgress = .init(hashed: done, total: total)
+                    let prevMatched = self.model.library.matched
+                    self.model.library = self.model.library
+                        .with(indexed: indexed, matched: prevMatched + batchMatched)
                 }
             }
         )
     }
 
-    /// Window for the "recent mass offload" bulk-exclude bucket.
-    /// When the user taps "Bulk exclude N" on the Pending Review
-    /// screen, we exclude every checksum confirmed-deleted within
-    /// this many seconds before now. 24 hours matches the mental
-    /// model "photos I just offloaded"; bumping it risks grabbing
-    /// unrelated deletions from earlier sessions.
-    ///
-    /// Not user-configurable. `nonisolated` so the non-MainActor
-    /// closure in `rewireActions` can read it without a hop.
     nonisolated static let massOffloadRecentWindow: TimeInterval = 24 * 60 * 60
 
-    /// Optional cap on the number of assets scanned during full enumeration.
-    /// `nil` (no cap) in normal runs. Lets device testers time reconciliation
-    /// against a controlled sample rather than their full camera roll.
-    ///
-    /// **Persistence semantics** (fixes the "cap disappears on relaunch"
-    /// footgun). `CAIRN_ASSET_CAP` is only present during the launch
-    /// `devicectl` initiates — any later iOS re-launch (user tap after
-    /// backgrounding, OS restart, reconciler resume after the tunnel
-    /// disconnected) drops the env and the cap would silently revert to
-    /// uncapped. To prevent that:
-    ///   - Env present with positive int → write to UserDefaults, return it.
-    ///   - Env absent → fall back to the persisted UserDefaults value.
-    ///   - `CAIRN_ASSET_CAP=0` (or any non-positive) → clear the persisted
-    ///     value and return `nil`, i.e. explicit opt-out.
     static func resolveTestingAssetCap() -> Int? {
         let key = "CAIRN_ASSET_CAP"
         let ud = UserDefaults.standard
@@ -126,7 +84,6 @@ final class AppDependencies {
                 ud.set(n, forKey: key)
                 return n
             }
-            // "0" / "none" / non-numeric → explicit clear.
             ud.removeObject(forKey: key)
             return nil
         }
@@ -134,65 +91,34 @@ final class AppDependencies {
         return stored > 0 ? stored : nil
     }
 
-    /// Built lazily — only after the user has supplied a server URL + API key.
-    /// `nil` while we're still in onboarding.
     private(set) var immichClient: ImmichClient?
 
-    /// Tracks the in-flight "fast server count" Task kicked off at
-    /// the start of each sync. Cancelled when a new sync starts so
-    /// a stale response from the previous sync can't overwrite
-    /// `model.library.server` after the new sync has already
-    /// populated it. Stored on the actor-isolated instance rather
-    /// than as a local in `performLiveReconciliation` so
-    /// back-to-back syncs share visibility.
-    private var inFlightServerStatsTask: Task<Void, Never>?
 
-    /// Companion to `immichClient` for the thumbnail request path. Kept
-    /// separate so the (caching, concurrency-dedup'd) actor is not
-    /// reconstructed on every request — the cache would be wiped. Rebuilt
-    /// only when credentials change.
+    /// Server-side checksum set, populated early in the sync so the
+    /// hash-progress callback can compute a running "matched" count.
+    /// Cleared at the start of each reconciliation and filled once
+    /// the server fetch completes.
+    private var serverChecksumSet: Set<Checksum>?
+
     private(set) var thumbnailLoader: ImmichThumbnailLoader?
-
-    /// The append-only deletion journal. Lives on disk in the app's Documents
-    /// directory as `deletion-journal.jsonl`; the CLI's `cairn journal show`
-    /// reads the same format. JSONL is platform-portable and easy to inspect
-    /// via the Files app.
-    let journal: DeletionJournal
 
     // MARK: - Model wired into the UI
 
-    /// The observable state object `CairnAppRoot` renders from. Mutations
-    /// happen only on the MainActor; SwiftUI's `@Observable` takes care of
-    /// re-rendering.
     let model: CairnAppModel
 
     // MARK: - Init
 
-    /// Synchronous wiring.
-    ///
-    /// Constructs every store, builds the SwiftData container (disk first,
-    /// in-memory fallback, fatalError if both fail), and wires the initial
-    /// `CairnAppActions` so onboarding's `verifyServer` can call real
-    /// closures before `bootstrap()` runs. `bootstrap()` fills in credential-
-    /// dependent state (`immichClient`, `thumbnailLoader`, persisted
-    /// settings) asynchronously after the window is on screen.
     init() {
         let secretStore = KeychainSecretStore()
         let settingsStore = UserDefaultsSettingsStore()
         let photos = PhotoKitPhotoEnumerator()
-        // Two-tier container setup: try the on-disk path first, fall
-        // back to in-memory if that fails (device out of space,
-        // permissions regression, corrupt store). If BOTH fail
-        // there's nothing we can functionally do — the app has no
-        // persistent state at all — so crash with a diagnostic
-        // `fatalError` rather than `try!` so the crash log pins the
-        // root cause instead of looking like a generic unwrap crash.
+
         let container: ModelContainer = {
-            if let disk = try? CairnSwiftDataContainer.make() {
+            if let disk = try? CairnSwiftDataContainer.makeGlobal() {
                 return disk
             }
             do {
-                return try CairnSwiftDataContainer.make(inMemory: true)
+                return try CairnSwiftDataContainer.makeGlobal(inMemory: true)
             } catch {
                 fatalError("cairn can't initialize a SwiftData container on disk OR in memory — \(error). The app requires at least one of these to function. If this keeps happening, check Settings → Storage for free space and reinstall cairn.")
             }
@@ -201,81 +127,67 @@ final class AppDependencies {
         self.secretStore = secretStore
         self.settingsStore = settingsStore
         self.photos = photos
-        self.modelContainer = container
-        self.everSeenStore = SwiftDataEverSeenStore(container: container)
-        self.exclusionStore = SwiftDataExclusionStore(container: container)
-        self.confirmedDeletedStore = SwiftDataConfirmedDeletedStore(container: container)
+        self.globalContainer = container
         self.localHashStore = SwiftDataLocalHashStore(container: container)
         self.deferredHashStore = SwiftDataDeferredHashStore(container: container)
-        self.tokenStore = SwiftDataPersistentChangeTokenStore(container: container)
 
-        let journalURL = AppDependencies.documentsDirectory()
-            .appending(path: "deletion-journal.jsonl")
-        self.journal = DeletionJournal(path: journalURL)
-
-        // Build the model with placeholder defaults; bootstrap() fills in the
-        // real values asynchronously after the app launches.
         let actions = AppDependencies.makePreviewActions()
         self.model = CairnAppModel(
-            needsOnboarding: true,   // pessimistic until bootstrap proves otherwise
+            needsOnboarding: true,
             actions: actions
         )
 
-        // Wire the real action closures immediately, synchronously, so
-        // onboarding's `verifyServer` actually hits Immich rather than
-        // running the no-op preview default. Previously the first wire
-        // happened inside `bootstrap()`, which is async and only fires
-        // after credentials are already present — chicken-and-egg for
-        // onboarding.
         rewireActions()
+    }
+
+    // MARK: - Server activation
+
+    func activateServer(url: URL, apiKey: String) throws {
+        let key = ServerPartitionKey(from: url)
+        let containerURL = Self.serverContainerURL(for: key)
+        let container: ModelContainer = {
+            if let disk = try? CairnSwiftDataContainer.makePerServer(url: containerURL) {
+                return disk
+            }
+            do {
+                return try CairnSwiftDataContainer.makePerServer(url: containerURL, inMemory: true)
+            } catch {
+                fatalError("cairn can't initialize per-server SwiftData container — \(error)")
+            }
+        }()
+
+        self.currentPartitionKey = key
+        self.serverContainer = container
+        self.everSeenStore = SwiftDataEverSeenStore(container: container)
+        self.exclusionStore = SwiftDataExclusionStore(container: container)
+        self.confirmedDeletedStore = SwiftDataConfirmedDeletedStore(container: container)
+        self.tokenStore = SwiftDataPersistentChangeTokenStore(container: container)
+        let thumbStore = SwiftDataThumbnailStore(container: container)
+        self.thumbnailStore = thumbStore
+
+        let journalURL = Self.serverJournalURL(for: key)
+        self.journal = DeletionJournal(path: journalURL)
+
+        self.immichClient = ImmichClient(baseURL: url, apiKey: apiKey)
+        self.thumbnailLoader = ImmichThumbnailLoader(
+            baseURL: url,
+            apiKey: apiKey,
+            onFetched: { assetId, data in
+                try? await thumbStore.saveThumbnail(assetId: assetId, data: data)
+            }
+        )
     }
 
     // MARK: - Bootstrap
 
-    /// Async setup that runs once when `CairnApp`'s WindowGroup first
-    /// appears.
-    ///
-    /// Reads Keychain credentials; on miss, leaves `model.needsOnboarding =
-    /// true` and returns (Setup's `verifyServer` finishes the wiring by
-    /// persisting credentials, rebuilding `immichClient` + `thumbnailLoader`,
-    /// and calling `rewireActions()`). On hit, builds those clients, loads
-    /// persisted `CairnSettings`, seeds the Status journal tail + Runs list
-    /// + deferred-queue summary, and decides whether the initial-scan screen
-    /// still applies.
-    ///
-    /// DEBUG builds honor three launch-arg / env-var hooks:
-    ///   - `-CAIRN_SCREENSHOT_MODE` → fixture-only path for Fastlane
-    ///     snapshot UITests, bypasses every real dependency.
-    ///   - `CAIRN_DEV_SEED_URL` + `CAIRN_DEV_SEED_KEY` → auto-populate
-    ///     Keychain on first launch after a reinstall (provisioning
-    ///     rotations wipe Keychain). Skipped if credentials are already
-    ///     present.
-    ///   - `CAIRN_RESET=1` → wipe every scan-derived store so the next
-    ///     sync behaves like first-install. Keychain + exclusions
-    ///     untouched.
     func bootstrap() async {
         #if DEBUG
-        // Screenshot mode — set by the Fastlane snapshot UITest via
-        // the `-CAIRN_SCREENSHOT_MODE 1` launch arg. Skips every real
-        // dependency (Keychain, PhotoKit, SwiftData, ImmichClient) and
-        // populates the model with `CairnFixtures` data so screenshots
-        // are deterministic and require no Immich server. Returns
-        // before any of the normal credential / state logic runs.
         if ProcessInfo.processInfo.arguments.contains("-CAIRN_SCREENSHOT_MODE") {
             AppDependencies.seedFromFixtures(into: model)
             return
         }
         #endif
 
-        // Dev-only seed from env. iOS wipes Keychain items on reinstall
-        // when the provisioning profile regenerates, so each `make device`
-        // kicks the user back to onboarding. The seed mechanism skips it:
-        // if `CAIRN_DEV_SEED_URL` + `CAIRN_DEV_SEED_KEY` are both in the
-        // environment and the Keychain is currently empty, we write them
-        // in on launch. The env vars come from `iOS/.dev-secrets` via
-        // `make device`'s DEVICECTL_CHILD_ forwarding. Production builds
-        // leave these env vars unset, so the seed is a true no-op outside
-        // the dev loop.
         #if DEBUG
         if (try? secretStore.serverURL()) == nil || (try? secretStore.apiKey()) == nil,
            let seedURL = ProcessInfo.processInfo.environment["CAIRN_DEV_SEED_URL"].flatMap(URL.init(string:)),
@@ -284,23 +196,8 @@ final class AppDependencies {
             try? secretStore.setServerURL(seedURL)
             try? secretStore.setAPIKey(seedKey)
         }
-
-        // Dev-only full reset. `CAIRN_RESET=1` at launch wipes every
-        // piece of indexed state (hash cache, token, ever-seen,
-        // confirmed-deleted) so the next sync runs as if on a fresh
-        // install. Targeted at timing experiments — without it, each
-        // `make device-run` just resumes from cached hashes and the
-        // wall-clock numbers aren't comparable. Keychain + exclusions
-        // are untouched.
-        if ProcessInfo.processInfo.environment["CAIRN_RESET"] == "1" {
-            try? await localHashStore.clear()
-            try? await tokenStore.clear()
-            try? await everSeenStore.clear()
-            try? await confirmedDeletedStore.clear()
-        }
         #endif
 
-        // Try to read credentials from Keychain. If absent → onboarding flow.
         let url = try? secretStore.serverURL()
         let apiKey = try? secretStore.apiKey()
         guard let url, let apiKey else {
@@ -308,52 +205,71 @@ final class AppDependencies {
             return
         }
 
-        immichClient = ImmichClient(baseURL: url, apiKey: apiKey)
-        thumbnailLoader = ImmichThumbnailLoader(baseURL: url, apiKey: apiKey)
+        Self.migrateFromLegacyIfNeeded(serverURL: url)
+        try? activateServer(url: url, apiKey: apiKey)
+
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["CAIRN_RESET"] == "1" {
+            try? await localHashStore.clear()
+            try? await tokenStore?.clear()
+            try? await everSeenStore?.clear()
+            try? await confirmedDeletedStore?.clear()
+        }
+        #endif
+
         model.needsOnboarding = false
         model.serverHost = url.host() ?? url.absoluteString
+        model.serverURL = url
         model.apiKey = apiKey
         model.apiKeyMasked = AppDependencies.mask(apiKey)
         model.settings = (try? await settingsStore.load()) ?? .defaults
-        await refreshExcludedChecksums()
 
-        // The reconciler saves a `PHPersistentChangeToken` at the end of
-        // every successful full enumeration. Its presence is our durable
-        // signal that "initial scan has completed at least once" — drives
-        // whether `CairnAppRoot` shows the `InitialScanScreen` takeover
-        // or jumps straight to the main tabs.
-        let tokenExists = (try? await tokenStore.load()) != nil
+        if let client = immichClient {
+            let start = Date()
+            do {
+                let pong = try await client.ping()
+                let latencyMs = Int(Date().timeIntervalSince(start) * 1000)
+                print("[cairn.boot] server healthy: ping=\(pong), \(latencyMs)ms")
+                model.connectionStatus = .healthy(latencyMs: latencyMs)
+                model.degraded = .none
+            } catch {
+                print("[cairn.boot] ping failed: \(error)")
+                if let degraded = Self.degradedState(for: error) {
+                    model.degraded = degraded
+                    model.connectionStatus = degraded == .authStale ? .authStale : .offline
+                }
+            }
+            if let stats = try? await client.assetStatistics() {
+                model.library = model.library.with(server: stats.total)
+            }
+            if let keyInfo = try? await client.apiKeyInfo() {
+                let missing = ImmichClient.missingPermissions(granted: keyInfo.permissions)
+                model.missingPermissions = missing
+                if !missing.isEmpty {
+                    print("[cairn.boot] missing permissions: \(missing.joined(separator: ", "))")
+                }
+            }
+        }
+
+        await refreshExcludedChecksums()
+        await refreshQuarantineCount()
+
+        let tokenExists = (try? await tokenStore?.load()) != nil
         model.hasCompletedInitialScan = tokenExists
 
-        // Log the resolved testing cap once per launch so when a
-        // devicectl-disconnect causes iOS to re-launch the app later,
-        // it's visible from the first line of terminal output whether
-        // the persisted cap carried over (or was never set). Avoids
-        // silent "wait why did it hash the full library" surprises.
+        await refreshLibrarySizeStats()
+
         if let cap = Self.resolveTestingAssetCap() {
             print("[cairn.boot] testing asset cap in effect: \(cap)")
         } else {
             print("[cairn.boot] no asset cap — full library will be hashed")
         }
 
-        // Seed the Status-screen journal tail from the on-disk journal
-        // so a fresh app-open shows historical events rather than the
-        // empty default. Sync will refresh it again after each run.
-        // Fetch a larger tail than we display by default (Status
-        // collapses to 8 rows; the full tail is surfaced on expand)
-        // so "Show more" has meaningful content. `lastEntries(...)`
-        // returns oldest-first; reverse so the UI shows newest at
-        // the top — matches every other feed users interact with.
-        if let recent = try? await journal.lastEntries(limit: 40) {
+        if let journal, let recent = try? await journal.lastEntries(limit: 40) {
             model.journalTail = recent.reversed().map(CairnFixtures.JournalTailEntry.from)
         }
 
-        // Seed the deferred-queue summary too — Status + Settings show
-        // the count on arrival, without waiting for the first sync.
         await refreshDeferredQueueSummary()
-
-        // Seed the Runs list so Status's "Recent runs" card and the
-        // Runs tab have data without waiting for another trash run.
         await refreshRunsList()
 
         rewireActions()
@@ -361,51 +277,29 @@ final class AppDependencies {
 
     // MARK: - Scheduled scan (called by BGAppRefreshTask)
 
-    /// `BGAppRefreshTask` entry point.
-    ///
-    /// Replays `PHPhotoLibrary.fetchPersistentChanges` since the last saved
-    /// token, translates deleted `localIdentifier`s into checksums via
-    /// `LocalHashStore`, and unions them into `ConfirmedDeletedStore` with
-    /// the current timestamp (starts the quarantine clock). First-run /
-    /// token-expired flows fall back to a full library enumeration that
-    /// rebuilds the hash cache without emitting deletions — a resync, not a
-    /// positive signal.
     @discardableResult
     func runScheduledScan() async throws -> PhotoKitPersistentChangeReconciler.Result {
-        try await persistentChangeReconciler.runDeletionScan()
+        guard let reconciler = persistentChangeReconciler else {
+            throw CancellationError()
+        }
+        return try await reconciler.runDeletionScan()
     }
 
-    /// `BGProcessingTask` entry point.
-    ///
-    /// Runs the standard scan, then drains the deferred-hash queue with the
-    /// foreground soft limit disabled — this is the slot where multi-hundred-
-    /// MB / multi-GB videos can safely hash (device is plugged in + on Wi-Fi
-    /// per the request's `requiresNetworkConnectivity`). The hard ceiling
-    /// (if the user enabled it in Settings) still applies inside the
-    /// reconciler.
     @discardableResult
     func runBackgroundDrain() async throws -> (
         scan: PhotoKitPersistentChangeReconciler.Result,
         drain: PhotoKitPersistentChangeReconciler.Result
     ) {
-        let reconciler = persistentChangeReconciler
+        guard let reconciler = persistentChangeReconciler else {
+            throw CancellationError()
+        }
         let scan = try await reconciler.runDeletionScan()
         let drain = try await reconciler.drainDeferred()
         return (scan, drain)
     }
 
-    // MARK: - Live reconciliation (extracted so the actions closure reads
-    //         linearly and errors propagate cleanly to `lastError`)
+    // MARK: - Live reconciliation
 
-    /// Full sync pipeline: fast server-count fetch (parallel) → full
-    /// server-asset list fetch (parallel) → persistent-change scan (hashes
-    /// on first run / token-expired) → `ReconciliationEngine.compute` →
-    /// project the result onto `model.reconciliation` / `model.library` /
-    /// `model.lastScanBurstCount` → journal a `syncCompleted` event if the
-    /// sync was eventful → refresh Status's journal tail and Runs list.
-    ///
-    /// Throws on any store/network failure; callers catch and surface to
-    /// `model.lastError`.
     @MainActor
     fileprivate func performLiveReconciliation(
         client: ImmichClient,
@@ -415,58 +309,47 @@ final class AppDependencies {
     ) async throws {
         let syncStart = Date()
 
-        // Step 0: refresh the "On iPhone" + "Indexed" stats upfront so
-        // the user doesn't stare at stale values while hashing ticks
-        // the Indexed number. See `refreshLibrarySizeStats()`.
         await refreshLibrarySizeStats()
 
-        // Fast server count first. `GET /api/assets/statistics` is
-        // a single tiny request that returns `{images, videos,
-        // total}` — orders of magnitude faster than paginating
-        // every asset. Populates "On server" stat immediately so
-        // the user isn't staring at 0 during the whole scan. Best-
-        // effort: on failure we just skip the early populate; the
-        // full fetch below still lands eventually.
-        //
-        // Tracked via `inFlightServerStatsTask` so a second sync
-        // kicked off before the first's stats response returns
-        // cancels the stale one — without this, the older Task
-        // could write its response *after* the newer sync already
-        // populated `model.library.server`, producing a value
-        // briefly flashing backwards.
-        inFlightServerStatsTask?.cancel()
-        inFlightServerStatsTask = Task { [weak self] in
+        // Refresh server count concurrently — don't block the scan.
+        // Bootstrap already seeded this value; this just picks up
+        // any changes since last launch.
+        Task { [weak self] in
             guard let stats = try? await client.assetStatistics() else { return }
-            // Check for cancellation after the await before we
-            // commit to the model — a new sync may have started
-            // while we were waiting on the network.
-            if Task.isCancelled { return }
+            await MainActor.run { self?.model.library = self!.model.library.with(server: stats.total) }
+        }
+
+        serverChecksumSet = nil
+        let hashStoreRef = self.localHashStore
+        let serverAssetsTask = Task { [weak self] () -> [ServerAsset] in
+            let assets = try await client.listAllAssets()
+            let checksums = Set(assets.map(\.checksum))
+            let nonTrashed = assets.filter { !$0.isTrashed }.count
+            // Seed matched from already-cached hashes so a resumed scan
+            // doesn't show 0 matched until the final reconciliation.
+            let cached = (try? await hashStoreRef.snapshot()) ?? [:]
+            var localChecksums = Set<Checksum>()
+            localChecksums.reserveCapacity(cached.count)
+            for (_, cs) in cached { localChecksums.formUnion(cs) }
+            let initialMatched = checksums.intersection(localChecksums).count
             await MainActor.run {
-                guard let self else { return }
-                self.model.library = self.model.library.with(server: stats.total)
+                self?.serverChecksumSet = checksums
+                if let self {
+                    self.model.library = self.model.library.with(server: nonTrashed, matched: initialMatched)
+                }
             }
+            return assets
         }
 
-        // The FULL asset list is still needed for reconciliation
-        // (checksum matching, trashed filtering). Kick it off in
-        // parallel with the local scan. Unlike the statistics call
-        // above, this streams every asset's metadata — can be
-        // slow on libraries of thousands.
-        let serverAssetsTask = Task {
-            try await client.listAllAssets()
+        guard let reconciler = persistentChangeReconciler else {
+            throw CancellationError()
         }
-
-        // Step 1: positive-deletion signal via persistent changes. This
-        // path also hashes on first run / token-expired, populating
-        // `localHashStore` as a side effect.
-        let scan = try await persistentChangeReconciler.runDeletionScan()
+        model.syncPhase = .hashing
+        let scan = try await reconciler.runDeletionScan(skipDrain: true)
         let burst = scan.newlyConfirmedDeleted.count
 
-        // Step 2: reconciliation inputs + compute. `local` (the checksum
-        // set) comes from `localHashStore` rather than a fresh
-        // `currentChecksums()` call — the reconciler just populated it,
-        // and re-hashing would double the cost of the first-sync and
-        // make perf measurements misleading.
+        try Task.checkCancellation()
+        model.syncPhase = .fetchingServer
         let hashMap = try await self.localHashStore.snapshot()
         var local: Set<Checksum> = []
         local.reserveCapacity(hashMap.count)
@@ -474,13 +357,6 @@ final class AppDependencies {
             local.formUnion(checksums)
         }
 
-        // Separately, the *total visible asset count* — photos in scope
-        // before any hashing filtering / deferral. This is what drives
-        // the "On iPhone" stat on Status, and it differs from the
-        // hashed count whenever we cap (testing) or defer (iCloud
-        // size-limit / timeout). Without this split, the cap-test
-        // output "486 on iPhone / 486 indexed" after CAP=500 was
-        // confusing — it conflated "scope" with "work done."
         let visibleFetchOptions = PHFetchOptions()
         visibleFetchOptions.includeHiddenAssets = false
         visibleFetchOptions.includeAssetSourceTypes = [.typeUserLibrary]
@@ -493,10 +369,22 @@ final class AppDependencies {
         let everSeenSet = try await everSeen.snapshot()
         let exclusionSet = Set(try await exclusions.snapshot().keys)
         let confirmedMap = try await confirmed.snapshot()
-        // Await the server fetch we kicked off alongside the scan. If
-        // it's already finished, this returns immediately; if still
-        // in flight, we block here until it lands.
         let serverAssets = try await serverAssetsTask.value
+
+        try Task.checkCancellation()
+        model.syncPhase = .reconciling
+
+        // Thumbhash population runs after reconciliation completes —
+        // don't block the user-facing result for cache warming.
+        let thumbhashWork: [(assetId: String, data: Data)] = {
+            guard thumbnailStore != nil else { return [] }
+            return serverAssets.compactMap { asset in
+                guard everSeenSet.contains(asset.checksum),
+                      let hash = asset.thumbhash,
+                      let data = Data(base64Encoded: hash) else { return nil }
+                return (assetId: asset.id, data: data)
+            }
+        }()
         let settings = model.settings
         let result = ReconciliationEngine.compute(.init(
             serverAssets: serverAssets,
@@ -509,17 +397,9 @@ final class AppDependencies {
             strictness: settings.deletionStrictness
         ))
 
-        // Step 3: project into UI state.
         let serverNonTrashed = serverAssets.filter { !$0.isTrashed }.count
         let liveLibrary = CairnFixtures.LibrarySize(
-            // "On iPhone" — count of photos in scope, post-cap. Reflects
-            // what the user has decided to treat as their library,
-            // regardless of what we've managed to hash.
             local: totalVisibleAssets,
-            // "Indexed" — count of assets with a committed SHA1. Will
-            // equal `local` once every in-scope asset has hashed;
-            // lower when some are deferred by the iCloud size limit,
-            // the per-asset timeout, or the `noHashableResources` case.
             indexed: hashMap.count,
             server: serverNonTrashed,
             matched: result.assetsInEverSeen,
@@ -534,43 +414,14 @@ final class AppDependencies {
         )
         model.library = liveLibrary
         model.lastScanBurstCount = burst
-        // A completed reconciliation implies the reconciler either
-        // (a) did a full enumeration and saved a fresh token, or
-        // (b) took the incremental path, which can only run if a token
-        //     was already there from a prior full enumeration.
-        // Either way, the gating condition for "initial scan done" is
-        // satisfied. Flip the flag so `InitialScanScreen` steps out of
-        // the way and the main tabs take over.
         model.hasCompletedInitialScan = true
 
-        // Write a `.syncCompleted` journal entry *only when the sync
-        // had a meaningful result*. Without the gate, tapping "Review
-        // & sync" on a caught-up library spams the journal tail with
-        // identical zero-state entries that carry no diagnostic
-        // value. The three signals below cover every non-trivial
-        // outcome:
-        //   - `didFullEnumeration` → significant hashing work ran
-        //   - `changeEventsProcessed > 0` → PhotoKit reported
-        //      something (an insert, update, or delete we processed)
-        //   - `drainedFromQueue > 0` → a deferred item finally hashed
-        // Everything else downstream (deferred counts, reconciliation
-        // totals) is derived from those three — an incremental scan
-        // with zero change events has nothing to hash and nothing
-        // to defer, so all outcome counts are zero.
         let isEventfulSync = scan.didFullEnumeration
             || scan.changeEventsProcessed > 0
             || scan.drainedFromQueue > 0
-        if isEventfulSync {
+        if isEventfulSync, let journal {
             let runId = "\(ISO8601DateFormatter().string(from: Date()))-\(UUID().uuidString.prefix(8))"
             let elapsedMs = Int(Date().timeIntervalSince(syncStart) * 1000)
-            // Journal failure here is never ship-stopping for the
-            // sync itself — the real sync work (hashing, confirmed-
-            // deleted, reconciliation) already committed to the
-            // stores above. But silently dropping the event hides
-            // disk-full / permission issues the user should know
-            // about, because every subsequent trash/restore will
-            // hit the same failure. Surface via `lastError` on
-            // catch, don't throw — sync did succeed.
             do {
                 try await journal.append(.init(
                     runId: runId,
@@ -589,59 +440,42 @@ final class AppDependencies {
             }
         }
 
-        // Refresh the tail so Status picks up the new entry without
-        // waiting for the next bootstrap. We over-fetch (40) relative
-        // to the default collapsed display (8) so the "Show more"
-        // toggle has history to reveal.
-        if let recent = try? await journal.lastEntries(limit: 40) {
+        if let journal, let recent = try? await journal.lastEntries(limit: 40) {
             model.journalTail = recent.reversed().map(CairnFixtures.JournalTailEntry.from)
         }
 
-        // Refresh deferred-queue summary so Settings + Status can
-        // surface "N items / X GB queued" without stale data.
         await refreshDeferredQueueSummary()
-
-        // Pick up any run entries that landed in the journal since
-        // the last refresh (aborted runs from the safety rail,
-        // restores, etc). Cheap — a readAll + summarize.
         await refreshRunsList()
+        await refreshQuarantineCount()
 
-        // Post-sync feedback: when the reconciler came back with no
-        // actionable work (no delete candidates, nothing pending), show
-        // an "up to date" banner on Status. Tapping Review & Sync with
-        // nothing queued would otherwise just flash the button and
-        // leave the user wondering whether it worked.
         if result.deleteCandidates.isEmpty && result.pendingReviewCandidates.isEmpty {
             showStatusToast(.upToDate(indexed: hashMap.count, total: totalVisibleAssets))
         } else {
-            // Any actionable sync clears a lingering stale toast.
             model.syncToast = nil
+        }
+
+        if let thumbStore = thumbnailStore, !thumbhashWork.isEmpty {
+            Task {
+                try? await thumbStore.saveThumbhashes(thumbhashWork)
+                let thumbhashCap = self.model.settings.thumbhashCapMB * 1024 * 1024
+                try? await thumbStore.evictThumbhashes(overCapBytes: thumbhashCap)
+                let thumbnailCap = self.model.settings.thumbnailCacheCapMB * 1024 * 1024
+                try? await thumbStore.evictThumbnails(overCapBytes: thumbnailCap)
+            }
         }
     }
 
-    /// Reload the Runs list on the model from the on-disk journal.
-    /// Called at bootstrap + after every trash / restore / sync so
-    /// the Status "Recent runs" card and the Runs tab reflect
-    /// journal state without waiting for a full app relaunch.
-    /// Sync-only pseudo-runs (no runStarted event) are filtered out
-    /// by `RunFixture.from(_:)`.
-    ///
-    /// Also populates `model.runAssets`, a per-run asset breakdown
-    /// keyed on runId. Built from the journal's `planningTrash`
-    /// events — each target carries its real assetId, so the
-    /// `RunDetailSheet` can fetch thumbnails via
-    /// `ImmichAssetThumb` without a round-trip to Immich for the
-    /// per-run list.
     @MainActor
     fileprivate func refreshRunsList() async {
+        guard let journal else {
+            model.runs = []
+            model.runAssets = [:]
+            return
+        }
         let entries = (try? await journal.readAll()) ?? []
         let summaries = JournalReader.summarize(entries)
         model.runs = summaries.compactMap(CairnFixtures.RunFixture.from)
 
-        // Build runId → [CandidateFixture] from `planningTrash`
-        // events. One run normally has exactly one planning event,
-        // but if somehow there are multiple we concatenate; dedup
-        // by assetId so a repeat appearance doesn't double-render.
         var perRun: [String: [CairnFixtures.CandidateFixture]] = [:]
         for entry in entries {
             guard case .planningTrash(let targets) = entry.event else { continue }
@@ -656,16 +490,6 @@ final class AppDependencies {
         model.runAssets = perRun
     }
 
-    /// Refresh `library.local` (total visible PHAssets, post-cap) and
-    /// `library.indexed` (assets with committed SHA1s) without
-    /// requiring a full sync. Called at sync start — before hashing
-    /// runs — so the "On iPhone" stat shows the right value while
-    /// "Indexed" ticks up toward it. Also called at drain start for
-    /// the same reason.
-    ///
-    /// Both reads are cheap: `PHAsset.fetchAssets` is an index query
-    /// (no I/O), and `localHashStore.indexedCount()` is a SQL COUNT
-    /// via the SwiftData override.
     @MainActor
     fileprivate func refreshLibrarySizeStats() async {
         let opts = PHFetchOptions()
@@ -680,59 +504,98 @@ final class AppDependencies {
         model.library = model.library.with(local: totalVisible, indexed: indexed)
     }
 
-    /// Show a transient toast on Status for `SyncToast.autoDismissSeconds`
-    /// seconds, then auto-clear. Idempotent against overlapping toasts:
-    /// a later toast overwrites the current one cleanly, and a timer
-    /// from an older toast won't blank out a newer one (the timer
-    /// checks the current value before clearing).
     @MainActor
     fileprivate func showStatusToast(_ toast: CairnAppModel.SyncToast) {
         model.syncToast = toast
         Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(CairnAppModel.SyncToast.autoDismissSeconds * 1_000_000_000))
-            // Only clear if the toast we set is still visible. A
-            // later action may have already swapped in a different
-            // toast; its own timer owns the dismissal.
             guard self?.model.syncToast == toast else { return }
             self?.model.syncToast = nil
         }
     }
 
-    /// Read the deferred-hash store and stash a count+bytes summary
-    /// on the model. Callers: bootstrap (so the first render of Status
-    /// has accurate numbers without waiting for a sync) and
-    /// `performLiveReconciliation` (so the count reflects the just-
-    /// completed pass).
     @MainActor
     fileprivate func refreshDeferredQueueSummary() async {
         let entries = (try? await deferredHashStore.snapshot()) ?? []
+        let ceilingMB = model.settings.iCloudMaxEverBytesMB
+        let ceilingBytes: Int64? = ceilingMB.flatMap { $0 > 0 ? Int64($0) * 1024 * 1024 : nil }
+
+        var actionable = 0
+        var aboveCeiling = 0
         var bytes: Int64 = 0
         for entry in entries {
-            if let size = entry.sizeBytes {
-                bytes += size
+            if let ceilingBytes, let size = entry.sizeBytes, size > ceilingBytes {
+                aboveCeiling += 1
+            } else {
+                actionable += 1
+                if let size = entry.sizeBytes { bytes += size }
             }
         }
-        model.deferredQueue = .init(count: entries.count, totalKnownBytes: bytes)
+        model.deferredQueue = .init(count: actionable, aboveCeiling: aboveCeiling, totalKnownBytes: bytes)
     }
 
-    /// Snapshot the `ExclusionStore` and push the checksum keys into
-    /// `model.excludedChecksums`. Called from bootstrap and after every
-    /// mutating exclude / unexclude action so RunDetailSheet's per-tile
-    /// shield badge + exclude↔unexclude toggle see live state without their
-    /// own round-trip.
     fileprivate func refreshExcludedChecksums() async {
+        guard let exclusionStore else {
+            await MainActor.run { self.model.excludedChecksums = [] }
+            return
+        }
         let snapshot = (try? await exclusionStore.snapshot()) ?? [:]
         let keys = Set(snapshot.keys.map(\.base64))
         await MainActor.run { self.model.excludedChecksums = keys }
     }
 
-    /// Produce a user-readable error string for `model.lastError`.
-    ///
-    /// Avoids `error.localizedDescription`, which yields inscrutable
-    /// Foundation messages ("The operation couldn't be completed."), by
-    /// formatting known types directly. Falls back to
-    /// `String(describing:)` for anything unrecognized.
-    fileprivate static func describeSyncError(_ error: Swift.Error) -> String {
+    fileprivate func refreshQuarantineCount() async {
+        guard let confirmed = confirmedDeletedStore else {
+            await MainActor.run { self.model.quarantineCount = 0 }
+            return
+        }
+        let snapshot = (try? await confirmed.snapshot()) ?? [:]
+        let days = await model.settings.quarantineDays
+        let cutoff = Date().addingTimeInterval(-TimeInterval(days) * 86_400)
+        let inQuarantine = snapshot.values.filter { $0 > cutoff }.count
+        await MainActor.run { self.model.quarantineCount = inQuarantine }
+    }
+
+    func checkServerHealth() async {
+        guard let client = immichClient else { return }
+        let start = Date()
+        do {
+            _ = try await client.ping()
+            let latencyMs = Int(Date().timeIntervalSince(start) * 1000)
+            model.degraded = .none
+            model.connectionStatus = .healthy(latencyMs: latencyMs)
+        } catch {
+            let degraded = Self.degradedState(for: error)
+            if let degraded {
+                model.degraded = degraded
+                model.connectionStatus = degraded == .authStale ? .authStale : .offline
+            } else {
+                model.connectionStatus = .offline
+            }
+        }
+    }
+
+    nonisolated fileprivate static func degradedState(for error: Swift.Error) -> StatusScreen.Degraded? {
+        if let e = error as? ImmichClientError {
+            switch e {
+            case .httpStatus(let code, _):
+                if code == 401 || code == 403 { return .authStale }
+                if code >= 500 { return .serverDown }
+                return nil
+            case .invalidURL:
+                return nil
+            case .unexpectedResponse:
+                return .serverDown
+            }
+        }
+        let nsError = error as NSError
+        if nsError.domain == NSURLErrorDomain {
+            return .serverDown
+        }
+        return nil
+    }
+
+    nonisolated fileprivate static func describeSyncError(_ error: Swift.Error) -> String {
         if let e = error as? ImmichClientError {
             switch e {
             case .httpStatus(let code, let body):
@@ -761,44 +624,18 @@ final class AppDependencies {
 
     // MARK: - Action wiring
 
-    /// Build a fresh `CairnAppActions` bundle that captures the current
-    /// `immichClient` / `thumbnailLoader` / stores, and install it on
-    /// `model.actions`.
-    ///
-    /// Called from `init` (so onboarding hits real closures rather than
-    /// preview-default no-ops), from `bootstrap` (after credentials load),
-    /// and from `verifyServer` (after a mid-onboarding sign-in rotates
-    /// credentials). Each action closure is described inline where it
-    /// lives; collectively they implement every command the UI can issue.
     private func rewireActions() {
         let secrets = self.secretStore
-        let settings = self.settingsStore
-        let exclusions = self.exclusionStore
-        let confirmed = self.confirmedDeletedStore
-        let everSeen = self.everSeenStore
-        let photos = self.photos
-        let journal = self.journal
-        let client = self.immichClient
 
         let actions = CairnAppActions(
             requestSync: { [weak self] in
                 guard let self else { return }
-                // Kick off a sync. Resume semantics:
-                //   - If `pausedSyncElapsedSeconds` is non-nil (we were
-                //     paused), shift the new `syncStartedAt` backwards
-                //     by that many seconds so the elapsed timer picks
-                //     up continuously from where it froze.
-                //   - Otherwise treat this as a fresh sync: reset
-                //     progress to nil, stamp `syncStartedAt = now`.
                 await MainActor.run {
                     self.model.isSyncing = true
                     self.model.lastError = nil
                     if let paused = self.model.pausedSyncElapsedSeconds {
                         self.model.syncStartedAt = Date().addingTimeInterval(-paused)
                         self.model.pausedSyncElapsedSeconds = nil
-                        // Keep syncProgress as-is for resume — the
-                        // onHashProgress callbacks will overwrite it
-                        // as the pipeline advances.
                     } else {
                         self.model.syncProgress = nil
                         self.model.syncStartedAt = Date()
@@ -809,16 +646,21 @@ final class AppDependencies {
                     await MainActor.run {
                         self.model.lastError = "Not signed in yet. Complete onboarding first."
                         self.model.isSyncing = false
+                        self.model.syncPhase = .idle
+                    }
+                    return
+                }
+                guard let everSeen = await self.everSeenStore,
+                      let exclusions = await self.exclusionStore,
+                      let confirmed = await self.confirmedDeletedStore else {
+                    await MainActor.run {
+                        self.model.lastError = "No server activated. Complete onboarding first."
+                        self.model.isSyncing = false
+                        self.model.syncPhase = .idle
                     }
                     return
                 }
 
-                // Ensure Photos is fully authorized before we hash anything.
-                // iOS device permissions are per-install; a permission
-                // granted during onboarding on this device persists, but
-                // on fresh installs / revoked-perm scenarios we may need
-                // to (re-)ask. If the user denies, we surface a clear
-                // error and bail without touching the server.
                 let photoStatus = await MainActor.run { PHPhotoLibrary.authorizationStatus(for: .readWrite) }
                 let effectiveStatus: PHAuthorizationStatus
                 if photoStatus == .notDetermined {
@@ -828,8 +670,9 @@ final class AppDependencies {
                 }
                 guard effectiveStatus == .authorized else {
                     await MainActor.run {
-                        self.model.lastError = "cairn needs Full Photos access to find deleted photos. Open Settings → cairn → Photos and pick “All Photos.”"
+                        self.model.lastError = "cairn needs Full Photos access to find deleted photos. Open Settings \u{2192} cairn \u{2192} Photos and pick All Photos."
                         self.model.isSyncing = false
+                        self.model.syncPhase = .idle
                         self.model.syncStartedAt = nil
                     }
                     return
@@ -842,20 +685,15 @@ final class AppDependencies {
                         exclusions: exclusions,
                         confirmed: confirmed
                     )
-                    // Success: clear all in-flight markers.
                     await MainActor.run {
                         self.model.isSyncing = false
+                        self.model.syncPhase = .idle
                         self.model.syncProgress = nil
                         self.model.syncStartedAt = nil
                         self.model.pausedSyncElapsedSeconds = nil
+                        self.model.degraded = .none
                     }
                 } catch is CancellationError {
-                    // User tapped Stop, or the parent task was dropped.
-                    // Preserve `syncProgress` + freeze elapsed as
-                    // `pausedSyncElapsedSeconds` so the UI shows the
-                    // frozen "244 of 500 · 12s" state. Resume picks
-                    // up from the cache; "Start over" wipes and
-                    // restarts. No error alert — cancel is deliberate.
                     await MainActor.run {
                         let elapsed = self.model.syncStartedAt.map {
                             Date().timeIntervalSince($0)
@@ -863,73 +701,60 @@ final class AppDependencies {
                         self.model.pausedSyncElapsedSeconds = max(0, elapsed)
                         self.model.syncStartedAt = nil
                         self.model.isSyncing = false
-                        // NB: leave `syncProgress` untouched so the
-                        // progress card stays populated.
+                        self.model.syncPhase = .idle
                     }
                 } catch {
+                    let degraded = Self.degradedState(for: error)
+                    let desc = Self.describeSyncError(error)
+                    print("[cairn.sync] requestSync failed: \(desc)")
                     await MainActor.run {
-                        self.model.lastError = Self.describeSyncError(error)
+                        self.model.lastError = desc
                         self.model.isSyncing = false
+                        self.model.syncPhase = .idle
                         self.model.syncProgress = nil
                         self.model.syncStartedAt = nil
                         self.model.pausedSyncElapsedSeconds = nil
+                        if let degraded { self.model.degraded = degraded }
                     }
                 }
             },
             confirmTrash: { [weak self] in
-                guard let self else { return }
-                // Read from the cached reconciliation result. The sheet
-                // shouldn't be invocable without a prior requestSync, but
-                // tolerate that case with a silent no-op rather than a crash.
-                guard let client = await self.immichClient,
+                guard let self,
+                      let client = await self.immichClient,
+                      let journal = await self.journal,
                       let live = await self.model.reconciliation,
                       !live.deleteCandidates.isEmpty else { return }
                 let runId = "\(ISO8601DateFormatter().string(from: Date()))-\(UUID().uuidString.prefix(8))"
                 let orchestrator = TrashOrchestrator(writer: client, journal: journal)
                 do {
-                    _ = try await orchestrator.run(
+                    let result = try await orchestrator.run(
                         runId: runId,
                         candidates: live.deleteCandidates,
                         assetsInPurview: live.deleteCandidates.count + live.pendingReviewCandidates.count,
                         dryRun: false
                     )
-                    // Clear the cached candidates so a stale re-entry can't
-                    // replay the run. The next requestSync produces a fresh set.
+                    let trashedCount = result.trashedAssetIds.count
                     await MainActor.run {
                         self.model.reconciliation = nil
+                        if trashedCount > 0 {
+                            let current = self.model.library
+                            self.model.library = current.with(server: max(0, current.server - trashedCount))
+                        }
                     }
                     await self.refreshRunsList()
                 } catch {
-                    // Surface the failure to the user rather than
-                    // letting the sheet close silently. Caller's
-                    // `try?` would otherwise drop the error and the
-                    // cached candidates get wiped regardless — next
-                    // sync reconciles against unchanged server state
-                    // and shows the same candidates again. Keep
-                    // `reconciliation` intact so a retry is
-                    // one-tap-away instead of a full rescan.
                     await MainActor.run {
                         self.model.lastError = Self.describeSyncError(error)
                     }
-                    await self.refreshRunsList()   // journal may have partial events
+                    await self.refreshRunsList()
                     throw error
                 }
             },
             restore: { [weak self] assetIds, runId in
-                // Reach into `self.immichClient` each invocation so
-                // credential rotation (sign-out + sign-back-in)
-                // doesn't leave us calling the previous server. The
-                // old capture pattern snapshotted `client` at wiring
-                // time, which could target a stale instance after
-                // rotation. `[weak self]` prevents a retain cycle
-                // while the guard surfaces the "signed out" case
-                // cleanly.
-                guard let self, let client = await self.immichClient else { return }
+                guard let self,
+                      let client = await self.immichClient,
+                      let journal = await self.journal else { return }
                 let orch = RestoreOrchestrator(writer: client, journal: journal)
-                // Empty input = restore the whole run; non-empty =
-                // restore only the selected subset. The orchestrator
-                // handles Live Photo pair expansion internally so a
-                // still + motion-video pair is never half-restored.
                 let scope: Set<String>? = assetIds.isEmpty ? nil : Set(assetIds)
                 do {
                     _ = try await orch.restore(fromRunId: runId, assetIds: scope)
@@ -943,10 +768,9 @@ final class AppDependencies {
                 }
             },
             exclude: { [weak self] checksums, filenames, runId in
-                // Checksums are the store's primary key — base64 SHA1
-                // strings pulled from `CandidateFixture.checksum`.
-                // Filenames ride along for the journal event so the
-                // on-disk log is human-readable.
+                guard let self,
+                      let exclusions = await self.exclusionStore,
+                      let journal = await self.journal else { return }
                 let entries: [Checksum: ExclusionMetadata] = Dictionary(
                     uniqueKeysWithValues: checksums.map {
                         (Checksum(base64: $0), ExclusionMetadata(addedAt: Date(), fromRunId: runId, reason: nil))
@@ -958,38 +782,33 @@ final class AppDependencies {
                         runId: runId,
                         event: .assetsExcluded(checksums: checksums, fromRunId: runId)
                     ))
-                    await self?.refreshExcludedChecksums()
+                    await self.refreshExcludedChecksums()
                 } catch {
-                    if let self {
-                        await MainActor.run {
-                            self.model.lastError = Self.describeSyncError(error)
-                        }
+                    await MainActor.run {
+                        self.model.lastError = Self.describeSyncError(error)
                     }
                     throw error
                 }
-                _ = filenames  // reserved for future UI echo / richer journal event
+                _ = filenames
             },
             unexclude: { [weak self] checksums in
+                guard let self,
+                      let exclusions = await self.exclusionStore else { return }
                 let cks = Set(checksums.map { Checksum(base64: $0) })
                 do {
                     try await exclusions.remove(cks)
-                    await self?.refreshExcludedChecksums()
+                    await self.refreshExcludedChecksums()
                 } catch {
-                    if let self {
-                        await MainActor.run {
-                            self.model.lastError = Self.describeSyncError(error)
-                        }
+                    await MainActor.run {
+                        self.model.lastError = Self.describeSyncError(error)
                     }
                     throw error
                 }
             },
             approvePending: { [weak self] checksums in
-                // Promote a specific set of held/unconfirmed candidates to
-                // trash by running the TrashOrchestrator on just those
-                // server assets. Quarantine is bypassed — the user is
-                // explicitly saying "trash these now."
                 guard let self,
                       let client = await self.immichClient,
+                      let journal = await self.journal,
                       let live = await self.model.reconciliation else { return }
                 let wanted = Set(checksums)
                 let candidates = (live.pendingReviewCandidates + live.heldByQuarantineCandidates)
@@ -998,22 +817,13 @@ final class AppDependencies {
                 let runId = "\(ISO8601DateFormatter().string(from: Date()))-\(UUID().uuidString.prefix(8))"
                 let orchestrator = TrashOrchestrator(writer: client, journal: journal)
                 do {
-                    // `assetsInPurview` is the full set of candidates
-                    // that were eligible to review in this reconciliation
-                    // pass — *not* just the subset the user approved.
-                    // Passed through the safety rail so the percent-check
-                    // math denominators match the user-visible "X% of
-                    // matched" display. Approving a subset doesn't
-                    // change what was in scope; it just changes what
-                    // actually got trashed.
-                    _ = try await orchestrator.run(
+                    let result = try await orchestrator.run(
                         runId: runId,
                         candidates: candidates,
                         assetsInPurview: live.deleteCandidates.count + live.pendingReviewCandidates.count,
                         dryRun: false
                     )
-                    // Drop the approved ones from the cached reconciliation so
-                    // the UI updates without a full resync round trip.
+                    let trashedCount = result.trashedAssetIds.count
                     await MainActor.run {
                         guard let existing = self.model.reconciliation else { return }
                         self.model.reconciliation = .init(
@@ -1024,13 +834,13 @@ final class AppDependencies {
                             quarantineDays: existing.quarantineDays,
                             computedAt: existing.computedAt
                         )
+                        if trashedCount > 0 {
+                            let current = self.model.library
+                            self.model.library = current.with(server: max(0, current.server - trashedCount))
+                        }
                     }
                     await self.refreshRunsList()
                 } catch {
-                    // Surface the failure so the user sees a real
-                    // error state instead of the sheet dismissing
-                    // silently and the candidates still present on
-                    // Pending Review after a "Trash" tap did nothing.
                     await MainActor.run {
                         self.model.lastError = Self.describeSyncError(error)
                     }
@@ -1039,7 +849,9 @@ final class AppDependencies {
                 }
             },
             excludePending: { [weak self] checksums in
-                guard let self else { return }
+                guard let self,
+                      let exclusions = await self.exclusionStore,
+                      let confirmed = await self.confirmedDeletedStore else { return }
                 let now = Date()
                 var entries: [Checksum: ExclusionMetadata] = [:]
                 let cks = Set(checksums.map { Checksum(base64: $0) })
@@ -1048,9 +860,6 @@ final class AppDependencies {
                 }
                 do {
                     try await exclusions.insert(entries)
-                    // Un-confirm so these stop showing up as pending.
-                    // The exclusion list will also protect them from
-                    // future runs.
                     try await confirmed.remove(cks)
                     await MainActor.run {
                         guard let existing = self.model.reconciliation else { return }
@@ -1070,10 +879,186 @@ final class AppDependencies {
                     throw error
                 }
             },
+            dismissPending: { [weak self] checksums in
+                guard let self,
+                      let confirmed = await self.confirmedDeletedStore,
+                      let everSeen = await self.everSeenStore else { return }
+                let cks = Set(checksums.map { Checksum(base64: $0) })
+                do {
+                    try await confirmed.remove(cks)
+                    try await everSeen.remove(cks)
+                    await MainActor.run {
+                        guard let existing = self.model.reconciliation else { return }
+                        self.model.reconciliation = .init(
+                            deleteCandidates: existing.deleteCandidates,
+                            pendingReviewCandidates: existing.pendingReviewCandidates.filter { !cks.contains($0.checksum) },
+                            heldByQuarantineCandidates: existing.heldByQuarantineCandidates.filter { !cks.contains($0.checksum) },
+                            confirmedDeletedAt: existing.confirmedDeletedAt.filter { !cks.contains($0.key) },
+                            quarantineDays: existing.quarantineDays,
+                            computedAt: existing.computedAt
+                        )
+                    }
+                    await self.refreshQuarantineCount()
+                } catch {
+                    await MainActor.run {
+                        self.model.lastError = Self.describeSyncError(error)
+                    }
+                    throw error
+                }
+            },
+            loadDeferredEntries: { [weak self] in
+                guard let self else { return [] }
+                let store = await MainActor.run { self.deferredHashStore }
+                return (try? await store.snapshot()) ?? []
+            },
+            exportData: { [weak self] scope in
+                guard let self else { throw CancellationError() }
+                let (partitionKey, everSeen, exclusions, journal, settings) = await MainActor.run {
+                    (self.currentPartitionKey, self.everSeenStore, self.exclusionStore, self.journal, self.model.settings)
+                }
+
+                var serverPayloads: [CairnExportPayload.ServerPayload] = []
+
+                switch scope {
+                case .currentServer:
+                    guard let partitionKey, let everSeen, let exclusions, let journal else {
+                        throw CancellationError()
+                    }
+                    let payload = try await Self.buildServerPayload(
+                        key: partitionKey, everSeen: everSeen, exclusions: exclusions, journal: journal
+                    )
+                    serverPayloads.append(payload)
+
+                case .allServers:
+                    if let partitionKey, let everSeen, let exclusions, let journal {
+                        let payload = try await Self.buildServerPayload(
+                            key: partitionKey, everSeen: everSeen, exclusions: exclusions, journal: journal
+                        )
+                        serverPayloads.append(payload)
+                    }
+
+                    let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+                    let serversDir = appSupport.appending(path: "servers")
+                    if let entries = try? FileManager.default.contentsOfDirectory(
+                        at: serversDir, includingPropertiesForKeys: nil
+                    ) {
+                        let currentDirName = partitionKey?.directoryName
+                        for entry in entries {
+                            let dirName = entry.deletingPathExtension().lastPathComponent
+                            guard dirName != currentDirName else { continue }
+                            guard entry.pathExtension == "store" else { continue }
+
+                            guard let container = try? CairnSwiftDataContainer.makePerServer(url: entry) else { continue }
+                            let otherEverSeen = SwiftDataEverSeenStore(container: container)
+                            let otherExclusions = SwiftDataExclusionStore(container: container)
+
+                            let normalizedURL = dirName.replacingOccurrences(of: "_", with: "://", range: dirName.range(of: "_"))
+                            let otherKey = ServerPartitionKey(from: URL(string: normalizedURL) ?? URL(string: "https://\(dirName)")!)
+
+                            let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+                                .appending(path: "servers").appending(path: dirName)
+                            let journalURL = docs.appending(path: "deletion-journal.jsonl")
+                            let otherJournal = DeletionJournal(path: journalURL)
+
+                            let payload = try await Self.buildServerPayload(
+                                key: otherKey, everSeen: otherEverSeen, exclusions: otherExclusions, journal: otherJournal
+                            )
+                            serverPayloads.append(payload)
+                        }
+                    }
+                }
+
+                let deviceName = await MainActor.run { UIDevice.current.name }
+                let export = CairnExportPayload(
+                    exportedFrom: deviceName,
+                    servers: serverPayloads,
+                    settings: settings
+                )
+
+                let data = try CairnExportPayload.encode(export)
+                let dateStr = ISO8601DateFormatter().string(from: Date())
+                    .replacingOccurrences(of: ":", with: "-")
+                let fileName = "cairn-export-\(dateStr).json"
+                let tempURL = FileManager.default.temporaryDirectory.appending(path: fileName)
+                try data.write(to: tempURL, options: .atomic)
+                return tempURL
+            },
+            importData: { [weak self] fileURL, applySettings in
+                guard let self else { throw CancellationError() }
+                let accessed = fileURL.startAccessingSecurityScopedResource()
+                defer { if accessed { fileURL.stopAccessingSecurityScopedResource() } }
+
+                let data = try Data(contentsOf: fileURL)
+                let payload = try CairnExportPayload.decode(from: data)
+
+                let (partitionKey, everSeen, exclusions, journal, settingsStore) = await MainActor.run {
+                    (self.currentPartitionKey, self.everSeenStore, self.exclusionStore, self.journal, self.settingsStore)
+                }
+
+                var totalEverSeenAdded = 0
+                var totalExclusionsAdded = 0
+                var totalJournalLines = 0
+                var processedServers = 0
+
+                for serverPayload in payload.servers {
+                    guard let partitionKey,
+                          serverPayload.partitionKey == partitionKey.directoryName,
+                          let everSeen, let exclusions, let journal else {
+                        continue
+                    }
+                    processedServers += 1
+
+                    let newChecksums = Set(serverPayload.everSeen.map { Checksum(base64: $0) })
+                    let existingCount = try await everSeen.snapshot().count
+                    try await everSeen.union(newChecksums)
+                    let afterCount = try await everSeen.snapshot().count
+                    totalEverSeenAdded += afterCount - existingCount
+
+                    let existingExclusions = try await exclusions.snapshot()
+                    var newExclusions: [Checksum: ExclusionMetadata] = [:]
+                    for record in serverPayload.exclusions {
+                        let ck = Checksum(base64: record.checksum)
+                        if existingExclusions[ck] == nil {
+                            newExclusions[ck] = ExclusionMetadata(
+                                addedAt: record.addedAt,
+                                fromRunId: record.fromRunId,
+                                reason: record.reason
+                            )
+                        }
+                    }
+                    if !newExclusions.isEmpty {
+                        try await exclusions.insert(newExclusions)
+                        totalExclusionsAdded += newExclusions.count
+                    }
+
+                    if !serverPayload.journal.isEmpty {
+                        try await journal.appendRawLines(serverPayload.journal)
+                        totalJournalLines += serverPayload.journal.count
+                    }
+                }
+
+                var didApplySettings = false
+                if applySettings, let importedSettings = payload.settings {
+                    try await settingsStore.save(importedSettings)
+                    await MainActor.run { self.model.settings = importedSettings }
+                    didApplySettings = true
+                }
+
+                await self.refreshExcludedChecksums()
+                await self.refreshRunsList()
+
+                return CairnImportResult(
+                    everSeenAdded: totalEverSeenAdded,
+                    exclusionsAdded: totalExclusionsAdded,
+                    journalLinesAppended: totalJournalLines,
+                    settingsApplied: didApplySettings,
+                    serverCount: processedServers
+                )
+            },
             bulkExcludeRecentOffload: { [weak self] in
-                guard let self else { return }
-                // "Recent" = everything confirmed within the window
-                // defined by `massOffloadRecentWindow` (currently 24h).
+                guard let self,
+                      let exclusions = await self.exclusionStore,
+                      let confirmed = await self.confirmedDeletedStore else { return }
                 let cutoff = Date().addingTimeInterval(-Self.massOffloadRecentWindow)
                 do {
                     let snapshot = try await confirmed.snapshot()
@@ -1106,10 +1091,6 @@ final class AppDependencies {
                 }
             },
             verifyServer: { [weak self] urlString, key in
-                // Sanitize — accepts missing scheme ("immich.home.arpa"),
-                // trailing slashes, whitespace; rejects non-http(s)
-                // schemes and un-hostable strings. Returns a clean URL
-                // that ImmichClient's `normalize` will append `/api` to.
                 guard let url = ImmichClient.parseServerURL(urlString) else {
                     return SetupScreen.ServerVerifyResult(
                         success: false,
@@ -1120,23 +1101,27 @@ final class AppDependencies {
                 let probe = ImmichClient(baseURL: url, apiKey: key)
                 do {
                     let assets = try await probe.listAllAssets()
-                    // Successful verify ⇒ persist credentials so the
-                    // next launch can bootstrap directly into the main
-                    // app. A mid-onboarding crash or force-quit shouldn't
-                    // make the user retype. Also rebuild the real
-                    // ImmichClient + thumbnail loader on the dependencies
-                    // so every action downstream of this point has working
-                    // credentials.
                     if let self {
                         try? secrets.setServerURL(url)
                         try? secrets.setAPIKey(key)
+                        try? await MainActor.run {
+                            try self.activateServer(url: url, apiKey: key)
+                        }
+                        let serverCount = assets.filter { !$0.isTrashed }.count
                         await MainActor.run {
-                            self.immichClient = ImmichClient(baseURL: url, apiKey: key)
-                            self.thumbnailLoader = ImmichThumbnailLoader(baseURL: url, apiKey: key)
                             self.model.serverHost = url.host() ?? url.absoluteString
+                            self.model.serverURL = url
                             self.model.apiKey = key
                             self.model.apiKeyMasked = AppDependencies.mask(key)
+                            self.model.library = self.model.library.with(server: serverCount)
                         }
+
+                        if let tokenStore = await self.tokenStore {
+                            let tokenExists = (try? await tokenStore.load()) != nil
+                            await MainActor.run { self.model.hasCompletedInitialScan = tokenExists }
+                        }
+                        await self.refreshExcludedChecksums()
+
                         await MainActor.run { self.rewireActions() }
                     }
                     return SetupScreen.ServerVerifyResult(success: true, assetCount: assets.count, errorMessage: nil)
@@ -1149,38 +1134,18 @@ final class AppDependencies {
                 return status == .authorized
             },
             requestBackgroundRefresh: {
-                // Background refresh permission is a system-level setting; we
-                // can't request it programmatically, just check whether it's
-                // available. Return true if it is (lets onboarding proceed).
                 await MainActor.run { UIApplication.shared.backgroundRefreshStatus == .available }
             },
             resetIndex: { [weak self] in
                 guard let self else { return }
-                // Wipe every piece of derived state so the next sync
-                // behaves as a first-ever install:
-                //   - LocalHashStore (so re-hashing happens, not skip-if-cached)
-                //   - PersistentChangeTokenStore (so the incremental path
-                //     doesn't kick in — forces runFullEnumeration)
-                //   - EverSeenStore (so reconciliation doesn't treat
-                //     assets as "previously indexed")
-                //   - ConfirmedDeletedStore (quarantine clocks reset)
-                // Exclusions are NOT touched — those are user-intent
-                // protections, not cached state.
-                //
-                // Also cancel any in-flight sync so it doesn't race
-                // with our deletes (a mid-sync hashStore.set on the same
-                // asset we're wiping would be wasted work at best,
-                // corruption at worst).
-                let eh = self.everSeenStore
-                let cd = self.confirmedDeletedStore
-                let lh = self.localHashStore
-                let dh = self.deferredHashStore
-                let tk = self.tokenStore
+                let (lh, dh, eh, cd, tk) = await MainActor.run {
+                    (self.localHashStore, self.deferredHashStore, self.everSeenStore, self.confirmedDeletedStore, self.tokenStore)
+                }
                 try? await lh.clear()
-                try? await tk.clear()
-                try? await eh.clear()
-                try? await cd.clear()
                 try? await dh.clear()
+                if let eh { try? await eh.clear() }
+                if let cd { try? await cd.clear() }
+                if let tk { try? await tk.clear() }
                 await MainActor.run {
                     self.model.reconciliation = nil
                     self.model.library = .empty
@@ -1197,12 +1162,12 @@ final class AppDependencies {
             },
             clearJournal: { [weak self] in
                 guard let self else { return }
-                let path = await self.journal.path
-                try? FileManager.default.removeItem(at: path)
+                let journal = await MainActor.run { self.journal }
+                if let journal {
+                    let path = await journal.path
+                    try? FileManager.default.removeItem(at: path)
+                }
                 await MainActor.run {
-                    // Blank the Status tail + Runs list so neither
-                    // keeps showing rows from the now-deleted file
-                    // until the next sync repopulates the journal.
                     self.model.journalTail = []
                     self.model.runs = []
                     self.model.runAssets = [:]
@@ -1211,39 +1176,41 @@ final class AppDependencies {
             },
             signOut: { [weak self] in
                 try? secrets.clear()
-                // Drop thumbnail cache first — its bytes were fetched
-                // with the now-stale key and must not leak to the next
-                // user of this install.
                 await self?.thumbnailLoader?.clearCache()
                 await MainActor.run {
                     guard let self else { return }
                     self.immichClient = nil
                     self.thumbnailLoader = nil
+                    self.currentPartitionKey = nil
+                    self.serverContainer = nil
+                    self.everSeenStore = nil
+                    self.exclusionStore = nil
+                    self.confirmedDeletedStore = nil
+                    self.tokenStore = nil
+                    self.thumbnailStore = nil
+                    self.journal = nil
                     self.model.needsOnboarding = true
                     self.model.apiKey = ""
                     self.model.apiKeyMasked = ""
                     self.model.serverHost = ""
-                    // Reset the skip-flag so a fresh sign-in starts
-                    // with the initial-scan screen again.
+                    self.model.serverURL = nil
                     self.model.hasDismissedInitialScan = false
+                    self.model.journalTail = []
+                    self.model.runs = []
+                    self.model.runAssets = [:]
+                    self.model.reconciliation = nil
+                    self.model.library = .empty
+                    self.model.lastScanBurstCount = 0
+                    self.model.hasCompletedInitialScan = false
+                    self.model.excludedChecksums = []
                 }
             },
             rescanLibrary: { [weak self] in
                 guard let self else { return }
-                // Clear token + defer queue → next runDeletionScan()
-                // takes the full-enumeration path and reconsiders every
-                // asset against the current size settings. Ever-seen +
-                // confirmed-deleted survive so reconciliation history
-                // (and the quarantine clock) stay intact.
-                let tk = self.tokenStore
-                let dh = self.deferredHashStore
-                try? await tk.clear()
+                let (dh, tk) = await MainActor.run { (self.deferredHashStore, self.tokenStore) }
                 try? await dh.clear()
+                if let tk { try? await tk.clear() }
                 await MainActor.run {
-                    // Also flip `hasCompletedInitialScan` to false so
-                    // the UI reverts to `InitialScanScreen` during the
-                    // full-enum re-run — matches the user's mental
-                    // model of "I asked for a rescan, show me progress."
                     self.model.hasCompletedInitialScan = false
                     self.model.reconciliation = nil
                     self.model.syncProgress = nil
@@ -1254,6 +1221,7 @@ final class AppDependencies {
             persistSettings: { [weak self] settings in
                 guard let self else { return }
                 try? await self.settingsStore.save(settings)
+                await self.refreshDeferredQueueSummary()
             },
             dismissInitialScan: { [weak self] in
                 guard let self else { return }
@@ -1263,14 +1231,14 @@ final class AppDependencies {
             },
             startOverInitialScan: { [weak self] in
                 guard let self else { return }
-                // Wipe every piece of scan-derived state so the next
-                // Start behaves as a true fresh run. Keeps exclusions
-                // + credentials intact.
-                try? await self.localHashStore.clear()
-                try? await self.tokenStore.clear()
-                try? await self.deferredHashStore.clear()
-                try? await self.everSeenStore.clear()
-                try? await self.confirmedDeletedStore.clear()
+                let (lh, dh, tk, eh, cd) = await MainActor.run {
+                    (self.localHashStore, self.deferredHashStore, self.tokenStore, self.everSeenStore, self.confirmedDeletedStore)
+                }
+                try? await lh.clear()
+                try? await dh.clear()
+                if let tk { try? await tk.clear() }
+                if let eh { try? await eh.clear() }
+                if let cd { try? await cd.clear() }
                 await MainActor.run {
                     self.model.reconciliation = nil
                     self.model.library = .empty
@@ -1279,21 +1247,11 @@ final class AppDependencies {
                     self.model.pausedSyncElapsedSeconds = nil
                     self.model.syncStartedAt = nil
                     self.model.hasCompletedInitialScan = false
-                    // `hasDismissedInitialScan` intentionally left as
-                    // the user set it — starting over doesn't mean
-                    // they want to be force-routed back to the scan
-                    // screen if they'd hit Skip for now.
                 }
                 await self.refreshDeferredQueueSummary()
             },
             forceDrainDeferred: { [weak self] in
                 guard let self else { return }
-                // Treat this as a normal sync from a UI perspective —
-                // same `isSyncing` + `syncProgress` plumbing, same
-                // cancellation path. The difference is the reconciler
-                // call: `drainDeferred()` hits the unlimited-drain
-                // path (ignores soft limit, honors hard ceiling) so
-                // previously-queued items actually hash.
                 let photoStatus = await MainActor.run { PHPhotoLibrary.authorizationStatus(for: .readWrite) }
                 guard photoStatus == .authorized else {
                     await MainActor.run {
@@ -1303,18 +1261,27 @@ final class AppDependencies {
                 }
                 await MainActor.run {
                     self.model.isSyncing = true
+                    self.model.syncPhase = .hashing
                     self.model.lastError = nil
                     self.model.syncProgress = nil
                     self.model.syncStartedAt = Date()
                     self.model.pausedSyncElapsedSeconds = nil
                 }
-                // Refresh stats upfront so "On iPhone" is accurate
-                // while the drain ticks "Indexed" toward it.
                 await self.refreshLibrarySizeStats()
+                guard let reconciler = await MainActor.run(body: { self.persistentChangeReconciler }) else {
+                    await MainActor.run {
+                        self.model.lastError = "No server activated."
+                        self.model.isSyncing = false
+                        self.model.syncPhase = .idle
+                        self.model.syncStartedAt = nil
+                    }
+                    return
+                }
                 do {
-                    _ = try await self.persistentChangeReconciler.drainDeferred()
+                    _ = try await reconciler.drainDeferred()
                     await MainActor.run {
                         self.model.isSyncing = false
+                        self.model.syncPhase = .idle
                         self.model.syncProgress = nil
                         self.model.syncStartedAt = nil
                     }
@@ -1327,12 +1294,14 @@ final class AppDependencies {
                         self.model.pausedSyncElapsedSeconds = max(0, elapsed)
                         self.model.syncStartedAt = nil
                         self.model.isSyncing = false
+                        self.model.syncPhase = .idle
                     }
                     await self.refreshDeferredQueueSummary()
                 } catch {
                     await MainActor.run {
                         self.model.lastError = Self.describeSyncError(error)
                         self.model.isSyncing = false
+                        self.model.syncPhase = .idle
                         self.model.syncProgress = nil
                         self.model.syncStartedAt = nil
                     }
@@ -1340,14 +1309,6 @@ final class AppDependencies {
                 }
             },
             replayOnboarding: { [weak self] in
-                // Dev-only convenience: re-enter the SetupScreen flow
-                // without losing credentials. Pull URL + API key out
-                // of Keychain, pre-fill the bindings so the server
-                // and key fields show the existing values (SetupScreen
-                // uses `$model.serverHost` / `$model.apiKey` as the
-                // TextField bindings), then flip the onboarding route.
-                // Verify at the end of the wizard re-persists the
-                // same values harmlessly.
                 guard let self else { return }
                 let url = try? self.secretStore.serverURL()
                 let apiKey = try? self.secretStore.apiKey()
@@ -1363,97 +1324,126 @@ final class AppDependencies {
             }
         )
 
-        // Swap the new bundle in. Earlier revisions tried to reconstruct
-        // the model and dance around `actions` being `let`, which silently
-        // no-op'd — onboarding's verifyServer ran the preview-default
-        // no-op, every "successful" verify was vacuous. `actions` is now
-        // a `var` on the model so we just assign.
         self.model.actions = actions
     }
 
     // MARK: - Helpers
 
-    /// Absolute URL of the app's Documents directory. Force-unwrap is safe:
-    /// every sandboxed iOS app is guaranteed a Documents dir at launch.
     private static func documentsDirectory() -> URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
     }
 
-    /// Mask an API key for display, showing the last 4 characters. Used for
-    /// the Settings "API key" row so a user can verify which key is
-    /// installed without exposing the full secret.
+    private static func serverContainerURL(for key: ServerPartitionKey) -> URL {
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let dir = appSupport.appending(path: "servers")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appending(path: "\(key.directoryName).store")
+    }
+
+    private static func serverJournalURL(for key: ServerPartitionKey) -> URL {
+        let docs = documentsDirectory().appending(path: "servers").appending(path: key.directoryName)
+        try? FileManager.default.createDirectory(at: docs, withIntermediateDirectories: true)
+        return docs.appending(path: "deletion-journal.jsonl")
+    }
+
+    private static func migrateFromLegacyIfNeeded(serverURL: URL) {
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: "app.cairn.partitioned-v1") else { return }
+        let key = ServerPartitionKey(from: serverURL)
+        let fm = FileManager.default
+
+        let docs = documentsDirectory()
+        let legacyJournal = docs.appending(path: "deletion-journal.jsonl")
+        if fm.fileExists(atPath: legacyJournal.path) {
+            let dest = serverJournalURL(for: key)
+            try? fm.moveItem(at: legacyJournal, to: dest)
+        }
+
+        let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let legacyStore = appSupport.appending(path: "default.store")
+        let serverStore = serverContainerURL(for: key)
+        if fm.fileExists(atPath: legacyStore.path) && !fm.fileExists(atPath: serverStore.path) {
+            for suffix in ["", "-shm", "-wal"] {
+                let src = URL(fileURLWithPath: legacyStore.path + suffix)
+                let dst = URL(fileURLWithPath: serverStore.path + suffix)
+                if fm.fileExists(atPath: src.path) {
+                    try? fm.copyItem(at: src, to: dst)
+                }
+            }
+        }
+
+        defaults.set(true, forKey: "app.cairn.partitioned-v1")
+    }
+
+    private static func buildServerPayload(
+        key: ServerPartitionKey,
+        everSeen: SwiftDataEverSeenStore,
+        exclusions: SwiftDataExclusionStore,
+        journal: DeletionJournal
+    ) async throws -> CairnExportPayload.ServerPayload {
+        let everSeenSet = try await everSeen.snapshot()
+        let sortedEverSeen = everSeenSet.map(\.base64).sorted()
+
+        let exclusionMap = try await exclusions.snapshot()
+        let exclusionRecords = exclusionMap
+            .sorted { $0.key.base64 < $1.key.base64 }
+            .map { ck, meta in
+                CairnExportPayload.ServerPayload.ExclusionRecord(
+                    checksum: ck.base64,
+                    addedAt: meta.addedAt,
+                    fromRunId: meta.fromRunId,
+                    reason: meta.reason
+                )
+            }
+
+        let journalLines = (try? await journal.readRawLines()) ?? []
+
+        return CairnExportPayload.ServerPayload(
+            partitionKey: key.directoryName,
+            normalizedURL: key.normalizedURL,
+            everSeen: sortedEverSeen,
+            exclusions: exclusionRecords,
+            journal: journalLines
+        )
+    }
+
     private static func mask(_ key: String) -> String {
         let tail = key.suffix(4)
         return String(repeating: "•", count: 10) + tail
     }
 
-    /// All-no-op closures for the initial `CairnAppActions`, used before
-    /// `rewireActions()` runs the first time. Immediately replaced in
-    /// `init`; kept as a named helper so the intent of the first `model`
-    /// assignment is obvious.
     private static func makePreviewActions() -> CairnAppActions {
-        CairnAppActions()   // all defaults
+        CairnAppActions()
     }
 
     #if DEBUG
-    /// Populate the model with `CairnFixtures` data so screenshot UITests
-    /// render every tab without any real dependencies. Invoked only when
-    /// the `-CAIRN_SCREENSHOT_MODE` launch arg is present.
-    ///
-    /// Paired with `-CAIRN_SCREENSHOT_ONBOARDING` to land on the Setup
-    /// wizard instead of the main tabs — used by the onboarding
-    /// screenshot test.
     @MainActor
     static func seedFromFixtures(into model: CairnAppModel) {
         let args = ProcessInfo.processInfo.arguments
         let wantsOnboarding = args.contains("-CAIRN_SCREENSHOT_ONBOARDING")
         let wantsDark = args.contains("-CAIRN_SCREENSHOT_DARK")
 
-        // Swap every action for a no-op. Without this, the `.task`
-        // auto-sync on main tabs fires `requestSync`, which tries to
-        // use an ImmichClient we never built, writes lastError, and
-        // pops a "Not signed in" alert over the screenshot. All-no-op
-        // actions also mean accidental taps on a "Sign out" /
-        // "Reset index" / "Review & sync" button during the capture
-        // pass can't break the fixture state.
         model.actions = CairnAppActions()
-
-        // And suppress the auto-sync task explicitly. Belt + suspenders
-        // — even if a future action accidentally becomes non-noop,
-        // this flag ensures the initial task-block exits early.
         model.didAutoSyncThisSession = true
 
-        // Shared state regardless of landing screen.
         model.serverHost = "photos.home.arpa"
         model.apiKey = "sk_cairn_screenshot_fixture"
         model.apiKeyMasked = "••••••••••xture"
         model.connectionStatus = .healthy(latencyMs: 42)
 
-        // Appearance override is already a first-class setting on
-        // `CairnSettings`, so dark-mode screenshot capture just means
-        // seeding it here; `CairnAppRoot` reads `settings.appearance`
-        // and applies `.preferredColorScheme` at the root.
         model.settings.appearance = wantsDark ? .dark : .light
 
         if wantsOnboarding {
-            // Onboarding path — leave needsOnboarding true and skip
-            // populating the main-app surface. The Setup wizard
-            // reads only `serverHost` / `apiKey` bindings; everything
-            // else is onboarding-internal state.
             model.needsOnboarding = true
             return
         }
 
-        // Main-app path.
         model.needsOnboarding = false
         model.hasCompletedInitialScan = true
         model.library = CairnFixtures.medium
         model.runs = CairnFixtures.runs
         model.journalTail = CairnFixtures.journalTail
 
-        // Surface enough pending-review items for the Pending Review
-        // screen to render with countdowns + the mass-offload
-        // banner's threshold check.
         let heldFixtures = Array(CairnFixtures.candidates.prefix(3))
         let pendingFixtures = Array(CairnFixtures.candidates.prefix(5))
         let confirmedAt: [Checksum: Date] = Dictionary(
@@ -1476,11 +1466,6 @@ final class AppDependencies {
 
 #if DEBUG
 private extension CairnFixtures.CandidateFixture {
-    /// Minimal `ServerAsset` projection for screenshot fixtures.
-    /// `checksum` falls back to a stable derived value when the
-    /// fixture row was hand-authored without one; the screenshot
-    /// pipeline never reconciles against a real server so the
-    /// value just has to be deterministic.
     var asServerAsset: ServerAsset {
         ServerAsset(
             id: assetId ?? "fixture-\(name)",
@@ -1494,4 +1479,4 @@ private extension CairnFixtures.CandidateFixture {
 }
 #endif
 
-import UIKit   // imported only for `UIApplication.shared.backgroundRefreshStatus`
+import UIKit

@@ -1,4 +1,7 @@
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#endif
 import CairnCore
 
 /// The assembled cairn iOS app — top-level navigation, sheet presentation,
@@ -26,7 +29,23 @@ public struct CairnAppRoot: View {
     /// inline, so the next sync resumes rather than restarts. `nil` when
     /// no sync is running.
     @State private var activeSyncTask: Task<Void, Never>?
+    @State private var tabSwipeDirection: SwipeDirection = .leading
+    @State private var tabSwitchWasSwipe = false
+    @State private var exportedFileURL: URL?
+    @State private var importResult: CairnImportResult?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private enum SwipeDirection { case leading, trailing }
+
+    #if canImport(UIKit)
+    private struct ShareSheet: UIViewControllerRepresentable {
+        let url: URL
+        func makeUIViewController(context: Context) -> UIActivityViewController {
+            UIActivityViewController(activityItems: [url], applicationActivities: nil)
+        }
+        func updateUIViewController(_ vc: UIActivityViewController, context: Context) {}
+    }
+    #endif
 
     public init(model: CairnAppModel, palette: CairnPalette = .defaults) {
         self.model = model
@@ -34,6 +53,41 @@ public struct CairnAppRoot: View {
     }
 
     public var body: some View {
+        bodyContent
+            #if canImport(UIKit)
+            .sheet(isPresented: Binding(
+                get: { exportedFileURL != nil },
+                set: { if !$0 { exportedFileURL = nil } }
+            )) {
+                if let url = exportedFileURL {
+                    ShareSheet(url: url)
+                        .presentationDetents([.medium])
+                }
+            }
+            #endif
+            .alert(
+                "Import complete",
+                isPresented: Binding(
+                    get: { importResult != nil },
+                    set: { if !$0 { importResult = nil } }
+                ),
+                presenting: importResult
+            ) { _ in
+                Button("OK", role: .cancel) { importResult = nil }
+            } message: { result in
+                Text("\(result.serverCount) server\(result.serverCount == 1 ? "" : "s") processed. \(result.everSeenAdded) checksums added, \(result.exclusionsAdded) exclusions added, \(result.journalLinesAppended) journal lines appended.\(result.settingsApplied ? " Settings applied." : "")")
+            }
+            // Persist every settings mutation. No explicit save UI — each
+            // slider / toggle commit flows straight to disk. Debouncing
+            // happens naturally because the store is atomic-write-per-save
+            // and SwiftUI coalesces binding updates to one per frame.
+            .onChange(of: model.settings) { _, newValue in
+                Task { await model.actions.persistSettings(newValue) }
+            }
+    }
+
+    @ViewBuilder
+    private var bodyContent: some View {
         Group {
             if model.needsOnboarding {
                 onboarding
@@ -67,6 +121,8 @@ public struct CairnAppRoot: View {
             set: { model.presentedSheet = $0 }
         )) { sheet in
             sheetContent(for: sheet)
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
         }
         // Error surface: anything written to `model.lastError` pops here.
         // Without this, failed syncs would silently eat themselves (Photos
@@ -83,13 +139,6 @@ public struct CairnAppRoot: View {
             Button("OK", role: .cancel) { model.lastError = nil }
         } message: { message in
             Text(message)
-        }
-        // Persist every settings mutation. No explicit save UI — each
-        // slider / toggle commit flows straight to disk. Debouncing
-        // happens naturally because the store is atomic-write-per-save
-        // and SwiftUI coalesces binding updates to one per frame.
-        .onChange(of: model.settings) { _, newValue in
-            Task { await model.actions.persistSettings(newValue) }
         }
     }
 
@@ -115,6 +164,20 @@ public struct CairnAppRoot: View {
         return r.deleteCandidates.count + r.pendingReviewCandidates.count
     }
 
+    private var quarantineCountForStatus: Int {
+        model.reconciliation?.heldByQuarantineCandidates.count ?? model.quarantineCount
+    }
+
+    private var earliestQuarantineEligible: Date? {
+        guard let live = model.reconciliation else { return nil }
+        let window = TimeInterval(live.quarantineDays * 86_400)
+        return live.heldByQuarantineCandidates.compactMap { asset -> Date? in
+            guard let confirmed = live.confirmedDeletedAt[asset.checksum] else { return nil }
+            return confirmed.addingTimeInterval(window)
+        }.min()
+    }
+
+
     // MARK: - Onboarding
 
     private var onboarding: some View {
@@ -132,9 +195,7 @@ public struct CairnAppRoot: View {
                 await model.actions.requestBackgroundRefresh()
             },
             onComplete: {
-                // Host is responsible for actually persisting the URL/key/settings.
-                // We just flip the route — the next render shows the initial
-                // scan screen (or main tabs if the scan has already happened).
+                model.activeTab = .status
                 model.needsOnboarding = false
             }
         )
@@ -162,7 +223,9 @@ public struct CairnAppRoot: View {
     private var initialScanRoute: some View {
         InitialScanScreen(
             total: model.syncProgress?.total ?? model.library.local,
-            hashed: model.syncProgress?.hashed ?? 0,
+            hashed: model.syncProgress?.hashed ?? model.library.indexed,
+            indexed: model.library.indexed,
+            deferredQueueCount: model.deferredQueue.count,
             isActive: model.isSyncing,
             startedAt: model.syncStartedAt,
             pausedElapsed: model.pausedSyncElapsedSeconds,
@@ -190,16 +253,44 @@ public struct CairnAppRoot: View {
     private var mainTabs: some View {
         VStack(spacing: 0) {
             currentTab
-            CairnTabBar(active: $model.activeTab)
-                // Keep the tab bar pinned to the bottom of the
-                // screen when the decimal pad pops up for an
-                // editable numeric field in Settings. Without
-                // this, iOS's keyboard safe-area pushes the tab
-                // bar up and the keyboard-toolbar Done button
-                // lands right on top of the Settings tab icon —
-                // visible in the report screenshot. Matches the
-                // standard iOS idiom where keyboards cover UI
-                // chrome while editing.
+                .id(model.activeTab.id)
+                .transition(
+                    tabSwitchWasSwipe && !reduceMotion
+                        ? .asymmetric(
+                            insertion: .move(edge: tabSwipeDirection == .leading ? .trailing : .leading),
+                            removal: .move(edge: tabSwipeDirection == .leading ? .leading : .trailing)
+                          )
+                        : .identity
+                )
+            CairnTabBar(active: Binding(
+                get: { model.activeTab },
+                set: { newTab in
+                    tabSwitchWasSwipe = false
+                    model.activeTab = newTab
+                }
+            ))
+                .contentShape(Rectangle())
+                .gesture(
+                    DragGesture(minimumDistance: 20, coordinateSpace: .local)
+                        .onEnded { value in
+                            let horizontal = value.translation.width
+                            guard abs(horizontal) > 20 else { return }
+                            let tabs = CairnTab.all
+                            guard let idx = tabs.firstIndex(of: model.activeTab) else { return }
+                            tabSwitchWasSwipe = true
+                            if horizontal < 0, idx + 1 < tabs.count {
+                                tabSwipeDirection = .leading
+                                withAnimation(.cairnSpringTab) {
+                                    model.activeTab = tabs[idx + 1]
+                                }
+                            } else if horizontal > 0, idx > 0 {
+                                tabSwipeDirection = .trailing
+                                withAnimation(.cairnSpringTab) {
+                                    model.activeTab = tabs[idx - 1]
+                                }
+                            }
+                        }
+                )
                 .ignoresSafeArea(.keyboard, edges: .bottom)
         }
         .task {
@@ -214,7 +305,7 @@ public struct CairnAppRoot: View {
                   !model.didAutoSyncThisSession
             else { return }
             model.didAutoSyncThisSession = true
-            startTrackedSync()
+            startTrackedSync(suppressErrors: true)
         }
     }
 
@@ -223,10 +314,12 @@ public struct CairnAppRoot: View {
     /// button is disabled while syncing, so in practice this just
     /// guards the auto-sync vs manual-sync race. `onComplete` fires
     /// after the sync finishes (success, error, or cancel) on MainActor.
-    private func startTrackedSync(onComplete: @escaping @MainActor () -> Void = {}) {
+    private func startTrackedSync(suppressErrors: Bool = false, onComplete: @escaping @MainActor () -> Void = {}) {
         activeSyncTask?.cancel()
         let task = Task { @MainActor in
+            let errorBefore = model.lastError
             try? await model.actions.requestSync()
+            if suppressErrors { model.lastError = errorBefore }
             onComplete()
         }
         activeSyncTask = task
@@ -256,13 +349,19 @@ public struct CairnAppRoot: View {
                 // surfaced as "Pending review: 2" on Status while
                 // the screen itself shows 1. Use the superset
                 // alone.
-                pendingReviewCount: model.reconciliation?.pendingReviewCandidates.count ?? 0,
+                pendingReviewCount: model.reconciliation?.pendingReviewCandidates.count ?? model.quarantineCount,
+                quarantineCount: quarantineCountForStatus,
+                earliestQuarantineEligible: earliestQuarantineEligible,
                 deletionBacklog: backlogCount,
                 backlogAlertThreshold: model.settings.deletionBacklogAlertThreshold,
                 syncToast: model.syncToast,
-                initialScanPending: !model.hasCompletedInitialScan,
+                initialScanPending: !model.hasCompletedInitialScan && !model.isSyncing,
                 isSyncing: model.isSyncing,
                 syncProgress: model.syncProgress.map { (hashed: $0.hashed, total: $0.total) },
+                missingPermissions: model.missingPermissions,
+                indexed: model.library.indexed,
+                deferredQueueCount: model.deferredQueue.count,
+                syncPhase: model.syncPhase,
                 onStartSync: {
                     presentDryRunSheet(forceTripped: model.appState == .thresholdTripped)
                 },
@@ -277,6 +376,16 @@ public struct CairnAppRoot: View {
                 },
                 onOpenPendingReview: {
                     model.presentedSheet = .pendingReview
+                },
+                onOpenDeleteQueue: {
+                    model.presentedSheet = .dryRun(forceTripped: model.appState == .thresholdTripped)
+                },
+                onOpenDeferredQueue: {
+                    Task { @MainActor in
+                        let entries = (try? await model.actions.loadDeferredEntries()) ?? []
+                        model.deferredQueueEntries = entries
+                        model.presentedSheet = .deferredQueue
+                    }
                 },
                 onResumeInitialScan: {
                     // Route back to the initial-scan screen. The
@@ -314,7 +423,27 @@ public struct CairnAppRoot: View {
                 onForceDrainDeferred: { Task { await model.actions.forceDrainDeferred() } },
                 isSyncing: model.isSyncing,
                 syncProgress: model.syncProgress.map { (hashed: $0.hashed, total: $0.total) },
-                onReplayOnboarding: { Task { await model.actions.replayOnboarding() } }
+                onReplayOnboarding: { Task { await model.actions.replayOnboarding() } },
+                onExportData: { scope in
+                    Task { @MainActor in
+                        do {
+                            let url = try await model.actions.exportData(scope)
+                            exportedFileURL = url
+                        } catch {
+                            model.lastError = "Export failed: \(error.localizedDescription)"
+                        }
+                    }
+                },
+                onImportData: { url, applySettings in
+                    Task { @MainActor in
+                        do {
+                            let result = try await model.actions.importData(url, applySettings)
+                            importResult = result
+                        } catch {
+                            model.lastError = "Import failed: \(error.localizedDescription)"
+                        }
+                    }
+                }
             )
         default:
             EmptyView()
@@ -389,7 +518,8 @@ public struct CairnAppRoot: View {
                     Task { @MainActor in
                         try? await model.actions.restore(assetIds, run.id)
                     }
-                }
+                },
+                serverURL: model.serverURL
             )
             .cairnTheme(palette)
         case .pendingReview:
@@ -433,11 +563,26 @@ public struct CairnAppRoot: View {
                         try? await model.actions.excludePending(checksums)
                     }
                 },
+                onDismiss: { filenames in
+                    Task { @MainActor in
+                        let checksums = checksumsForFilenames(filenames, in: model.reconciliation?.pendingReviewCandidates ?? [])
+                        try? await model.actions.dismissPending(checksums)
+                    }
+                },
                 onBulkExcludeOffload: {
                     Task { @MainActor in
                         try? await model.actions.bulkExcludeRecentOffload()
                     }
                 }
+            )
+            .cairnTheme(palette)
+        case .deferredQueue:
+            let ceilingMB = model.settings.iCloudMaxEverBytesMB
+            let ceilingBytes: Int64? = ceilingMB.flatMap { $0 > 0 ? Int64($0) * 1024 * 1024 : nil }
+            DeferredQueueSheet(
+                entries: model.deferredQueueEntries,
+                ceilingBytes: ceilingBytes,
+                onClose: { model.presentedSheet = nil }
             )
             .cairnTheme(palette)
         }
@@ -460,20 +605,14 @@ public struct CairnAppRoot: View {
 
     private func presentDryRunSheet(forceTripped: Bool) {
         // Run reconciliation first, then route based on what
-        // came back. Three post-sync outcomes:
+        // came back. Post-sync outcomes:
         //
-        //   1. `deleteCandidates` non-empty → present DryRunSheet
-        //      (the normal "confirm these trashes" flow).
-        //   2. `deleteCandidates` empty but `pendingReviewCandidates`
-        //      non-empty → route to PendingReview. Previously this
-        //      landed on a useless "Trash 0" dry-run page; instead
-        //      go straight to the screen that can act on the items
-        //      (approve / exclude / wait-out-quarantine).
-        //   3. Both empty → no-op. Status' "Library in sync" toast
-        //      handles the feedback.
-        //
-        // Preview environment always presents the sheet so fixture
-        // data renders without a real reconciliation round-trip.
+        //   1. `deleteCandidates` non-empty → present DryRunSheet.
+        //   2. Unconfirmed pending items (strict mode) → PendingReview.
+        //   3. Only quarantine items → no auto-present; the quarantine
+        //      badge in the sync card updates and the user taps in if
+        //      they want to act.
+        //   4. Both empty → no-op (Status toast handles feedback).
         startTrackedSync {
             let isPreview = ProcessInfo.processInfo.environment["XCODE_RUNNING_FOR_PREVIEWS"] == "1"
             if isPreview {
@@ -483,10 +622,9 @@ public struct CairnAppRoot: View {
             guard let live = model.reconciliation else { return }
             if !live.deleteCandidates.isEmpty {
                 model.presentedSheet = .dryRun(forceTripped: forceTripped)
-            } else if !live.pendingReviewCandidates.isEmpty {
+            } else if live.pendingReviewCandidates.count > live.heldByQuarantineCandidates.count {
                 model.presentedSheet = .pendingReview
             }
-            // Both empty → toast-only feedback, no sheet.
         }
     }
 

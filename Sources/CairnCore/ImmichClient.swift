@@ -114,6 +114,44 @@ public struct ImmichClient: Sendable {
         return try JSONDecoder().decode(PingResponse.self, from: data).res
     }
 
+    // MARK: - API key introspection
+
+    public struct ApiKeyInfo: Sendable, Codable {
+        public let id: String
+        public let name: String
+        public let permissions: [String]
+    }
+
+    public func apiKeyInfo() async throws -> ApiKeyInfo {
+        let req = try makeRequest(method: "GET", path: "api-keys/me")
+        let (data, resp) = try await session.data(for: req)
+        try Self.expectOK(resp, data: data)
+        return try JSONDecoder().decode(ApiKeyInfo.self, from: data)
+    }
+
+    /// Permissions cairn requires for full functionality. Declared once
+    /// so the UI, bootstrap check, and documentation stay in sync.
+    public static let requiredPermissions: [String] = [
+        "asset.read",
+        "asset.delete",
+        "asset.view",
+        "asset.download",
+        "tag.create",
+        "tag.read",
+        "tag.asset",
+    ]
+
+    /// Permissions that enhance functionality but aren't essential.
+    public static let optionalPermissions: [String] = [
+        "asset.statistics",
+    ]
+
+    public static func missingPermissions(granted: [String]) -> [String] {
+        let grantedSet = Set(granted)
+        if grantedSet.contains("all") { return [] }
+        return requiredPermissions.filter { !grantedSet.contains($0) }
+    }
+
     // MARK: - List assets (paginated)
 
     /// Streams every asset visible to the API key's user via
@@ -132,11 +170,13 @@ public struct ImmichClient: Sendable {
     public func listAllAssets(
         includeTrashed: Bool = false,
         visibility: AssetVisibility? = nil,
-        pageSize: Int = 1000
+        pageSize: Int = 1000,
+        maxRetries: Int = 2
     ) async throws -> [ServerAsset] {
         var out: [ServerAsset] = []
         var page = 1
         while true {
+            try Task.checkCancellation()
             var body: [String: Any] = [
                 "page": page,
                 "size": pageSize,
@@ -146,12 +186,24 @@ public struct ImmichClient: Sendable {
             if let visibility {
                 body["visibility"] = visibility.rawValue
             }
-            let result: SearchResponseDTO = try await postJSON(path: "search/metadata", jsonObject: body)
-            out.append(contentsOf: result.assets.items.map(\.asServerAsset))
-            guard let nextString = result.assets.nextPage, let nextPage = Int(nextString) else { break }
-            page = nextPage
+            var lastError: Error?
+            for attempt in 0...maxRetries {
+                do {
+                    let result: SearchResponseDTO = try await postJSON(path: "search/metadata", jsonObject: body)
+                    out.append(contentsOf: result.assets.items.map(\.asServerAsset))
+                    guard let nextString = result.assets.nextPage, let nextPage = Int(nextString) else { return out }
+                    page = nextPage
+                    lastError = nil
+                    break
+                } catch {
+                    lastError = error
+                    if attempt < maxRetries {
+                        try await Task.sleep(nanoseconds: UInt64((attempt + 1) * 1_000_000_000))
+                    }
+                }
+            }
+            if let lastError { throw lastError }
         }
-        return out
     }
 
     // MARK: - Server-side statistics (fast count)
@@ -383,11 +435,8 @@ struct AssetItemDTO: Decodable {
     let livePhotoVideoId: String?
     let isTrashed: Bool
     let originalFileName: String?
-    /// Immich returns `fileCreatedAt` as an ISO-8601 string on
-    /// every standard asset response. Decode via a separate
-    /// property that parses to Date so callers don't have to
-    /// know the wire format.
     let fileCreatedAt: String?
+    let thumbhash: String?
 
     /// Parse an ISO-8601 string that may or may not include
     /// fractional seconds. `ISO8601DateFormatter` is
@@ -413,7 +462,8 @@ struct AssetItemDTO: Decodable {
             livePhotoVideoId: livePhotoVideoId,
             isTrashed: isTrashed,
             originalFileName: originalFileName,
-            fileCreatedAt: created
+            fileCreatedAt: created,
+            thumbhash: thumbhash
         )
     }
 }

@@ -55,7 +55,7 @@ swift run cairn history list                             # server-side reconstru
 swift run cairn diagnose                                 # visibility classes + Live Photo integrity
 ```
 
-`cairn --help` enumerates every subcommand and flag. API key scopes needed: `asset.read`, `asset.delete`, `tag.create`, `tag.asset` — plus `tag.read` for `history` and `restore --file-name-matches`.
+`cairn --help` enumerates every subcommand and flag. API key scopes needed: `asset.read`, `asset.view`, `asset.download`, `asset.delete`, `tag.create`, `tag.asset` — plus `tag.read` for `history` and `restore --file-name-matches`.
 
 ## Safety model
 

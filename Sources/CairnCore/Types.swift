@@ -33,6 +33,9 @@ public struct ServerAsset: Hashable, Sendable, Codable {
     /// every Immich version's list endpoint; when present, flows
     /// into `TrashTarget` so run-detail rows show real dates.
     public let fileCreatedAt: Date?
+    /// Base64-encoded thumbhash from the Immich API. Decodes to a
+    /// small (~4×4) blurry placeholder image. ~28 bytes raw.
+    public let thumbhash: String?
 
     public init(
         id: String,
@@ -40,7 +43,8 @@ public struct ServerAsset: Hashable, Sendable, Codable {
         livePhotoVideoId: String? = nil,
         isTrashed: Bool = false,
         originalFileName: String? = nil,
-        fileCreatedAt: Date? = nil
+        fileCreatedAt: Date? = nil,
+        thumbhash: String? = nil
     ) {
         self.id = id
         self.checksum = checksum
@@ -48,6 +52,7 @@ public struct ServerAsset: Hashable, Sendable, Codable {
         self.isTrashed = isTrashed
         self.originalFileName = originalFileName
         self.fileCreatedAt = fileCreatedAt
+        self.thumbhash = thumbhash
     }
 }
 
