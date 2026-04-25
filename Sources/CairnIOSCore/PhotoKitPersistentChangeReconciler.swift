@@ -330,10 +330,18 @@ public final class PhotoKitPersistentChangeReconciler {
             try await everSeen.union(addedChecksums)
         }
 
-        // Updated: re-hash (user may have edited the asset → new checksums)
-        // and replace the cache entries. Added checksums also flow to
-        // ever-seen so they qualify as "new baseline" for reconciliation.
-        let updatedBatch = try await hashAssets(ids: updatedIds)
+        // Updated: PhotoKit's `updatedLocalIdentifiers` is noisy — it
+        // fires on metadata-only changes (favorites, hidden, album
+        // membership) that don't change pixel bytes. Filter to only
+        // ids whose `modificationDate` actually advanced past what we
+        // recorded last time. Without this, a build redeploy can
+        // trigger 2,000+ unnecessary re-hashes.
+        let staleUpdates = try await filterStaleUpdates(ids: updatedIds)
+        if updatedIds.count > 0 && staleUpdates.count != updatedIds.count {
+            let skipped = updatedIds.count - staleUpdates.count
+            hashLog.notice("[cairn.recon] skipped \(skipped, privacy: .public) update events with unchanged modDate")
+        }
+        let updatedBatch = try await hashAssets(ids: staleUpdates)
         var updatedChecksums: Set<Checksum> = []
         for (id, checksums) in updatedBatch.checksumsByID {
             try await hashStore.set(checksums, for: id)
@@ -758,6 +766,36 @@ public final class PhotoKitPersistentChangeReconciler {
         // computed — cached assets aren't deferred, they're already done.
         fresh.checksumsByID.merge(cached) { new, _ in new }
         return fresh
+    }
+
+    /// Filter the given updated-id set down to ids whose PhotoKit
+    /// `modificationDate` has actually advanced past the cached one.
+    /// PhotoKit emits update events for metadata-only changes
+    /// (favorites, hidden, album membership) that don't touch pixel
+    /// bytes — re-hashing those would waste time and iCloud bandwidth.
+    /// Ids missing from the cache or with no recorded modDate are
+    /// kept (treated as needing re-hash for safety).
+    private func filterStaleUpdates(ids: Set<String>) async throws -> Set<String> {
+        guard !ids.isEmpty else { return [] }
+        let fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: Array(ids), options: nil)
+        var currentDates: [String: Date] = [:]
+        currentDates.reserveCapacity(fetchResult.count)
+        fetchResult.enumerateObjects { asset, _, _ in
+            if let date = asset.modificationDate {
+                currentDates[asset.localIdentifier] = date
+            }
+        }
+        var stale: Set<String> = []
+        stale.reserveCapacity(ids.count)
+        for id in ids {
+            let cachedDate = try? await hashStore.modificationDate(for: id)
+            let currentDate = currentDates[id]
+            if let cachedDate, let currentDate, cachedDate == currentDate {
+                continue
+            }
+            stale.insert(id)
+        }
+        return stale
     }
 
     /// Hash specific assets by local identifier. Identifiers PhotoKit
