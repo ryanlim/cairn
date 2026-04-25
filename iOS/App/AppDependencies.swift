@@ -278,7 +278,19 @@ final class AppDependencies {
         }
 
         Self.migrateFromLegacyIfNeeded(serverURL: url)
-        try? activateServer(url: url, apiKey: apiKey)
+        do {
+            try activateServer(url: url, apiKey: apiKey)
+        } catch {
+            // SwiftData container creation failed and the in-memory
+            // fallback in `activateServer` already trapped, OR the
+            // function itself doesn't currently throw (the `try?` was
+            // legacy). Either way, log so a future failure surfaces
+            // somewhere, and fall back to onboarding.
+            syncLog.error("[cairn.boot] activateServer failed: \(String(describing: error), privacy: .public)")
+            model.needsOnboarding = true
+            model.isBootstrapping = false
+            return
+        }
 
         #if DEBUG
         if ProcessInfo.processInfo.environment["CAIRN_RESET"] == "1" {
@@ -778,6 +790,13 @@ final class AppDependencies {
                     effectiveStatus = await PHPhotoLibrary.requestAuthorization(for: .readWrite)
                 } else {
                     effectiveStatus = photoStatus
+                }
+                if effectiveStatus == .authorized {
+                    // Photos was just (or is now) granted. The bootstrap-
+                    // time observer registration silently skipped if auth
+                    // wasn't granted yet, so register here to catch the
+                    // post-grant case.
+                    await MainActor.run { self.registerPhotoLibraryObserver() }
                 }
                 guard effectiveStatus == .authorized else {
                     await MainActor.run {
@@ -1304,6 +1323,7 @@ final class AppDependencies {
                     self.tokenStore = nil
                     self.thumbnailStore = nil
                     self.journal = nil
+                    self.serverChecksumSet = nil
                     self.model.needsOnboarding = true
                     self.model.apiKey = ""
                     self.model.apiKeyMasked = ""
