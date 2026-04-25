@@ -33,6 +33,12 @@ public protocol LocalHashStore: Sendable {
     /// `snapshot().count` for stores that don't override it.
     func indexedCount() async throws -> Int
 
+    /// Just the keys, no checksum values. Cheap alternative to
+    /// `snapshot()` for set-membership work (e.g. orphan detection).
+    /// Default impl falls back to `snapshot().keys`; concrete stores
+    /// with a cheaper aggregate query should override.
+    func allLocalIdentifiers() async throws -> Set<String>
+
     /// Checksums cached for a specific identifier. Empty set when unknown.
     func checksums(for localIdentifier: String) async throws -> Set<Checksum>
 
@@ -76,5 +82,11 @@ public extension LocalHashStore {
     /// concrete stores with an aggregate-query path should override.
     func indexedCount() async throws -> Int {
         try await snapshot().keys.count
+    }
+
+    /// Fallback implementation of `allLocalIdentifiers()`. Same caveat
+    /// as `indexedCount`'s fallback — concrete stores should override.
+    func allLocalIdentifiers() async throws -> Set<String> {
+        Set(try await snapshot().keys)
     }
 }

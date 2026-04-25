@@ -524,6 +524,21 @@ public actor SwiftDataLocalHashStore: LocalHashStore {
         return seen.count
     }
 
+    /// Just the keys — same shape as `snapshot().keys` but doesn't
+    /// materialize the checksum set per row. Used by the orphan
+    /// sweep where we only need set-membership over identifiers, not
+    /// the actual hashes. Materially faster than `snapshot()` for
+    /// libraries with thousands of entries.
+    public func allLocalIdentifiers() async throws -> Set<String> {
+        let rows = try context.fetch(FetchDescriptor<StoredLocalHashEntry>())
+        var ids = Set<String>()
+        ids.reserveCapacity(rows.count)
+        for row in rows {
+            ids.insert(row.localIdentifier)
+        }
+        return ids
+    }
+
     public func checksums(for localIdentifier: String) async throws -> Set<Checksum> {
         let descriptor = FetchDescriptor<StoredLocalHashEntry>(
             predicate: #Predicate<StoredLocalHashEntry> { $0.localIdentifier == localIdentifier }

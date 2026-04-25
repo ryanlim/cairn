@@ -1398,8 +1398,10 @@ public final class PhotoKitPersistentChangeReconciler {
         liveIds.reserveCapacity(fetch.count)
         fetch.enumerateObjects { asset, _, _ in liveIds.insert(asset.localIdentifier) }
 
-        let cache = try await hashStore.snapshot()
-        let cacheIds = Set(cache.keys)
+        // Use the keys-only fetch — we don't need the actual checksums
+        // here, just set-membership. On 7k+ libraries this saves a
+        // materially expensive load.
+        let cacheIds = try await hashStore.allLocalIdentifiers()
         // Candidate orphans = cache ids that:
         //  - aren't in the live library (so really gone), AND
         //  - aren't already accounted for by the explicit delete
@@ -1419,11 +1421,12 @@ public final class PhotoKitPersistentChangeReconciler {
             return ([], [])
         }
 
+        // Fetch checksums for just the orphan ids — much smaller set
+        // than the full library.
         var recoveredChecksums: Set<Checksum> = []
         for id in orphans {
-            if let cks = cache[id] {
-                recoveredChecksums.formUnion(cks)
-            }
+            let cks = try await hashStore.checksums(for: id)
+            recoveredChecksums.formUnion(cks)
         }
 
         let sample = orphans.prefix(3).map { String($0.prefix(12)) + "…" }.joined(separator: ", ")
