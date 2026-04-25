@@ -8,7 +8,7 @@ import CairnCore
 ///   1. Immich server — URL, API key (with Reveal/Hide + Copy + auto-hide),
 ///      connection status.
 ///   2. Safety rails — percent threshold slider, count floor, dry-run toggle,
-///      deletion-strictness picker (Wave 4), excluded-assets row.
+///      deletion-strictness picker, excluded-assets row.
 ///   3. Notifications — abort alerts, verbose journal.
 ///   4. Permissions — Photos access, background refresh.
 ///   5. Appearance — palette editor entry point.
@@ -659,7 +659,7 @@ private struct ConnectionPill: View {
 
 // MARK: - Strictness picker row
 
-/// Wave 4 segmented picker for `DeletionStrictness`. The copy below the
+/// Segmented picker for `DeletionStrictness`. The copy below the
 /// picker is our own (the prototype was built before this landed) and is
 /// kept short and factual — matches the existing sysadmin-tool tone.
 private struct StrictnessRow: View {
@@ -710,7 +710,7 @@ private struct StrictnessRow: View {
 
 // MARK: - Quarantine window row
 
-/// Wave 4 slider for `CairnSettings.quarantineDays`. Thin wrapper over
+/// Slider for `CairnSettings.quarantineDays`. Thin wrapper over
 /// `SliderInputRow` that adapts the `Int` binding to Double and formats
 /// `0` as "Off" (the sentinel that collapses the held-by-quarantine
 /// bucket entirely).

@@ -1,11 +1,10 @@
 import SwiftUI
 import CairnCore
 
-/// Wave 4 pending-review surface. Not a direct port from the prototype —
-/// the prototype predates the positive-deletion signal — but holds to the
-/// prototype's design language: `AppHeader`, `KeylineSection`, `CairnCard`,
-/// `MockAssetThumb`, `Callout`, per-row bordered buttons that match
-/// `ExcludedScreen`'s "Remove" chip.
+/// Pending-review surface. Holds to the prototype's design language:
+/// `AppHeader`, `KeylineSection`, `CairnCard`, `MockAssetThumb`,
+/// `Callout`, per-row bordered buttons that match `ExcludedScreen`'s
+/// "Remove" chip.
 ///
 /// Content:
 ///   - Mass-offload banner at the top when the last scan's burst exceeds

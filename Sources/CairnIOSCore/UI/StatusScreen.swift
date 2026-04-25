@@ -42,7 +42,7 @@ public struct StatusScreen: View {
     public let journalTail: [CairnFixtures.JournalTailEntry]
     public let serverHost: String
     public let maxDeletePercent: Double
-    /// Wave 4: total count of candidates awaiting the user's call (held +
+    /// Total count of candidates awaiting the user's call (held +
     /// unconfirmed). When > 0 the screen surfaces a compact pending-review
     /// card directly below the sync card.
     public let pendingReviewCount: Int

@@ -428,13 +428,13 @@ public struct CairnAppActions: Sendable {
     /// User removed a checksum from the allowlist via Excluded screen.
     public var unexclude: @Sendable (_ checksums: [String]) async throws -> Void
 
-    /// Wave 4: user approved a specific set of held/unconfirmed pending-
-    /// review candidates for immediate trashing — bypasses the rest of
-    /// the quarantine wait. Host translates checksums → asset IDs and
+    /// User approved a specific set of held/unconfirmed pending-review
+    /// candidates for immediate trashing — bypasses the rest of the
+    /// quarantine wait. Host translates checksums → asset IDs and
     /// invokes `TrashOrchestrator.run` on just this subset.
     public var approvePending: @Sendable (_ checksums: [String]) async throws -> Void
 
-    /// Wave 4: user marked a pending-review subset as "don't trash these"
+    /// User marked a pending-review subset as "don't trash these"
     /// — routes them into `ExclusionStore` so every future run skips them.
     /// Also removes them from `ConfirmedDeletedStore` (un-confirms) so
     /// they stop showing up in pending-review regardless.
@@ -454,7 +454,7 @@ public struct CairnAppActions: Sendable {
     /// whether the payload's settings overwrite the current ones.
     public var importData: @Sendable (_ fileURL: URL, _ applySettings: Bool) async throws -> CairnImportResult
 
-    /// Wave 4: user tapped the mass-offload banner's "bulk exclude"
+    /// User tapped the mass-offload banner's "bulk exclude"
     /// affordance — every checksum confirmed-deleted in the recent burst
     /// is moved to the exclusion list. Host computes the set by filtering
     /// `confirmedDeleted.snapshot()` for entries confirmed within the last

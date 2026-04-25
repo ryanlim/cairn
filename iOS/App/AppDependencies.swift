@@ -1139,10 +1139,12 @@ final class AppDependencies {
                     processedServers += 1
 
                     let newChecksums = Set(serverPayload.everSeen.map { Checksum(base64: $0) })
-                    let existingCount = try await everSeen.snapshot().count
-                    try await everSeen.union(newChecksums)
-                    let afterCount = try await everSeen.snapshot().count
-                    totalEverSeenAdded += afterCount - existingCount
+                    let existing = try await everSeen.snapshot()
+                    let actuallyNew = newChecksums.subtracting(existing)
+                    if !actuallyNew.isEmpty {
+                        try await everSeen.union(actuallyNew)
+                    }
+                    totalEverSeenAdded += actuallyNew.count
 
                     let existingExclusions = try await exclusions.snapshot()
                     var newExclusions: [Checksum: ExclusionMetadata] = [:]
