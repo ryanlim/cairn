@@ -7,6 +7,16 @@ import CairnIOSCore
 
 private let syncLog = Logger(subsystem: "app.cairn.ios", category: "sync")
 
+/// Bridges `PHPhotoLibraryChangeObserver` (NSObject protocol) into a
+/// closure-based callback we can wire from `AppDependencies`. Holds a
+/// strong reference to the observer so PhotoKit keeps delivering events;
+/// nilled out on sign-out.
+private final class PhotoLibraryChangeBridge: NSObject, PHPhotoLibraryChangeObserver, @unchecked Sendable {
+    let onChange: @Sendable () -> Void
+    init(onChange: @escaping @Sendable () -> Void) { self.onChange = onChange }
+    func photoLibraryDidChange(_ change: PHChange) { onChange() }
+}
+
 @MainActor
 @Observable
 final class AppDependencies {
@@ -96,6 +106,12 @@ final class AppDependencies {
 
     private(set) var immichClient: ImmichClient?
 
+    /// Foreground PhotoKit change observer. Hashes inserts immediately
+    /// when cairn is open so a take→delete in the same session doesn't
+    /// lose the photo's checksum (and therefore the chance to propagate
+    /// the deletion to the server).
+    private var photoLibraryBridge: PhotoLibraryChangeBridge?
+    private var pendingForegroundSyncTask: Task<Void, Never>?
 
     /// Server-side checksum set, populated early in the sync so the
     /// hash-progress callback can compute a running "matched" count.
@@ -284,7 +300,44 @@ final class AppDependencies {
         await refreshRunsList()
 
         rewireActions()
+        registerPhotoLibraryObserver()
         model.isBootstrapping = false
+    }
+
+    /// Register a foreground PhotoKit change observer. When the photo
+    /// library changes (insert, update, delete), schedule a debounced
+    /// incremental sync so new photos get hashed within seconds —
+    /// closing the take→quickly-delete window without waiting for
+    /// background refresh.
+    private func registerPhotoLibraryObserver() {
+        guard photoLibraryBridge == nil else { return }
+        guard PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized else { return }
+        let bridge = PhotoLibraryChangeBridge { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.scheduleForegroundSync()
+            }
+        }
+        PHPhotoLibrary.shared().register(bridge)
+        photoLibraryBridge = bridge
+        syncLog.info("[cairn.boot] photo library observer registered")
+    }
+
+    private func unregisterPhotoLibraryObserver() {
+        guard let bridge = photoLibraryBridge else { return }
+        PHPhotoLibrary.shared().unregisterChangeObserver(bridge)
+        photoLibraryBridge = nil
+    }
+
+    /// Debounced sync trigger from the change observer. Coalesces bursts
+    /// of events (e.g. import of 50 photos firing 50 changes) into one
+    /// sync run.
+    private func scheduleForegroundSync() {
+        pendingForegroundSyncTask?.cancel()
+        pendingForegroundSyncTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            guard let self, !Task.isCancelled, !self.model.isSyncing else { return }
+            try? await self.model.actions.requestSync()
+        }
     }
 
     // MARK: - Scheduled scan (called by BGAppRefreshTask)
@@ -1142,7 +1195,10 @@ final class AppDependencies {
                         }
                         await self.refreshExcludedChecksums()
 
-                        await MainActor.run { self.rewireActions() }
+                        await MainActor.run {
+                            self.rewireActions()
+                            self.registerPhotoLibraryObserver()
+                        }
                     }
                     return SetupScreen.ServerVerifyResult(success: true, assetCount: assets.count, errorMessage: nil)
                 } catch {
@@ -1199,6 +1255,7 @@ final class AppDependencies {
                 await self?.thumbnailLoader?.clearCache()
                 await MainActor.run {
                     guard let self else { return }
+                    self.unregisterPhotoLibraryObserver()
                     self.immichClient = nil
                     self.thumbnailLoader = nil
                     self.currentPartitionKey = nil

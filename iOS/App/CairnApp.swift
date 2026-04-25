@@ -193,12 +193,15 @@ struct CairnApp: App {
         }
     }
 
-    /// Submit the next `BGAppRefreshTaskRequest` with a ~4h earliest-begin
-    /// hint. iOS treats the date as "no earlier than" and ultimately
-    /// schedules at its discretion based on user habits.
+    /// Submit the next `BGAppRefreshTaskRequest` with a ~5min earliest-begin
+    /// hint, matching Immich's mobile app cadence. iOS treats the date as
+    /// "no earlier than" and ultimately schedules at its discretion — a
+    /// more aggressive ask gets us more BG slots, important for catching
+    /// the take→quickly-delete pattern without relying on the user
+    /// opening cairn between those events.
     private func scheduleNextBackgroundRefresh() {
         let request = BGAppRefreshTaskRequest(identifier: Self.backgroundRefreshIdentifier)
-        request.earliestBeginDate = Date(timeIntervalSinceNow: 4 * 60 * 60)
+        request.earliestBeginDate = Date(timeIntervalSinceNow: 5 * 60)
         try? BGTaskScheduler.shared.submit(request)
     }
 
