@@ -601,15 +601,34 @@ public final class PhotoKitPersistentChangeReconciler {
             try? await deferredStore.remove(stale)
         }
 
+        // Skip assets that were already hashed in a prior run (e.g.
+        // a previous "Hash now" tap that succeeded but was cancelled
+        // before the bulk deferred-queue removal completed). Match by
+        // modificationDate so PhotoKit edits trigger a re-hash. This
+        // avoids re-downloading large iCloud assets every retry.
+        var alreadyHashed: Set<String> = []
+        for asset in assets {
+            let cached = try await hashStore.checksums(for: asset.localIdentifier)
+            guard !cached.isEmpty else { continue }
+            let cachedDate = try? await hashStore.modificationDate(for: asset.localIdentifier)
+            if let cachedDate, let currentDate = asset.modificationDate, cachedDate == currentDate {
+                alreadyHashed.insert(asset.localIdentifier)
+            }
+        }
+        if !alreadyHashed.isEmpty {
+            try? await deferredStore.remove(alreadyHashed)
+        }
+        let assetsToHash = assets.filter { !alreadyHashed.contains($0.localIdentifier) }
+
         // Pass `reportProgressWithTotal` so `onHashProgress` actually
         // fires during drains. Without it, `library.indexed` wouldn't
         // tick (the callback is the only code path that reads
         // `indexedCount()` live) and `syncProgress` would stay nil —
         // user sees "Syncing…" with no progress hint for minutes.
         let batch = try await hashAssets(
-            assets: assets,
+            assets: assetsToHash,
             softLimitMode: softLimitMode,
-            reportProgressWithTotal: assets.count
+            reportProgressWithTotal: assetsToHash.count
         )
 
         // Union freshly-hashed checksums into ever-seen — matches the
@@ -1055,6 +1074,13 @@ public final class PhotoKitPersistentChangeReconciler {
                         for: result.assetID,
                         modificationDate: result.modificationDate
                     )
+                    // Also drop the deferred-queue entry per-asset.
+                    // The end-of-batch bulk remove is too late if the
+                    // task gets cancelled mid-drain — large iCloud
+                    // downloads are exactly when this happens.
+                    if let deferredStore {
+                        try? await deferredStore.remove([result.assetID])
+                    }
                 }
 
                 totalHashMillis += result.elapsedMs
