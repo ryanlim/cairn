@@ -167,7 +167,13 @@ public struct CairnAppRoot: View {
     }
 
     private var quarantineCountForStatus: Int {
-        model.reconciliation?.heldByQuarantineCandidates.count ?? model.quarantineCount
+        // Use only the reconciliation result here — `model.quarantineCount`
+        // counts raw ConfirmedDeletedStore entries (including orphan
+        // sweep finds that may not be on the server), so falling back
+        // to it produces a misleading number that flickers down once
+        // reconciliation completes. 0-as-fallback means "no badge"
+        // until we have a server-matched count, which is honest.
+        model.reconciliation?.heldByQuarantineCandidates.count ?? 0
     }
 
     private var earliestQuarantineEligible: Date? {
@@ -356,7 +362,7 @@ public struct CairnAppRoot: View {
                 // surfaced as "Pending review: 2" on Status while
                 // the screen itself shows 1. Use the superset
                 // alone.
-                pendingReviewCount: model.reconciliation?.pendingReviewCandidates.count ?? model.quarantineCount,
+                pendingReviewCount: model.reconciliation?.pendingReviewCandidates.count ?? 0,
                 quarantineCount: quarantineCountForStatus,
                 earliestQuarantineEligible: earliestQuarantineEligible,
                 deletionBacklog: backlogCount,
