@@ -1,6 +1,6 @@
 import Foundation
 
-public struct CairnExportPayload: Codable, Sendable {
+public struct CairnExportPayload: Codable, Sendable, Equatable {
     public static let currentVersion = 1
 
     public let version: Int
@@ -22,7 +22,7 @@ public struct CairnExportPayload: Codable, Sendable {
         self.settings = settings
     }
 
-    public struct ServerPayload: Codable, Sendable {
+    public struct ServerPayload: Codable, Sendable, Equatable {
         public let partitionKey: String
         public let normalizedURL: String
         public let everSeen: [String]  // sorted base64 checksums
@@ -43,7 +43,7 @@ public struct CairnExportPayload: Codable, Sendable {
             self.journal = journal
         }
 
-        public struct ExclusionRecord: Codable, Sendable {
+        public struct ExclusionRecord: Codable, Sendable, Equatable {
             public let checksum: String
             public let addedAt: Date
             public let fromRunId: String?

@@ -12,10 +12,12 @@ actor FakeWriter: ImmichWriter {
     var nextTagId = "tag-uuid-1"
     var failTrashWith: Error? = nil
     var failTagWith: Error? = nil
+    var failBulkTagWith: Error? = nil
     var failRestoreWith: Error? = nil
 
     func setFailTrash(_ error: Error?) { failTrashWith = error }
     func setFailTag(_ error: Error?) { failTagWith = error }
+    func setFailBulkTag(_ error: Error?) { failBulkTagWith = error }
     func setFailRestore(_ error: Error?) { failRestoreWith = error }
 
     func upsertTag(value: String) async throws -> ImmichTag {
@@ -25,6 +27,7 @@ actor FakeWriter: ImmichWriter {
     }
 
     func bulkTagAssets(tagIds: [String], assetIds: [String]) async throws {
+        if let err = failBulkTagWith { throw err }
         taggedBatches.append((tagIds, assetIds))
     }
 

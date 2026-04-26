@@ -134,6 +134,200 @@ struct TrashOrchestratorTests {
     /// and the server rejected it," which is the whole point of the
     /// breadcrumb. The journal's `trashFailed` event is the local-side
     /// mirror of the same fact.
+    /// `upsertTag` is the first writer call. If it 500s, no tag exists on
+    /// the server, no assets are tagged, and nothing gets trashed. The
+    /// run summary resolves to `.aborted` via `runAborted` because the
+    /// orchestrator never reached a more specific terminal.
+    ///
+    /// Forensically: a `runStarted` + `planningTrash` + `runAborted`
+    /// triad with no breadcrumb on the server tells future-cairn (or
+    /// the user reading `cairn journal show`) "this run never touched
+    /// Immich state — safe to retry."
+    @Test("upsertTag failure: no tag, no trash, journal has runAborted (no tagApplied / trashFailed / runCompleted)")
+    func upsertTagFailureAbortsBeforeAnyServerWrite() async throws {
+        let writer = FakeWriter()
+        await writer.setFailTag(FakeError(message: "tag-500"))
+        let (journal, path) = tempJournal()
+        defer { try? FileManager.default.removeItem(at: path) }
+
+        let orch = TrashOrchestrator(writer: writer, journal: journal)
+        await #expect(throws: FakeError.self) {
+            _ = try await orch.run(
+                runId: "TAG-FAIL",
+                candidates: [asset("a1", "ck1"), asset("a2", "ck2")],
+                assetsInPurview: 100,
+                dryRun: false
+            )
+        }
+
+        // No server-side state: tag never landed, nothing tagged,
+        // nothing trashed.
+        #expect(await writer.upsertedTagValues.isEmpty)
+        #expect(await writer.taggedBatches.isEmpty)
+        #expect(await writer.trashedBatches.isEmpty)
+
+        let entries = try await journal.readAll()
+        let events = entries.map { String(describing: $0.event) }
+        #expect(events.contains { $0.hasPrefix("runStarted") })
+        #expect(events.contains { $0.hasPrefix("planningTrash") })
+        #expect(events.contains { $0.hasPrefix("runAborted") })
+        #expect(!events.contains { $0.hasPrefix("tagApplied") })
+        #expect(!events.contains { $0.hasPrefix("trashSucceeded") })
+        #expect(!events.contains { $0.hasPrefix("trashFailed") })
+        #expect(!events.contains { $0.hasPrefix("runCompleted") })
+    }
+
+    /// `bulkTagAssets` runs after `upsertTag`. If it 500s the tag exists
+    /// on the server (an orphan) but no assets are tagged with it and
+    /// nothing is trashed. Journal records `runAborted`, and notably
+    /// NO `tagApplied` event — that event is only written after a
+    /// successful `bulkTagAssets` call. This means `cairn history` /
+    /// restore replay won't be misled into thinking the breadcrumb
+    /// was wired up.
+    ///
+    /// Side effect to be aware of: a stale `cairn/v1/run/<id>` tag is
+    /// left on the server with zero attached assets. It's harmless
+    /// (lookups by run-id surface no assets, restore is a no-op) but
+    /// it's a known footprint of this failure mode. Not currently
+    /// cleaned up.
+    @Test("bulkTagAssets failure: tag exists on server but no tagApplied / trashSucceeded; journal has runAborted")
+    func bulkTagAssetsFailureLeavesOrphanTagOnServer() async throws {
+        let writer = FakeWriter()
+        await writer.setFailBulkTag(FakeError(message: "bulk-tag-500"))
+        let (journal, path) = tempJournal()
+        defer { try? FileManager.default.removeItem(at: path) }
+
+        let orch = TrashOrchestrator(writer: writer, journal: journal)
+        await #expect(throws: FakeError.self) {
+            _ = try await orch.run(
+                runId: "BULK-FAIL",
+                candidates: [asset("a1", "ck1"), asset("a2", "ck2")],
+                assetsInPurview: 100,
+                dryRun: false
+            )
+        }
+
+        // upsertTag landed (the tag now exists on the server) but the
+        // bulk-tag call threw, so taggedBatches is empty and nothing
+        // was trashed.
+        #expect(await writer.upsertedTagValues == ["cairn/v1/run/BULK-FAIL"])
+        #expect(await writer.taggedBatches.isEmpty)
+        #expect(await writer.trashedBatches.isEmpty)
+
+        let entries = try await journal.readAll()
+        let events = entries.map { String(describing: $0.event) }
+        #expect(events.contains { $0.hasPrefix("runStarted") })
+        #expect(events.contains { $0.hasPrefix("planningTrash") })
+        #expect(events.contains { $0.hasPrefix("runAborted") })
+        #expect(!events.contains { $0.hasPrefix("tagApplied") })
+        #expect(!events.contains { $0.hasPrefix("trashSucceeded") })
+        #expect(!events.contains { $0.hasPrefix("trashFailed") })
+        #expect(!events.contains { $0.hasPrefix("runCompleted") })
+    }
+
+    /// Pin the journal-event ordering for an upsertTag failure: the
+    /// outer-catch `runAborted` lands AFTER `planningTrash`, with
+    /// nothing in between. Important because `JournalReader` uses
+    /// event order to resolve a run's terminal status — an out-of-
+    /// order or duplicated `runAborted` would mask earlier diagnostics.
+    @Test("upsertTag failure: journal event order is runStarted → planningTrash → runAborted, exactly once each")
+    func upsertTagFailureEventOrderIsExact() async throws {
+        let writer = FakeWriter()
+        await writer.setFailTag(FakeError(message: "tag-500"))
+        let (journal, path) = tempJournal()
+        defer { try? FileManager.default.removeItem(at: path) }
+
+        let orch = TrashOrchestrator(writer: writer, journal: journal)
+        _ = try? await orch.run(
+            runId: "ORDER",
+            candidates: [asset("a1", "ck1")],
+            assetsInPurview: 50,
+            dryRun: false
+        )
+
+        let entries = try await journal.readAll()
+        let kinds: [String] = entries.map {
+            switch $0.event {
+            case .runStarted: return "runStarted"
+            case .planningTrash: return "planningTrash"
+            case .tagApplied: return "tagApplied"
+            case .trashSucceeded: return "trashSucceeded"
+            case .trashFailed: return "trashFailed"
+            case .runCompleted: return "runCompleted"
+            case .runAborted: return "runAborted"
+            default: return "other"
+            }
+        }
+        #expect(kinds == ["runStarted", "planningTrash", "runAborted"])
+    }
+
+    /// Sister to `upsertTagFailureEventOrderIsExact`: same ordering
+    /// invariant, but with the failure one step further along the
+    /// pipeline. The tag exists on the server but `bulkTagAssets`
+    /// threw, so the journal still resolves to `runAborted` (not
+    /// `tagApplied` — that event is only emitted after a successful
+    /// bulk tag call).
+    @Test("bulkTagAssets failure: journal event order is runStarted → planningTrash → runAborted, exactly once each")
+    func bulkTagAssetsFailureEventOrderIsExact() async throws {
+        let writer = FakeWriter()
+        await writer.setFailBulkTag(FakeError(message: "bulk-tag-500"))
+        let (journal, path) = tempJournal()
+        defer { try? FileManager.default.removeItem(at: path) }
+
+        let orch = TrashOrchestrator(writer: writer, journal: journal)
+        _ = try? await orch.run(
+            runId: "ORDER-BULK",
+            candidates: [asset("a1", "ck1")],
+            assetsInPurview: 50,
+            dryRun: false
+        )
+
+        let entries = try await journal.readAll()
+        let kinds: [String] = entries.map {
+            switch $0.event {
+            case .runStarted: return "runStarted"
+            case .planningTrash: return "planningTrash"
+            case .tagApplied: return "tagApplied"
+            case .trashSucceeded: return "trashSucceeded"
+            case .trashFailed: return "trashFailed"
+            case .runCompleted: return "runCompleted"
+            case .runAborted: return "runAborted"
+            default: return "other"
+            }
+        }
+        #expect(kinds == ["runStarted", "planningTrash", "runAborted"])
+    }
+
+    /// `runAborted`'s `reason` string is forensically useful — it
+    /// surfaces as the abort reason in `RunSummary` and is what the
+    /// CLI prints when a user runs `cairn journal show --last`.
+    /// Pin that the underlying error's `description` makes it into
+    /// the reason string, so a server message ("bulk-tag-500") stays
+    /// recoverable from the journal alone.
+    @Test("bulkTagAssets failure: runAborted.reason carries the underlying error description")
+    func bulkTagAssetsFailureReasonContainsErrorMessage() async throws {
+        let writer = FakeWriter()
+        await writer.setFailBulkTag(FakeError(message: "bulk-tag-500"))
+        let (journal, path) = tempJournal()
+        defer { try? FileManager.default.removeItem(at: path) }
+
+        let orch = TrashOrchestrator(writer: writer, journal: journal)
+        _ = try? await orch.run(
+            runId: "REASON",
+            candidates: [asset("a1", "ck1")],
+            assetsInPurview: 50,
+            dryRun: false
+        )
+
+        let entries = try await journal.readAll()
+        let aborted = entries.compactMap { entry -> String? in
+            if case .runAborted(let reason) = entry.event { return reason }
+            return nil
+        }
+        #expect(aborted.count == 1)
+        #expect(aborted.first?.contains("bulk-tag-500") == true)
+    }
+
     @Test("trash failure after tag: cairn/v1 tag and tagApplied remain, trashFailed is the terminal")
     func trashFailureLeavesBreadcrumbOnServer() async throws {
         let writer = FakeWriter()
