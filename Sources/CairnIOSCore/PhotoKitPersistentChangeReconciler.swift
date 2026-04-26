@@ -47,6 +47,21 @@ private let hashLog = Logger(subsystem: "app.cairn.ios", category: "hash")
 @MainActor
 public final class PhotoKitPersistentChangeReconciler {
 
+    /// Why the full-enumeration path ran. Distinguishes "no prior state"
+    /// (first install, post-rescan, post-clear — fine, no deletions could
+    /// have been missed) from "we had state but lost it" (token expired
+    /// or unarchive failed — any deletions accumulated during the dormant
+    /// window are now negative-signal-only, with no quarantine clock).
+    /// Callers gate review behavior on this distinction.
+    public enum FullEnumerationCause: Sendable, Equatable {
+        /// No saved token (fresh install, post-clear, post-rescan).
+        case firstRun
+        /// Saved token couldn't be used: PhotoKit reported it expired,
+        /// or the archived bytes failed to unarchive (typically OS
+        /// upgrade changing the format).
+        case tokenExpired
+    }
+
     /// Outcome of a single scan. Callers surface these fields in the
     /// journal summary and Status-screen stats.
     public struct Result: Sendable, Equatable {
@@ -60,6 +75,12 @@ public final class PhotoKitPersistentChangeReconciler {
         /// True if the full-enumeration path ran — first scan, no saved
         /// token, or token expired. Drives the "rebuilding index" UI.
         public let didFullEnumeration: Bool
+        /// When `didFullEnumeration` is true, why it ran. `nil` for
+        /// incremental scans. The caller uses `.tokenExpired` as a
+        /// signal to gate this pass's deletion candidates for review,
+        /// since a lost token means any accumulated deletions arrive
+        /// without a positive signal or quarantine clock.
+        public let fullEnumerationCause: FullEnumerationCause?
         /// Count of `PHPersistentChange` events consumed. Always zero
         /// on a full-enumeration run.
         public let changeEventsProcessed: Int
@@ -88,11 +109,32 @@ public final class PhotoKitPersistentChangeReconciler {
         /// on this scan. Zero when nothing was queued or when no queued
         /// item fit under the current soft limit.
         public let drainedFromQueue: Int
+        /// Every checksum hashed during this scan — fresh inserts and
+        /// stale-update re-hashes on the incremental path; the full
+        /// enumeration set on the full path. Callers intersect this
+        /// against the recent-trash journal index to detect "user
+        /// restored locally what cairn already trashed on Immich"
+        /// before the server's 30-day hard-delete clock fires.
+        ///
+        /// Defaults to `[]` so the existing test fakes that omit it
+        /// keep compiling.
+        public let recentlyObservedChecksums: Set<Checksum>
+
+        /// For each checksum that flowed into `removedChecksums` during
+        /// this scan via a known `localIdentifier` — either the cache
+        /// lookup at delete time or the EditRetirementStore firstObserved
+        /// anchor — records the source identifier. Lets the UI link the
+        /// resulting quarantine entry back to the same logical photo as
+        /// any inferred orphan that came in via OrphanReconciler matching
+        /// the same localIdentifier. `[:]` for full-enumeration paths
+        /// and for scans with no deletes.
+        public let sourceLocalIdentifierByChecksum: [Checksum: String]
 
         public init(
             newlyConfirmedDeleted: Set<Checksum>,
             unconfirmedByRestoration: Set<Checksum>,
             didFullEnumeration: Bool,
+            fullEnumerationCause: FullEnumerationCause? = nil,
             changeEventsProcessed: Int,
             deferredLarge: Int = 0,
             deferredLargeBytes: Int64 = 0,
@@ -100,11 +142,14 @@ public final class PhotoKitPersistentChangeReconciler {
             deferredEmpty: Int = 0,
             aboveHardCeiling: Int = 0,
             aboveHardCeilingBytes: Int64 = 0,
-            drainedFromQueue: Int = 0
+            drainedFromQueue: Int = 0,
+            recentlyObservedChecksums: Set<Checksum> = [],
+            sourceLocalIdentifierByChecksum: [Checksum: String] = [:]
         ) {
             self.newlyConfirmedDeleted = newlyConfirmedDeleted
             self.unconfirmedByRestoration = unconfirmedByRestoration
             self.didFullEnumeration = didFullEnumeration
+            self.fullEnumerationCause = fullEnumerationCause
             self.changeEventsProcessed = changeEventsProcessed
             self.deferredLarge = deferredLarge
             self.deferredLargeBytes = deferredLargeBytes
@@ -113,6 +158,8 @@ public final class PhotoKitPersistentChangeReconciler {
             self.aboveHardCeiling = aboveHardCeiling
             self.aboveHardCeilingBytes = aboveHardCeilingBytes
             self.drainedFromQueue = drainedFromQueue
+            self.recentlyObservedChecksums = recentlyObservedChecksums
+            self.sourceLocalIdentifierByChecksum = sourceLocalIdentifierByChecksum
         }
     }
 
@@ -208,6 +255,25 @@ public final class PhotoKitPersistentChangeReconciler {
     /// could finish hashing them.
     private let metadataStore: (any LocalAssetMetadataStore)?
 
+    /// Optional first-observed checksum store. When wired, the
+    /// reconciler records `firstObserved` once per id (first-write-
+    /// wins) and consults it to split edit-retired SHA1s into
+    /// "protect" (matches firstObserved → keep on Immich, the
+    /// original-content backup) and "intermediate" (everything else
+    /// → quarantine). Default `nil` keeps existing test callers
+    /// working unchanged — when absent, all retired SHA1s flow
+    /// through the legacy diff-only path.
+    private let editRetirement: (any EditRetirementStore)?
+
+    /// Optional sidecar to `ConfirmedDeletedStore` that persists the
+    /// source `localIdentifier` per retired checksum. Lets Pending
+    /// Review group quarantined entries with inferred orphans
+    /// across syncs — the per-scan `sourceLocalIdentifierByChecksum`
+    /// in `Result` evaporates after the immediate post-delete sync,
+    /// so without this store the linkage is only valid for one pass.
+    /// Default `nil` keeps existing test callers working unchanged.
+    private let deletionSource: (any DeletionSourceStore)?
+
     public init(
         hashStore: any LocalHashStore,
         confirmedDeleted: any ConfirmedDeletedStore,
@@ -215,6 +281,8 @@ public final class PhotoKitPersistentChangeReconciler {
         tokens: any PersistentChangeTokenStore,
         deferredStore: (any DeferredHashStore)? = nil,
         metadataStore: (any LocalAssetMetadataStore)? = nil,
+        editRetirement: (any EditRetirementStore)? = nil,
+        deletionSource: (any DeletionSourceStore)? = nil,
         maxAssets: Int? = nil,
         maxICloudBytesPerAsset: Int64? = 100 * 1024 * 1024,
         hardCeilingBytes: Int64? = nil,
@@ -228,6 +296,8 @@ public final class PhotoKitPersistentChangeReconciler {
         self.tokens = tokens
         self.deferredStore = deferredStore
         self.metadataStore = metadataStore
+        self.editRetirement = editRetirement
+        self.deletionSource = deletionSource
         self.maxAssets = maxAssets
         self.maxICloudBytesPerAsset = maxICloudBytesPerAsset
         self.hardCeilingBytes = hardCeilingBytes
@@ -249,21 +319,28 @@ public final class PhotoKitPersistentChangeReconciler {
         }
 
         // Try incremental first. Fall back to full enumeration on any of:
-        //   - no saved token yet
-        //   - token unarchive fails (e.g. OS upgrade changed the format)
-        //   - PhotoKit reports the token as expired
-        if let saved = try await tokens.load(),
-           let token = Self.unarchiveToken(saved.data) {
-            do {
-                return try await runIncremental(since: token, skipDrain: skipDrain)
-            } catch let ns as NSError where Self.isTokenExpired(ns) {
-                // Drop the stale token and re-enumerate. Next run will
-                // pick up changes against the new baseline.
-                try? await tokens.clear()
-                return try await runFullEnumeration()
+        //   - no saved token yet → `.firstRun`
+        //   - token unarchive fails (e.g. OS upgrade changed the format) →
+        //     `.tokenExpired` (data was lost just the same)
+        //   - PhotoKit reports the token as expired → `.tokenExpired`
+        if let saved = try await tokens.load() {
+            if let token = Self.unarchiveToken(saved.data) {
+                do {
+                    return try await runIncremental(since: token, skipDrain: skipDrain)
+                } catch let ns as NSError where Self.isTokenExpired(ns) {
+                    // Drop the stale token and re-enumerate. Next run will
+                    // pick up changes against the new baseline.
+                    try? await tokens.clear()
+                    return try await runFullEnumeration(cause: .tokenExpired)
+                }
             }
+            // Saved-but-unparseable: treat as expired. The previous baseline's
+            // change log is unreachable, so accumulated deletions are
+            // negative-signal-only — the gating is the same as a real expiry.
+            try? await tokens.clear()
+            return try await runFullEnumeration(cause: .tokenExpired)
         }
-        return try await runFullEnumeration()
+        return try await runFullEnumeration(cause: .firstRun)
     }
 
     // MARK: - Incremental path
@@ -315,15 +392,32 @@ public final class PhotoKitPersistentChangeReconciler {
             deleted: deletedIds
         )
 
-        // Resolve deleted identifiers to checksums via the cache. An
-        // identifier the cache doesn't know about simply yields no
-        // checksums — likely an asset created and destroyed in the same
-        // window without us ever hashing it. The ever-seen negative
-        // signal still catches such cases through normal reconciliation.
+        // Resolve deleted identifiers to checksums via the cache AND
+        // via the edit-retirement anchor. An identifier the cache
+        // doesn't know about simply yields no cached checksums —
+        // likely an asset created and destroyed in the same window
+        // without us ever hashing it. Including `firstObserved`
+        // ensures the original-content SHA1 propagates to quarantine
+        // when the asset is genuinely deleted, even if intermediate
+        // edits cleared it from the cache earlier.
         var removedChecksums: Set<Checksum> = []
+        // Track the source `localIdentifier` per retired checksum so the
+        // UI can later collapse a quarantined original and an inferred-
+        // orphan edit (which OrphanReconciler resolves through the same
+        // localIdentifier) into one card. Filename + creationDate
+        // grouping fails when Immich stores microsecond-mismatched
+        // creation dates for the original-vs-edit upload pair; the
+        // localIdentifier match is unambiguous.
+        var sourceLocalIdentifierByChecksum: [Checksum: String] = [:]
         for id in deletedIds {
             let cached = try await hashStore.checksums(for: id)
             removedChecksums.formUnion(cached)
+            for c in cached { sourceLocalIdentifierByChecksum[c] = id }
+            if let editRetirement {
+                let firstObserved = try await editRetirement.firstObserved(for: id)
+                removedChecksums.formUnion(firstObserved)
+                for c in firstObserved { sourceLocalIdentifierByChecksum[c] = id }
+            }
         }
 
         // Single PHAsset.fetchAssets pass that records metadata for
@@ -340,14 +434,46 @@ public final class PhotoKitPersistentChangeReconciler {
             hashLog.notice("[cairn.recon] skipped \(skipped, privacy: .public) update events with unchanged modDate")
         }
 
+        // Capture pre-set checksums for the ids we're about to re-hash.
+        // When a user edits a photo (filter, crop, markup), PhotoKit
+        // advances modificationDate and we re-hash; `set(_:for:)`
+        // replaces the rows. The OLD SHA1 disappears from the cache but
+        // stays in EverSeen (which is union-only). We need this snapshot
+        // to compute the retired set (`prior \ new`) and decide whether
+        // each retired SHA1 is the original-content anchor (protect) or
+        // an intermediate edit (quarantine). It also tells us whether
+        // an id was previously cached at all — if not, this observation
+        // gets seeded into `EditRetirementStore` as the firstObserved
+        // anchor for the id.
+        let preExistingChecksums = try await hashStore.entries(
+            forIdentifiers: insertedIds.union(staleUpdates)
+        ).mapValues(\.checksums)
+
         // Inserted: hash the new assets, stash in local cache + ever-seen.
         // Defer counts from both inserted + updated batches accumulate
         // into the Result.
         let insertedBatch = try await hashAssets(ids: insertedIds)
         var addedChecksums: Set<Checksum> = []
+        var retiredByEdit: Set<Checksum> = []
         for (id, checksums) in insertedBatch.checksumsByID {
             try await hashStore.set(checksums, for: id)
             addedChecksums.formUnion(checksums)
+            if let prior = preExistingChecksums[id], !prior.isEmpty {
+                retiredByEdit.formUnion(prior.subtracting(checksums))
+                // Lazy migration: pre-EditRetirementStore caches have
+                // no firstObserved anchor. Seed with `prior` (the bytes
+                // cairn knew about before this event). First-write-wins,
+                // so a no-op if already seeded by an earlier session.
+                // Without this, the partition below would treat `prior`
+                // as intermediate and quarantine the original on edit.
+                try await editRetirement?.recordFirstObserved(prior, for: id)
+            } else {
+                // No prior cache entry → this is the first time cairn
+                // has seen content for this id. Seed the edit-retirement
+                // anchor. First-write-wins inside the store; safe to
+                // call from any observation site.
+                try await editRetirement?.recordFirstObserved(checksums, for: id)
+            }
         }
         if !addedChecksums.isEmpty {
             try await everSeen.union(addedChecksums)
@@ -358,6 +484,20 @@ public final class PhotoKitPersistentChangeReconciler {
         for (id, checksums) in updatedBatch.checksumsByID {
             try await hashStore.set(checksums, for: id)
             updatedChecksums.formUnion(checksums)
+            if let prior = preExistingChecksums[id], !prior.isEmpty {
+                retiredByEdit.formUnion(prior.subtracting(checksums))
+                // Lazy migration — same reasoning as the inserts branch
+                // above. Seed with `prior` so the partition doesn't
+                // wrongly classify retired bytes as intermediate.
+                try await editRetirement?.recordFirstObserved(prior, for: id)
+            } else {
+                // "Updated" event for an id we've never cached — treat
+                // first observation as the anchor. Without this, an
+                // edit-then-delete sequence on a never-cached asset
+                // would have no firstObserved to propagate at delete
+                // time, leaving the original SHA1 unprotected on Immich.
+                try await editRetirement?.recordFirstObserved(checksums, for: id)
+            }
         }
         if !updatedChecksums.isEmpty {
             try await everSeen.union(updatedChecksums)
@@ -373,12 +513,11 @@ public final class PhotoKitPersistentChangeReconciler {
             priorConfirmed = []
         }
 
-        // Commit deletions: confirm them, then purge the cache so we don't
-        // grow unboundedly on chatty libraries.
+        // Purge the cache for deleted ids so subsequent `allChecksums()`
+        // reflects post-deletion state. The actual confirmed-deleted union
+        // is deferred until after the orphan sweep — see the `trulyAbsent`
+        // filter below for why.
         let now = clock()
-        if !removedChecksums.isEmpty {
-            try await confirmedDeleted.union(removedChecksums, at: now)
-        }
         if !deletedIds.isEmpty {
             try await hashStore.removeAll(for: deletedIds)
         }
@@ -404,16 +543,118 @@ public final class PhotoKitPersistentChangeReconciler {
         // `reconcileCacheAgainstLibrary`) and our `hashStore.set`
         // writes can make a just-hashed asset look cache-only and
         // cause the orphan path to delete it.
-        let hasChanges = !insertedIds.isEmpty || !updatedIds.isEmpty || !deletedIds.isEmpty
-        if hasChanges {
-            let orphanResult = try await reconcileCacheAgainstLibrary(
-                alreadyHandledDeletedIds: deletedIds,
-                protectedIds: insertedIds.union(updatedIds),
-                now: now
-            )
-            if !orphanResult.checksums.isEmpty {
-                removedChecksums.formUnion(orphanResult.checksums)
+        // Always run — `events=0` doesn't imply "no drift." The
+        // persistent-change log is event-relative-to-the-saved-token,
+        // not authoritative for current library state. A deletion that
+        // happened before the saved token (e.g. between the previous
+        // sync and an app rebuild/reinstall) is invisible to
+        // fetchPersistentChanges but must still be propagated, or the
+        // negative-signal candidate path silently skips quarantine.
+        // The cost is one PHAsset.fetchAssets + a set diff per sync;
+        // a few hundred ms on a 7k library. Earlier code gated this
+        // on `hasChanges` for relaunch perf; the gate was incorrect.
+        let preOrphanCacheCount = try await hashStore.indexedCount()
+        let orphanResult = try await reconcileCacheAgainstLibrary(
+            alreadyHandledDeletedIds: deletedIds,
+            protectedIds: insertedIds.union(updatedIds),
+            now: now
+        )
+        Self.reconLog.notice("[cairn.recon] orphan sweep ran: cache=\(preOrphanCacheCount, privacy: .public) orphans=\(orphanResult.orphanIds.count, privacy: .public) recovered-checksums=\(orphanResult.checksums.count, privacy: .public)")
+        if !orphanResult.checksums.isEmpty {
+            removedChecksums.formUnion(orphanResult.checksums)
+        }
+        // Same source-id capture as the explicit-delete path above —
+        // orphan-swept checksums need to collapse alongside any
+        // inferred-orphan match for the same logical photo. The orphan
+        // reconciler captures the per-id mapping before purging the
+        // cache because the post-purge state has nothing to query.
+        for (c, id) in orphanResult.sourceIdByChecksum {
+            sourceLocalIdentifierByChecksum[c] = id
+        }
+        // Orphan-swept ids may also have firstObserved anchors. Pull
+        // those in so the original-content SHA1 propagates to
+        // quarantine alongside the cache rows the orphan sweep already
+        // recovered. Without this, an asset deleted via the back-
+        // channel path that PhotoKit's `deletedLocalIdentifiers`
+        // missed would lose its original-content propagation.
+        if let editRetirement, !orphanResult.orphanIds.isEmpty {
+            for id in orphanResult.orphanIds {
+                let anchor = try await editRetirement.firstObserved(for: id)
+                removedChecksums.formUnion(anchor)
+                for c in anchor { sourceLocalIdentifierByChecksum[c] = id }
             }
+        }
+
+        // Filter `removedChecksums` against the post-purge cache. A SHA1
+        // shared across two PHAssets (e.g. self-AirDropped duplicate) is
+        // still locally present after one is deleted; confirming it as
+        // deleted would start a wrongful quarantine clock against an
+        // asset the user still has. `allChecksums()` here reflects every
+        // cache mutation so far this pass — deleted-id purge, orphan
+        // sweep purge, and the insert/update writes above.
+        let stillLocal = try await hashStore.allChecksums()
+        let trulyAbsent = Self.confirmableDeletions(removed: removedChecksums, stillLocal: stillLocal)
+        if !trulyAbsent.isEmpty {
+            try await confirmedDeleted.union(trulyAbsent, at: now)
+            // Persist the source-id mapping for the truly-absent
+            // checksums so later syncs can still group quarantined
+            // entries with inferred orphans by their shared origin
+            // localIdentifier. Scoped to `trulyAbsent` (not the wider
+            // `sourceLocalIdentifierByChecksum`) because anything still
+            // present locally hasn't been retired and shouldn't poison
+            // the persistent store with a stale mapping.
+            if let deletionSource {
+                let toRecord = sourceLocalIdentifierByChecksum.filter { trulyAbsent.contains($0.key) }
+                if !toRecord.isEmpty {
+                    try await deletionSource.record(toRecord)
+                }
+            }
+        }
+
+        // Edit-retirement partition. SHA1s the cache held before this
+        // pass that got replaced by new ones (the user edited the
+        // photo). Each id's `firstObserved` set is the original-content
+        // anchor — those SHA1s are sacred while the id is alive in
+        // PhotoKit, even after edits, because Immich's copy of the
+        // original is the user's backup. Only intermediate edits
+        // (retired ≠ firstObserved) flow through quarantine.
+        //
+        // Filter against `stillLocal` first so a SHA1 still held under
+        // another id (rare — duplicate import) doesn't get wrongly
+        // stamped regardless of which bucket it would have landed in.
+        let retiredAbsent = retiredByEdit.subtracting(stillLocal)
+        if !retiredAbsent.isEmpty {
+            // Build the union of firstObserved across every id whose
+            // entry got mutated this pass. Cheap — only the ids we
+            // re-hashed contribute to retirement, and most have an
+            // anchor seeded on first observation.
+            var firstObservedUnion: Set<Checksum> = []
+            if let editRetirement {
+                for id in insertedIds.union(staleUpdates) {
+                    let anchor = try await editRetirement.firstObserved(for: id)
+                    firstObservedUnion.formUnion(anchor)
+                }
+            }
+            let parts = Self.partitionRetiredByFirstObserved(
+                retired: retiredAbsent,
+                firstObserved: firstObservedUnion
+            )
+            if !parts.intermediate.isEmpty {
+                try await confirmedDeleted.union(parts.intermediate, at: now)
+            }
+            Self.reconLog.notice("[cairn.recon] intermediate edits retired \(parts.intermediate.count, privacy: .public) → quarantine; protected \(parts.protected.count, privacy: .public) firstObserved → kept on Immich")
+        }
+
+        // Drop edit-retirement anchors for genuinely-deleted ids and
+        // orphan-swept ids (PhotoKit reported the deletion through a
+        // back channel rather than `deletedLocalIdentifiers`). Done
+        // after the union above so a delete in the same pass as an
+        // edit (rare but possible: edit, save, then trash) still
+        // propagates the firstObserved SHA1 through `removedChecksums`
+        // before the anchor disappears.
+        let idsToCleanup = deletedIds.union(orphanResult.orphanIds)
+        if !idsToCleanup.isEmpty {
+            try await editRetirement?.remove(for: idsToCleanup)
         }
 
         // Restoration: when an insert/update surfaces a checksum that was
@@ -421,6 +662,10 @@ public final class PhotoKitPersistentChangeReconciler {
         // deletion will start a fresh quarantine clock.
         if !allRecentlyObserved.isEmpty {
             try await confirmedDeleted.remove(allRecentlyObserved)
+            // Drop the persisted source-id mapping alongside, so a
+            // re-deleted asset re-records its current source id rather
+            // than carrying a stale one.
+            try await deletionSource?.remove(allRecentlyObserved)
         }
 
         // Save the new token using the library's current token as the
@@ -444,7 +689,7 @@ public final class PhotoKitPersistentChangeReconciler {
         )
 
         return Result(
-            newlyConfirmedDeleted: removedChecksums,
+            newlyConfirmedDeleted: trulyAbsent,
             unconfirmedByRestoration: allRecentlyObserved.intersection(priorConfirmed),
             didFullEnumeration: false,
             changeEventsProcessed: events,
@@ -454,8 +699,51 @@ public final class PhotoKitPersistentChangeReconciler {
             deferredEmpty: insertedBatch.deferredEmpty + updatedBatch.deferredEmpty + drained.batch.deferredEmpty,
             aboveHardCeiling: insertedBatch.aboveHardCeiling + updatedBatch.aboveHardCeiling + drained.batch.aboveHardCeiling,
             aboveHardCeilingBytes: insertedBatch.aboveHardCeilingBytes + updatedBatch.aboveHardCeilingBytes + drained.batch.aboveHardCeilingBytes,
-            drainedFromQueue: drained.successCount
+            drainedFromQueue: drained.successCount,
+            recentlyObservedChecksums: allRecentlyObserved,
+            sourceLocalIdentifierByChecksum: sourceLocalIdentifierByChecksum
         )
+    }
+
+    /// Filter the raw "removed via deletion + orphan sweep" checksum set
+    /// down to the subset that's actually absent from the post-purge
+    /// cache. A SHA1 shared across two PHAssets (duplicate import,
+    /// self-AirDrop) survives the deletion of one and must NOT be
+    /// stamped into `ConfirmedDeletedStore` — doing so would start a
+    /// wrongful quarantine clock against an asset the user still has.
+    /// Internal-but-static so the test target can exercise this without
+    /// constructing a full reconciler. `nonisolated` because the body
+    /// is pure — no state, no main-thread requirement.
+    nonisolated static func confirmableDeletions(
+        removed: Set<Checksum>,
+        stillLocal: Set<Checksum>
+    ) -> Set<Checksum> {
+        removed.subtracting(stillLocal)
+    }
+
+    /// Pure partition: split edit-retired SHA1s into "protected"
+    /// (overlap firstObserved — original content; never quarantine)
+    /// and "intermediate" (post-edit residue — quarantine then trash).
+    ///
+    /// **Why this matters.** When a user edits a photo, PhotoKit
+    /// advances `modificationDate` and we re-hash; the old SHA1
+    /// retires from the cache but stays alive on Immich. The legacy
+    /// behavior unioned every retired SHA1 into `ConfirmedDeletedStore`,
+    /// which destroyed the original-content backup 14 days later for
+    /// any photo the user kept locally. The fix anchors firstObserved
+    /// once per id and exempts those SHA1s from quarantine for as long
+    /// as the id is alive. Only intermediate edits (retired SHA1s that
+    /// aren't the firstObserved set) flow through to quarantine.
+    ///
+    /// Internal-but-static so tests exercise the partition without a
+    /// full PhotoKit pipeline. `nonisolated` because the body is pure.
+    nonisolated static func partitionRetiredByFirstObserved(
+        retired: Set<Checksum>,
+        firstObserved: Set<Checksum>
+    ) -> (protected: Set<Checksum>, intermediate: Set<Checksum>) {
+        let protected = retired.intersection(firstObserved)
+        let intermediate = retired.subtracting(protected)
+        return (protected, intermediate)
     }
 
     // MARK: - Deferred-queue drain
@@ -646,8 +934,9 @@ public final class PhotoKitPersistentChangeReconciler {
     /// `PHPersistentChangeToken`. Runs on first scan, after token
     /// expiry, or when `tokens.load()` returns nil. Does **not** union
     /// anything into `ConfirmedDeletedStore` — a full enumeration is a
-    /// resync, not a positive deletion signal.
-    private func runFullEnumeration() async throws -> Result {
+    /// resync, not a positive deletion signal. Default `cause` keeps
+    /// existing test callers working without changes.
+    private func runFullEnumeration(cause: FullEnumerationCause = .firstRun) async throws -> Result {
         // Capture the baseline *before* we enumerate, so any changes that
         // happen during enumeration are picked up by the next incremental
         // scan rather than lost to the gap.
@@ -657,8 +946,9 @@ public final class PhotoKitPersistentChangeReconciler {
         // local hash cache from scratch. We don't union into
         // confirmed-deleted here — a full enumeration is a resync, not a
         // positive deletion signal. `hashAllCurrentAssets` persists each
-        // asset's checksums into `hashStore` as it goes (resume-friendly),
-        // so here we only still need to union them into ever-seen.
+        // asset's checksums into `hashStore` as it goes (resume-friendly)
+        // and seeds the edit-retirement anchor for ids it hashes for the
+        // first time.
         let batch = try await hashAllCurrentAssets()
         var allChecksums: Set<Checksum> = []
         for (_, checksums) in batch.checksumsByID {
@@ -668,22 +958,25 @@ public final class PhotoKitPersistentChangeReconciler {
             try await everSeen.union(allChecksums)
         }
 
+        let now = clock()
         try await tokens.save(.init(
             data: Self.archiveToken(baselineToken),
-            savedAt: clock()
+            savedAt: now
         ))
 
         return Result(
             newlyConfirmedDeleted: [],
             unconfirmedByRestoration: [],
             didFullEnumeration: true,
+            fullEnumerationCause: cause,
             changeEventsProcessed: 0,
             deferredLarge: batch.deferredLarge,
             deferredLargeBytes: batch.deferredLargeBytes,
             deferredTimeout: batch.deferredTimeout,
             deferredEmpty: batch.deferredEmpty,
             aboveHardCeiling: batch.aboveHardCeiling,
-            aboveHardCeilingBytes: batch.aboveHardCeilingBytes
+            aboveHardCeilingBytes: batch.aboveHardCeilingBytes,
+            recentlyObservedChecksums: allChecksums
         )
     }
 
@@ -799,6 +1092,21 @@ public final class PhotoKitPersistentChangeReconciler {
         hashLog.notice("\(doneMsg, privacy: .public)")
         print(doneMsg)
 
+        // Seed edit-retirement anchors for ids that had no prior cache
+        // entry — this enum is their first observation. First-write-
+        // wins inside the store; safe to call for ids that already
+        // have an anchor (returns immediately). Skipping ids whose
+        // prior cache row exists keeps the original anchor stable
+        // across re-enumerations.
+        if let editRetirement {
+            for asset in toHash {
+                guard existing[asset.localIdentifier]?.isEmpty ?? true,
+                      let newChecksums = fresh.checksumsByID[asset.localIdentifier],
+                      !newChecksums.isEmpty else { continue }
+                try await editRetirement.recordFirstObserved(newChecksums, for: asset.localIdentifier)
+            }
+        }
+
         // Fold the "resumed" cache into the fresh batch's checksum map
         // so the caller gets the full picture. Defer counts stay as
         // computed — cached assets aren't deferred, they're already done.
@@ -816,7 +1124,7 @@ public final class PhotoKitPersistentChangeReconciler {
         entries.reserveCapacity(assets.count)
         for asset in assets {
             let resources = PHAssetResource.assetResources(for: asset)
-            let primary = resources.first
+            let primary = PhotoKitPhotoEnumerator.selectPrimaryResource(from: resources)
             let size = (primary?.value(forKey: "fileSize") as? NSNumber)?.int64Value
             entries.append(LocalAssetMetadata(
                 localIdentifier: asset.localIdentifier,
@@ -862,7 +1170,7 @@ public final class PhotoKitPersistentChangeReconciler {
         currentDates.reserveCapacity(fetch.count)
         fetch.enumerateObjects { asset, _, _ in
             let resources = PHAssetResource.assetResources(for: asset)
-            let primary = resources.first
+            let primary = PhotoKitPhotoEnumerator.selectPrimaryResource(from: resources)
             let size = (primary?.value(forKey: "fileSize") as? NSNumber)?.int64Value
             entries.append(LocalAssetMetadata(
                 localIdentifier: asset.localIdentifier,
@@ -1383,7 +1691,7 @@ public final class PhotoKitPersistentChangeReconciler {
         alreadyHandledDeletedIds: Set<String>,
         protectedIds: Set<String>,
         now: Date
-    ) async throws -> (checksums: Set<Checksum>, orphanIds: Set<String>) {
+    ) async throws -> (checksums: Set<Checksum>, orphanIds: Set<String>, sourceIdByChecksum: [Checksum: String]) {
         // Include hidden assets so Live Photo motion videos (which
         // live in `hidden` visibility) don't get flagged as orphans.
         let opts = PHFetchOptions()
@@ -1414,15 +1722,20 @@ public final class PhotoKitPersistentChangeReconciler {
             .subtracting(protectedIds)
 
         guard !orphans.isEmpty else {
-            return ([], [])
+            return ([], [], [:])
         }
 
         // Fetch checksums for just the orphan ids — much smaller set
-        // than the full library.
+        // than the full library. Capture the per-id mapping while we're
+        // here so the caller can pass it through to the UI grouping
+        // path; reconstructing it post-purge would require re-querying
+        // an already-cleared cache.
         var recoveredChecksums: Set<Checksum> = []
+        var sourceIdByChecksum: [Checksum: String] = [:]
         for id in orphans {
             let cks = try await hashStore.checksums(for: id)
             recoveredChecksums.formUnion(cks)
+            for c in cks { sourceIdByChecksum[c] = id }
         }
 
         let sample = orphans.prefix(3).map { String($0.prefix(12)) + "…" }.joined(separator: ", ")
@@ -1430,11 +1743,12 @@ public final class PhotoKitPersistentChangeReconciler {
         Self.reconLog.notice("\(msg, privacy: .public)")
         print(msg)
 
-        if !recoveredChecksums.isEmpty {
-            try await confirmedDeleted.union(recoveredChecksums, at: now)
-        }
+        // Purge orphan ids from the cache. The confirmed-deleted union
+        // is the caller's responsibility — it filters against the
+        // post-purge cache so checksums still present under another id
+        // (duplicate SHA1) aren't wrongly stamped.
         try await hashStore.removeAll(for: orphans)
-        return (recoveredChecksums, orphans)
+        return (recoveredChecksums, orphans, sourceIdByChecksum)
     }
 
     // MARK: - Diagnostic logging

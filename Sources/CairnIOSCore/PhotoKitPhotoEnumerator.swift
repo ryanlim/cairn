@@ -273,6 +273,19 @@ public struct PhotoKitPhotoEnumerator: PhotoEnumerator {
         }
         return picked
     }
+
+    /// Pick the single "primary" resource for metadata purposes —
+    /// matches the hash pipeline's first choice. For photos this is
+    /// the rendered edit (`.fullSizePhoto`) when present, falling back
+    /// to the original (`.photo`); for videos, `.fullSizeVideo` then
+    /// `.video`. Used so the filename and file-size cairn records in
+    /// `LocalAssetMetadataStore` agree with what cairn hashes — and
+    /// what Immich uploads via its own `isCurrent` selection — so
+    /// `OrphanReconciler` matches by filename can succeed for edited
+    /// photos.
+    public static func selectPrimaryResource(from resources: [PHAssetResource]) -> PHAssetResource? {
+        selectResourcesToHash(from: resources).first
+    }
 }
 
 #endif

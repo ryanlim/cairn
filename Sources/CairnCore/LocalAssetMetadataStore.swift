@@ -63,6 +63,14 @@ public protocol LocalAssetMetadataStore: Sendable {
     /// deletion has been propagated — no point keeping it around.
     func remove(_ localIdentifiers: Set<String>) async throws
 
+    /// Full snapshot. Used by `OrphanReconciler.match` to correlate
+    /// every observed-but-unhashed asset against the server's view of
+    /// the world. Implementations should be cheap relative to library
+    /// size (typically tens to low hundreds of entries — anything we
+    /// observed but couldn't hash, plus some recent successes that
+    /// haven't been swept yet).
+    func snapshot() async throws -> [LocalAssetMetadata]
+
     /// Wipe the store. Paired with `LocalHashStore.clear()` from the
     /// "rescan" / "reset index" actions.
     func clear() async throws

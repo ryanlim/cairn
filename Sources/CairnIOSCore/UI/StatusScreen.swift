@@ -64,6 +64,25 @@ public struct StatusScreen: View {
     /// a Callout above the sync card after a no-op sync. Host is
     /// responsible for clearing after the auto-dismiss window.
     public let syncToast: CairnAppModel.SyncToast?
+    /// Number of locally-restored photos that were previously trashed
+    /// via cairn within Immich's 30-day hard-delete window. Drives a
+    /// warn-tone banner so the user knows to restore on Immich too —
+    /// the Immich mobile app silently no-ops the upload while the
+    /// asset is in Immich trash with the same SHA1.
+    public let restoredAfterCairnTrashCount: Int
+    /// User dismissed the "restored after trash" banner. Host clears
+    /// `model.restoredAfterCairnTrash` to make this fire — next sync
+    /// re-evaluates, so if the conditions still hold, the banner returns.
+    public let onDismissRestoredAfterCairnTrash: () -> Void
+    /// Number of inferred orphans from the most recent scan — server
+    /// assets matched by filename + creationDate against locally-
+    /// observed metadata where cairn never finished hashing the asset
+    /// (typically the cull-burst case: take a photo, Immich uploads,
+    /// user deletes within seconds). Drives a warn-tone banner that
+    /// routes the user to Pending Review.
+    public let inferredOrphanCount: Int
+    /// Tap handler for the orphan banner. Routes to Pending Review.
+    public let onOpenInferredOrphans: () -> Void
     /// When true, the user dismissed the initial-scan screen and the
     /// library hasn't been indexed yet. Surfaces a persistent callout
     /// prompting the user to begin or resume the scan.
@@ -129,6 +148,10 @@ public struct StatusScreen: View {
         deletionBacklog: Int = 0,
         backlogAlertThreshold: Int = 25,
         syncToast: CairnAppModel.SyncToast? = nil,
+        restoredAfterCairnTrashCount: Int = 0,
+        onDismissRestoredAfterCairnTrash: @escaping () -> Void = {},
+        inferredOrphanCount: Int = 0,
+        onOpenInferredOrphans: @escaping () -> Void = {},
         initialScanPending: Bool = false,
         isSyncing: Bool = false,
         syncProgress: (hashed: Int, total: Int)? = nil,
@@ -160,6 +183,10 @@ public struct StatusScreen: View {
         self.deletionBacklog = deletionBacklog
         self.backlogAlertThreshold = backlogAlertThreshold
         self.syncToast = syncToast
+        self.restoredAfterCairnTrashCount = restoredAfterCairnTrashCount
+        self.onDismissRestoredAfterCairnTrash = onDismissRestoredAfterCairnTrash
+        self.inferredOrphanCount = inferredOrphanCount
+        self.onOpenInferredOrphans = onOpenInferredOrphans
         self.initialScanPending = initialScanPending
         self.isSyncing = isSyncing
         self.syncProgress = syncProgress
@@ -203,6 +230,8 @@ public struct StatusScreen: View {
             initialScanPending,
             backlogAlertThreshold > 0 && deletionBacklog >= backlogAlertThreshold && !initialScanPending && dismissedBacklogAtCount != deletionBacklog,
             syncToast != nil,
+            restoredAfterCairnTrashCount > 0,
+            inferredOrphanCount > 0,
         ]
     }
 
@@ -214,6 +243,8 @@ public struct StatusScreen: View {
                 missingPermissionsBanner
                 stateBanner
                 initialScanPendingBanner
+                restoredAfterCairnTrashBanner
+                inferredOrphanBanner
                 backlogAlertBanner
                 syncToastBanner
                 syncCard
@@ -432,6 +463,68 @@ public struct StatusScreen: View {
             }
             .transition(bannerTransition)
         }
+    }
+
+    /// Warning banner for "user restored locally what cairn already
+    /// trashed on Immich." The Immich mobile app silently no-ops the
+    /// re-upload while the asset is still in Immich trash with the
+    /// same SHA1; after the 30-day hard-delete clock fires, the photo
+    /// is gone server-side. Surfacing the count gives the user a
+    /// chance to restore on Immich too. Dismissible — next sync
+    /// re-evaluates.
+    @ViewBuilder
+    private var restoredAfterCairnTrashBanner: some View {
+        if restoredAfterCairnTrashCount > 0 {
+            Callout(.pending, icon: "arrow.uturn.backward.circle") {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(restoredAfterCairnTrashTitle).fontWeight(.semibold)
+                    Text("Open Immich → Trash to restore them there too. They'll hard-delete after 30 days.")
+                        .opacity(0.88).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(.horizontal, 16).padding(.bottom, 12)
+            .cairnSwipeToDismiss { onDismissRestoredAfterCairnTrash() }
+            .transition(bannerTransition)
+        }
+    }
+
+    /// Title text for the restored-after-trash banner, with proper
+    /// singular/plural handling. "1 photo" reads better than "1 photos."
+    private var restoredAfterCairnTrashTitle: String {
+        let n = restoredAfterCairnTrashCount
+        let noun = n == 1 ? "photo" : "photos"
+        return "\(n) restored \(noun) also trashed in Immich"
+    }
+
+    /// Warn-tone banner for inferred orphans — server assets matched by
+    /// filename + creationDate where cairn observed but never finished
+    /// hashing the asset (typical cull-burst: photo taken, Immich
+    /// uploads, user deletes within seconds). Tapping routes to Pending
+    /// Review where the user can approve or exclude each. Not
+    /// dismissible: dismissing wouldn't clear the underlying state, and
+    /// the count moves down naturally as the user reviews.
+    @ViewBuilder
+    private var inferredOrphanBanner: some View {
+        if inferredOrphanCount > 0 {
+            Button(action: onOpenInferredOrphans) {
+                Callout(.pending, icon: "questionmark.diamond") {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(inferredOrphanTitle).fontWeight(.semibold)
+                        (Text("Uploaded from this iPhone, then deleted before ") + .cairnWord + Text(" could index. Review before trashing."))
+                            .opacity(0.88).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 16).padding(.bottom, 12)
+            .transition(bannerTransition)
+        }
+    }
+
+    private var inferredOrphanTitle: String {
+        let n = inferredOrphanCount
+        let noun = n == 1 ? "likely orphan" : "likely orphans"
+        return "\(n) \(noun) on Immich"
     }
 
     /// Smart routing for the backlog banner: pending review first,

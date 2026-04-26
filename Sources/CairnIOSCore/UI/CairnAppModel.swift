@@ -106,6 +106,33 @@ public final class CairnAppModel {
         /// drift if the user changes settings mid-review.
         public let quarantineDays: Int
         public let computedAt: Date
+        /// Map from inferred-orphan checksum → the metadata-store
+        /// `localIdentifier` whose filename + creationDate matched the
+        /// server asset. Lets the approve-pending flow sweep the
+        /// metadata store after a successful trash so the row doesn't
+        /// keep matching on subsequent syncs.
+        public let inferredOrphanLocalIdentifiers: [Checksum: String]
+        /// Checksums anchored as a `firstObserved` value for some
+        /// currently-alive `localIdentifier` in the photo library.
+        /// Sourced from `EditRetirementStore` at scan time. Used by
+        /// the Pending Review screen to label one version of a grouped
+        /// (filename + creationDate) candidate as the "Original" — the
+        /// untouched bytes that the user's edits trace back to. Empty
+        /// when no edit-retirement anchors are live, which is the
+        /// common case before the user starts editing photos.
+        public let firstObservedAnchors: Set<Checksum>
+        /// Source `localIdentifier` per candidate checksum. Populated for
+        /// both regular candidates (via the reconciler's delete-path
+        /// tracking) and inferred orphans (via OrphanReconciler matched-
+        /// metadata). Used by the Pending Review grouping helper as the
+        /// primary group key — two candidates sharing the same source
+        /// localIdentifier represent versions of the same logical photo
+        /// and render as one stacked card. Falls back to
+        /// `(originalFileName, fileCreatedAt)` when source-id isn't
+        /// known. Distinct from `inferredOrphanLocalIdentifiers` because
+        /// that one is a narrower orphan-only map used by
+        /// `approvePending` for metadata cleanup.
+        public let sourceLocalIdentifiersByChecksum: [Checksum: String]
 
         public init(
             deleteCandidates: [ServerAsset],
@@ -113,7 +140,10 @@ public final class CairnAppModel {
             heldByQuarantineCandidates: [ServerAsset],
             confirmedDeletedAt: [Checksum: Date] = [:],
             quarantineDays: Int = 14,
-            computedAt: Date = Date()
+            computedAt: Date = Date(),
+            inferredOrphanLocalIdentifiers: [Checksum: String] = [:],
+            firstObservedAnchors: Set<Checksum> = [],
+            sourceLocalIdentifiersByChecksum: [Checksum: String] = [:]
         ) {
             self.deleteCandidates = deleteCandidates
             self.pendingReviewCandidates = pendingReviewCandidates
@@ -121,6 +151,9 @@ public final class CairnAppModel {
             self.confirmedDeletedAt = confirmedDeletedAt
             self.quarantineDays = quarantineDays
             self.computedAt = computedAt
+            self.inferredOrphanLocalIdentifiers = inferredOrphanLocalIdentifiers
+            self.firstObservedAnchors = firstObservedAnchors
+            self.sourceLocalIdentifiersByChecksum = sourceLocalIdentifiersByChecksum
         }
     }
 
@@ -130,6 +163,14 @@ public final class CairnAppModel {
     /// banner surfaces so the user can decide between "review these" and
     /// "bulk-exclude — I intended to offload."
     public var lastScanBurstCount: Int = 0
+
+    /// Count of inferred orphans from the most recent scan — server
+    /// assets cairn observed locally (filename + creationDate) but
+    /// never finished hashing before they were deleted from the photo
+    /// library. The standard ever-seen reconciler can't surface these
+    /// because the SHA1 was never recorded; `OrphanReconciler` matches
+    /// them by metadata. Drives a warn-tone banner on Status.
+    public var inferredOrphanCount: Int = 0
 
     /// Threshold above which `lastScanBurstCount` triggers the mass-offload
     /// banner. Hard-coded for now; a settings-driven tuning knob could
@@ -141,6 +182,15 @@ public final class CairnAppModel {
     public var lastScanLooksLikeMassOffload: Bool {
         lastScanBurstCount >= Self.massOffloadThreshold
     }
+
+    /// True when the most recent scan re-enumerated the whole library
+    /// because the persistent-change token expired (or the saved token
+    /// archive failed to unarchive). Any deletion candidates surfaced
+    /// this pass are negative-signal-only with no quarantine clock —
+    /// `AppDependencies.performLiveReconciliation` promotes them all
+    /// into `pendingReviewCandidates` regardless of strictness, and the
+    /// Pending Review screen surfaces a banner explaining why.
+    public var lastScanWasTokenExpiryFullEnum: Bool = false
 
     /// Human-readable error from the most recent failed action. When set,
     /// `CairnAppRoot` presents an alert. Cleared to `nil` when the user
@@ -241,6 +291,19 @@ public final class CairnAppModel {
     /// bootstrap and after each sync/trash, so the Status pending
     /// review banner has data even before the first reconciliation.
     public var quarantineCount: Int = 0
+
+    /// Checksums observed locally during the most recent scan that match a
+    /// previously-successful cairn trash within Immich's 30-day hard-delete
+    /// window. The user pulled the photo back (Recently Deleted → Recover,
+    /// re-import) but the Immich mobile app silently no-ops the upload while
+    /// the asset is still in Immich trash with the same SHA1. After 30 days
+    /// the server purges and the photo is gone server-side — until then,
+    /// the user has a window to restore it on Immich too.
+    ///
+    /// Drives the warn-tone banner on Status. Each entry's `TrashedRecord`
+    /// carries the source runId so v2 can deep-link to run detail; v1 just
+    /// surfaces the count.
+    public var restoredAfterCairnTrash: [Checksum: JournalReader.TrashedRecord] = [:]
 
     public struct DeferredQueueSummary: Sendable, Equatable {
         /// Items that will actually be attempted on next drain.

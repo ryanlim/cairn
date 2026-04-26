@@ -17,34 +17,65 @@ import CairnCore
 ///     at all. Only appears in `.strict` mode; `.trusting` sends these
 ///     straight to trash candidates so they never land here.
 ///
+/// **Grouping by logical photo.** Rows are grouped by
+/// `(originalFileName, fileCreatedAt)` so an edit that produces a second
+/// Immich asset (same filename + creation, different SHA1) renders as a
+/// single card with a "N versions" badge. Tapping the card expands inline
+/// to show every version with a per-version label ("Original" when the
+/// checksum is anchored as a `firstObserved` value for a live local
+/// identifier, "Retired Nd ago" when it has a confirmed-deleted timestamp).
+///
 /// Per-row affordances mirror the Excluded screen's compact button style:
-/// two chips ("Trash now", "Exclude") on the trailing edge.
+/// three icon chips (trash / dismiss / shield) on the trailing edge of the
+/// collapsed card; they apply to every version in the group.
 public struct PendingReviewScreen: View {
 
-    public let heldCandidates: [CairnFixtures.CandidateFixture]
-    public let unconfirmedCandidates: [CairnFixtures.CandidateFixture]
-    /// Quarantine countdown per candidate id. Populated by the host from
-    /// `LiveReconciliation.confirmedDeletedAt`. Missing ids skip the
+    public let heldGroups: [PendingReviewGroup]
+    public let unconfirmedGroups: [PendingReviewGroup]
+    /// Quarantine countdown per checksum. Populated by the host from
+    /// `LiveReconciliation.confirmedDeletedAt`. Missing entries skip the
     /// countdown (falls back to "held").
     public let confirmedDeletedAt: [String: Date]
     public let quarantineDays: Int
     public let massOffloadCount: Int
     public let showsMassOffloadBanner: Bool
+    /// True when the most recent scan re-enumerated the library because
+    /// the persistent-change token expired. Surfaces a banner explaining
+    /// that the candidates below come from diff-only detection (no
+    /// quarantine clock), and takes precedence over the mass-offload
+    /// banner when both would otherwise show.
+    public let showsTokenExpiryBanner: Bool
     public let onBack: () -> Void
+    /// Approve a set of base64-SHA1 checksums for immediate trashing.
     public let onApprove: ([String]) -> Void
+    /// Add a set of checksums to the exclusion list.
     public let onExclude: ([String]) -> Void
+    /// Remove a set of checksums from the pending list without excluding.
     public let onDismiss: ([String]) -> Void
     public let onBulkExcludeOffload: () -> Void
 
     @Environment(\.cairnTokens) private var t
     @State private var pendingAction: PendingAction?
     @State private var selectionMode: Bool = false
-    @State private var selectedFilenames: Set<String> = []
+    /// Selected checksums (base64). Multi-version groups put every
+    /// version's checksum into this set as one toggle.
+    @State private var selectedChecksums: Set<String> = []
+    /// Group keys currently expanded inline.
+    @State private var expandedGroupKeys: Set<PendingReviewGroup.GroupKey> = []
+    /// Asset whose thumbnail is currently zoomed in the overlay. Tap
+    /// outside the overlay (or any other thumbnail) to dismiss. Mirrors
+    /// `DryRunSheet`'s `zoomedCandidate` pattern so the interaction
+    /// feels consistent across screens.
+    @State private var zoomedAsset: ServerAsset?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private enum PendingAction: Identifiable {
-        case approve(filename: String)
-        case exclude(filename: String)
-        case dismiss(filename: String)
+        case approveGroup(group: PendingReviewGroup)
+        case excludeGroup(group: PendingReviewGroup)
+        case dismissGroup(group: PendingReviewGroup)
+        case approveVersion(checksum: String, label: String)
+        case excludeVersion(checksum: String, label: String)
+        case dismissVersion(checksum: String, label: String)
         case bulkOffload(count: Int)
         case bulkApprove(count: Int)
         case bulkExcludeSelected(count: Int)
@@ -53,9 +84,12 @@ public struct PendingReviewScreen: View {
 
         var id: String {
             switch self {
-            case .approve(let name): return "approve-\(name)"
-            case .exclude(let name): return "exclude-\(name)"
-            case .dismiss(let name): return "dismiss-\(name)"
+            case .approveGroup(let g): return "approve-group-\(g.key.stableID)"
+            case .excludeGroup(let g): return "exclude-group-\(g.key.stableID)"
+            case .dismissGroup(let g): return "dismiss-group-\(g.key.stableID)"
+            case .approveVersion(let c, _): return "approve-version-\(c)"
+            case .excludeVersion(let c, _): return "exclude-version-\(c)"
+            case .dismissVersion(let c, _): return "dismiss-version-\(c)"
             case .bulkOffload(let n): return "bulk-\(n)"
             case .bulkApprove(let n): return "bulk-approve-\(n)"
             case .bulkExcludeSelected(let n): return "bulk-exclude-\(n)"
@@ -66,24 +100,26 @@ public struct PendingReviewScreen: View {
     }
 
     public init(
-        heldCandidates: [CairnFixtures.CandidateFixture] = [],
-        unconfirmedCandidates: [CairnFixtures.CandidateFixture] = [],
+        heldGroups: [PendingReviewGroup] = [],
+        unconfirmedGroups: [PendingReviewGroup] = [],
         confirmedDeletedAt: [String: Date] = [:],
         quarantineDays: Int = 14,
         massOffloadCount: Int = 0,
         showsMassOffloadBanner: Bool = false,
+        showsTokenExpiryBanner: Bool = false,
         onBack: @escaping () -> Void = {},
         onApprove: @escaping ([String]) -> Void = { _ in },
         onExclude: @escaping ([String]) -> Void = { _ in },
         onDismiss: @escaping ([String]) -> Void = { _ in },
         onBulkExcludeOffload: @escaping () -> Void = {}
     ) {
-        self.heldCandidates = heldCandidates
-        self.unconfirmedCandidates = unconfirmedCandidates
+        self.heldGroups = heldGroups
+        self.unconfirmedGroups = unconfirmedGroups
         self.confirmedDeletedAt = confirmedDeletedAt
         self.quarantineDays = quarantineDays
         self.massOffloadCount = massOffloadCount
         self.showsMassOffloadBanner = showsMassOffloadBanner
+        self.showsTokenExpiryBanner = showsTokenExpiryBanner
         self.onBack = onBack
         self.onApprove = onApprove
         self.onExclude = onExclude
@@ -91,8 +127,57 @@ public struct PendingReviewScreen: View {
         self.onBulkExcludeOffload = onBulkExcludeOffload
     }
 
-    private var totalCount: Int { heldCandidates.count + unconfirmedCandidates.count }
-    private var isEmpty: Bool { totalCount == 0 }
+    /// Convenience init that builds groups from raw `ServerAsset` lists.
+    /// `CairnAppRoot` uses this; tests prefer the group-list init so they
+    /// can assert on grouping output independently from the view.
+    public init(
+        heldAssets: [ServerAsset],
+        unconfirmedAssets: [ServerAsset],
+        firstObservedAnchors: Set<Checksum> = [],
+        confirmedDeletedAt: [Checksum: Date] = [:],
+        sourceLocalIdentifiersByChecksum: [Checksum: String] = [:],
+        quarantineDays: Int = 14,
+        massOffloadCount: Int = 0,
+        showsMassOffloadBanner: Bool = false,
+        showsTokenExpiryBanner: Bool = false,
+        onBack: @escaping () -> Void = {},
+        onApprove: @escaping ([String]) -> Void = { _ in },
+        onExclude: @escaping ([String]) -> Void = { _ in },
+        onDismiss: @escaping ([String]) -> Void = { _ in },
+        onBulkExcludeOffload: @escaping () -> Void = {}
+    ) {
+        self.heldGroups = PendingReviewGroup.grouped(
+            heldAssets,
+            firstObservedAnchors: firstObservedAnchors,
+            confirmedDeletedAt: confirmedDeletedAt,
+            sourceLocalIdentifiersByChecksum: sourceLocalIdentifiersByChecksum
+        )
+        self.unconfirmedGroups = PendingReviewGroup.grouped(
+            unconfirmedAssets,
+            firstObservedAnchors: firstObservedAnchors,
+            confirmedDeletedAt: confirmedDeletedAt,
+            sourceLocalIdentifiersByChecksum: sourceLocalIdentifiersByChecksum
+        )
+        self.confirmedDeletedAt = Dictionary(
+            uniqueKeysWithValues: confirmedDeletedAt.map { ($0.key.base64, $0.value) }
+        )
+        self.quarantineDays = quarantineDays
+        self.massOffloadCount = massOffloadCount
+        self.showsMassOffloadBanner = showsMassOffloadBanner
+        self.showsTokenExpiryBanner = showsTokenExpiryBanner
+        self.onBack = onBack
+        self.onApprove = onApprove
+        self.onExclude = onExclude
+        self.onDismiss = onDismiss
+        self.onBulkExcludeOffload = onBulkExcludeOffload
+    }
+
+    private var totalGroupCount: Int { heldGroups.count + unconfirmedGroups.count }
+    private var totalVersionCount: Int {
+        heldGroups.reduce(0) { $0 + $1.versions.count } +
+        unconfirmedGroups.reduce(0) { $0 + $1.versions.count }
+    }
+    private var isEmpty: Bool { totalGroupCount == 0 }
 
     public var body: some View {
         ZStack(alignment: .bottom) {
@@ -102,16 +187,22 @@ public struct PendingReviewScreen: View {
                     if isEmpty {
                         emptyState
                     } else {
-                        if showsMassOffloadBanner {
+                        // Token-expiry takes precedence over mass-offload —
+                        // it's the more specific cause for "this list is
+                        // bigger than usual" and tells the user something
+                        // the mass-offload banner doesn't.
+                        if showsTokenExpiryBanner {
+                            tokenExpiryCallout
+                        } else if showsMassOffloadBanner {
                             massOffloadCallout
                         }
-                        if !selectionMode && totalCount > 1 {
+                        if !selectionMode && totalVersionCount > 1 {
                             trashAllButton
                         }
-                        if !heldCandidates.isEmpty {
+                        if !heldGroups.isEmpty {
                             heldSection
                         }
-                        if !unconfirmedCandidates.isEmpty {
+                        if !unconfirmedGroups.isEmpty {
                             unconfirmedSection
                         }
                         // Trailing space so the last row clears the
@@ -124,6 +215,7 @@ public struct PendingReviewScreen: View {
                 // `.transition(.cairnBanner)` on the callout itself
                 // so the motion matches Status-screen banners.
                 .cairnBannerAnimation(value: showsMassOffloadBanner)
+                .cairnBannerAnimation(value: showsTokenExpiryBanner)
             }
             .background(t.bg)
 
@@ -133,6 +225,38 @@ public struct PendingReviewScreen: View {
             }
         }
         .cairnBannerAnimation(value: selectionMode)
+        .overlay {
+            if let zoomed = zoomedAsset {
+                ZStack {
+                    Color.black.opacity(0.7)
+                        .ignoresSafeArea()
+                        .onTapGesture {
+                            withAnimation(reduceMotion ? .none : .easeOut(duration: 0.15)) {
+                                zoomedAsset = nil
+                            }
+                        }
+                    VStack(spacing: 12) {
+                        ImmichAssetThumb(
+                            assetId: zoomed.id,
+                            filename: zoomed.originalFileName ?? "asset-\(zoomed.id.prefix(8))",
+                            size: 280,
+                            isLivePair: zoomed.livePhotoVideoId != nil
+                        )
+                        if let name = zoomed.originalFileName {
+                            Text(name)
+                                .font(.system(size: 14, design: .monospaced))
+                                .foregroundStyle(.white)
+                        }
+                        if let createdAt = zoomed.fileCreatedAt {
+                            Text(createdAt, format: .dateTime)
+                                .font(.system(size: 12))
+                                .foregroundStyle(.white.opacity(0.6))
+                        }
+                    }
+                }
+                .transition(.opacity)
+            }
+        }
         .confirmationDialog(
             confirmationTitle,
             isPresented: Binding(
@@ -151,7 +275,7 @@ public struct PendingReviewScreen: View {
 
     private var header: some View {
         AppHeader(
-            title: selectionMode ? (selectedFilenames.isEmpty ? "Select items" : "\(selectedFilenames.count) selected") : "Pending review",
+            title: selectionMode ? (selectedChecksums.isEmpty ? "Select items" : "\(selectedChecksums.count) selected") : "Pending review",
             subtitle: selectionMode ? nil : (isEmpty
                 ? "Nothing waiting — every candidate has been handled"
                 : subtitleCopy),
@@ -204,38 +328,54 @@ public struct PendingReviewScreen: View {
         )
     }
 
-    private var allFilenames: [String] {
-        (heldCandidates + unconfirmedCandidates).map(\.name)
+    private var allChecksums: [String] {
+        (heldGroups + unconfirmedGroups).flatMap { group in
+            group.versions.map(\.checksum.base64)
+        }
     }
 
     private var allSelected: Bool {
-        !allFilenames.isEmpty && Set(allFilenames).isSubset(of: selectedFilenames)
+        !allChecksums.isEmpty && Set(allChecksums).isSubset(of: selectedChecksums)
     }
 
     private func enterSelectionMode() {
         selectionMode = true
-        selectedFilenames = []
+        selectedChecksums = []
     }
 
     private func exitSelectionMode() {
         selectionMode = false
-        selectedFilenames = []
+        selectedChecksums = []
     }
 
     private func toggleSelectAll() {
         if allSelected {
-            selectedFilenames = []
+            selectedChecksums = []
         } else {
-            selectedFilenames = Set(allFilenames)
+            selectedChecksums = Set(allChecksums)
         }
     }
 
-    private func toggleSelection(_ filename: String) {
-        if selectedFilenames.contains(filename) {
-            selectedFilenames.remove(filename)
+    private func toggleGroupSelection(_ group: PendingReviewGroup) {
+        let groupChecksums = Set(group.versions.map(\.checksum.base64))
+        if groupChecksums.isSubset(of: selectedChecksums) {
+            selectedChecksums.subtract(groupChecksums)
         } else {
-            selectedFilenames.insert(filename)
+            selectedChecksums.formUnion(groupChecksums)
         }
+    }
+
+    private func toggleVersionSelection(_ checksum: String) {
+        if selectedChecksums.contains(checksum) {
+            selectedChecksums.remove(checksum)
+        } else {
+            selectedChecksums.insert(checksum)
+        }
+    }
+
+    private func isGroupFullySelected(_ group: PendingReviewGroup) -> Bool {
+        let groupChecksums = Set(group.versions.map(\.checksum.base64))
+        return !groupChecksums.isEmpty && groupChecksums.isSubset(of: selectedChecksums)
     }
 
     // MARK: - Bulk action bar
@@ -245,22 +385,22 @@ public struct PendingReviewScreen: View {
             Divider().background(t.divider)
             HStack(spacing: 10) {
                 bulkChip(
-                    label: "Move \(selectedFilenames.count) to Trash",
+                    label: "Move \(selectedChecksums.count) to Trash",
                     foreground: t.dangerInk,
-                    disabled: selectedFilenames.isEmpty,
-                    action: { pendingAction = .bulkApprove(count: selectedFilenames.count) }
+                    disabled: selectedChecksums.isEmpty,
+                    action: { pendingAction = .bulkApprove(count: selectedChecksums.count) }
                 )
                 bulkChip(
-                    label: "Dismiss \(selectedFilenames.count)",
+                    label: "Dismiss \(selectedChecksums.count)",
                     foreground: t.textBody,
-                    disabled: selectedFilenames.isEmpty,
-                    action: { pendingAction = .bulkDismiss(count: selectedFilenames.count) }
+                    disabled: selectedChecksums.isEmpty,
+                    action: { pendingAction = .bulkDismiss(count: selectedChecksums.count) }
                 )
                 bulkChip(
-                    label: "Exclude \(selectedFilenames.count)",
+                    label: "Exclude \(selectedChecksums.count)",
                     foreground: t.textBody,
-                    disabled: selectedFilenames.isEmpty,
-                    action: { pendingAction = .bulkExcludeSelected(count: selectedFilenames.count) }
+                    disabled: selectedChecksums.isEmpty,
+                    action: { pendingAction = .bulkExcludeSelected(count: selectedChecksums.count) }
                 )
             }
             .padding(.horizontal, 16)
@@ -290,11 +430,11 @@ public struct PendingReviewScreen: View {
 
     private var subtitleCopy: String {
         var parts: [String] = []
-        if !heldCandidates.isEmpty {
-            parts.append("\(heldCandidates.count) aging out")
+        if !heldGroups.isEmpty {
+            parts.append("\(heldGroups.count) aging out")
         }
-        if !unconfirmedCandidates.isEmpty {
-            parts.append("\(unconfirmedCandidates.count) unconfirmed")
+        if !unconfirmedGroups.isEmpty {
+            parts.append("\(unconfirmedGroups.count) unconfirmed")
         }
         return parts.joined(separator: " · ")
     }
@@ -302,11 +442,11 @@ public struct PendingReviewScreen: View {
     // MARK: - Trash all
 
     private var trashAllButton: some View {
-        Button(action: { pendingAction = .trashAll(count: totalCount) }) {
+        Button(action: { pendingAction = .trashAll(count: totalVersionCount) }) {
             HStack(spacing: 8) {
                 Image(systemName: "trash")
                     .font(.system(size: 14, weight: .semibold))
-                Text("Trash all \(totalCount) now")
+                Text("Trash all \(totalVersionCount) now")
                     .font(.system(size: 15, weight: .semibold))
             }
             .frame(maxWidth: .infinity)
@@ -352,6 +492,22 @@ public struct PendingReviewScreen: View {
         .padding(.bottom, 20)
     }
 
+    // MARK: - Token-expiry callout
+
+    /// Shown when the last scan re-enumerated the library because the
+    /// persistent-change token expired. The candidates that surfaced
+    /// arrived without quarantine clocks — diff-only — so we hold them
+    /// here regardless of strictness and tell the user why.
+    private var tokenExpiryCallout: some View {
+        Callout(.pending, icon: "clock.arrow.circlepath") {
+            (.cairnWord + Text(" was dormant long enough that the system change log expired. We re-indexed your library, but the \(totalVersionCount) candidates below are based on diff-only detection — review them before trashing."))
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal, 16)
+        .padding(.bottom, 12)
+        .transition(.cairnBanner)
+    }
+
     // MARK: - Mass-offload callout
 
     private var massOffloadCallout: some View {
@@ -374,7 +530,7 @@ public struct PendingReviewScreen: View {
     private var heldSection: some View {
         Group {
             KeylineSection("Aging out") {
-                Text("\(heldCandidates.count)")
+                Text("\(heldGroups.count)")
                     .font(.system(size: 11, weight: .semibold))
                     .tracking(0.99)
                     .foregroundStyle(t.textMuted)
@@ -382,18 +538,9 @@ public struct PendingReviewScreen: View {
             }
             CairnCard {
                 VStack(spacing: 0) {
-                    ForEach(Array(heldCandidates.enumerated()), id: \.element.id) { idx, c in
-                        PendingReviewRow(
-                            candidate: c,
-                            countdown: countdownFor(c),
-                            selectionMode: selectionMode,
-                            isSelected: selectedFilenames.contains(c.name),
-                            onToggleSelect: { toggleSelection(c.name) },
-                            onApprove: { pendingAction = .approve(filename: c.name) },
-                            onExclude: { pendingAction = .exclude(filename: c.name) },
-                            onDismiss: { pendingAction = .dismiss(filename: c.name) }
-                        )
-                        if idx < heldCandidates.count - 1 {
+                    ForEach(Array(heldGroups.enumerated()), id: \.element.id) { idx, group in
+                        groupCard(group, isUnconfirmed: false)
+                        if idx < heldGroups.count - 1 {
                             RowDivider()
                         }
                     }
@@ -406,7 +553,7 @@ public struct PendingReviewScreen: View {
     private var unconfirmedSection: some View {
         Group {
             KeylineSection("Unconfirmed") {
-                Text("\(unconfirmedCandidates.count)")
+                Text("\(unconfirmedGroups.count)")
                     .font(.system(size: 11, weight: .semibold))
                     .tracking(0.99)
                     .foregroundStyle(t.textMuted)
@@ -420,18 +567,9 @@ public struct PendingReviewScreen: View {
             .padding(.bottom, 12)
             CairnCard {
                 VStack(spacing: 0) {
-                    ForEach(Array(unconfirmedCandidates.enumerated()), id: \.element.id) { idx, c in
-                        PendingReviewRow(
-                            candidate: c,
-                            countdown: nil,
-                            selectionMode: selectionMode,
-                            isSelected: selectedFilenames.contains(c.name),
-                            onToggleSelect: { toggleSelection(c.name) },
-                            onApprove: { pendingAction = .approve(filename: c.name) },
-                            onExclude: { pendingAction = .exclude(filename: c.name) },
-                            onDismiss: { pendingAction = .dismiss(filename: c.name) }
-                        )
-                        if idx < unconfirmedCandidates.count - 1 {
+                    ForEach(Array(unconfirmedGroups.enumerated()), id: \.element.id) { idx, group in
+                        groupCard(group, isUnconfirmed: true)
+                        if idx < unconfirmedGroups.count - 1 {
                             RowDivider()
                         }
                     }
@@ -441,10 +579,96 @@ public struct PendingReviewScreen: View {
         }
     }
 
-    // MARK: - Countdown
+    // MARK: - Group card
 
-    private func countdownFor(_ candidate: CairnFixtures.CandidateFixture) -> String? {
-        guard let confirmedAt = confirmedDeletedAt[candidate.id] else { return nil }
+    @ViewBuilder
+    private func groupCard(_ group: PendingReviewGroup, isUnconfirmed: Bool) -> some View {
+        let isMulti = group.versions.count > 1
+        let isExpanded = expandedGroupKeys.contains(group.key)
+        VStack(spacing: 0) {
+            PendingReviewGroupRow(
+                group: group,
+                countdown: groupCountdown(group, isUnconfirmed: isUnconfirmed),
+                selectionMode: selectionMode,
+                isSelected: isGroupFullySelected(group),
+                isExpanded: isExpanded,
+                isMulti: isMulti,
+                onToggleSelect: { toggleGroupSelection(group) },
+                onToggleExpand: {
+                    if isMulti {
+                        if isExpanded {
+                            expandedGroupKeys.remove(group.key)
+                        } else {
+                            expandedGroupKeys.insert(group.key)
+                        }
+                    }
+                },
+                onApprove: { pendingAction = .approveGroup(group: group) },
+                onExclude: { pendingAction = .excludeGroup(group: group) },
+                onDismiss: { pendingAction = .dismissGroup(group: group) },
+                onTapThumb: { asset in
+                    withAnimation(reduceMotion ? .none : .easeOut(duration: 0.15)) {
+                        zoomedAsset = asset
+                    }
+                }
+            )
+            if isMulti && isExpanded {
+                ForEach(group.versions, id: \.id) { asset in
+                    RowDivider()
+                    PendingReviewVersionRow(
+                        asset: asset,
+                        label: versionLabel(for: asset, in: group),
+                        countdown: versionCountdown(asset, isUnconfirmed: isUnconfirmed),
+                        selectionMode: selectionMode,
+                        isSelected: selectedChecksums.contains(asset.checksum.base64),
+                        onToggleSelect: { toggleVersionSelection(asset.checksum.base64) },
+                        onApprove: {
+                            pendingAction = .approveVersion(
+                                checksum: asset.checksum.base64,
+                                label: asset.originalFileName ?? "version"
+                            )
+                        },
+                        onExclude: {
+                            pendingAction = .excludeVersion(
+                                checksum: asset.checksum.base64,
+                                label: asset.originalFileName ?? "version"
+                            )
+                        },
+                        onDismiss: {
+                            pendingAction = .dismissVersion(
+                                checksum: asset.checksum.base64,
+                                label: asset.originalFileName ?? "version"
+                            )
+                        },
+                        onTapThumb: { tappedAsset in
+                            withAnimation(reduceMotion ? .none : .easeOut(duration: 0.15)) {
+                                zoomedAsset = tappedAsset
+                            }
+                        }
+                    )
+                }
+            }
+        }
+    }
+
+    // MARK: - Countdown helpers
+
+    private func groupCountdown(_ group: PendingReviewGroup, isUnconfirmed: Bool) -> String? {
+        guard !isUnconfirmed else { return nil }
+        // Surface the soonest-eligible version's countdown — that's the
+        // one the user would most want to see at a glance.
+        let stamps = group.versions.compactMap { confirmedDeletedAt[$0.checksum.base64] }
+        guard let earliest = stamps.min() else { return nil }
+        return formatCountdown(earliest)
+    }
+
+    private func versionCountdown(_ asset: ServerAsset, isUnconfirmed: Bool) -> String? {
+        guard !isUnconfirmed else { return nil }
+        guard let stamp = confirmedDeletedAt[asset.checksum.base64] else { return nil }
+        return formatCountdown(stamp)
+    }
+
+    private func formatCountdown(_ confirmedAt: Date) -> String {
         let eligibleAt = confirmedAt.addingTimeInterval(TimeInterval(quarantineDays) * 86_400)
         let remaining = eligibleAt.timeIntervalSinceNow
         if remaining <= 0 { return "eligible" }
@@ -452,13 +676,47 @@ public struct PendingReviewScreen: View {
         return days == 1 ? "eligible in 1 day" : "eligible in \(days) days"
     }
 
+    // MARK: - Version labels
+
+    private func versionLabel(for asset: ServerAsset, in group: PendingReviewGroup) -> VersionLabel? {
+        // Use the precomputed `firstObserved` membership stamped into the
+        // group at construction time so labels are stable across re-renders.
+        if group.firstObservedChecksums.contains(asset.checksum) {
+            return .original
+        }
+        if let stamp = confirmedDeletedAt[asset.checksum.base64] {
+            return .retired(formatRelative(stamp))
+        }
+        return nil
+    }
+
+    /// `Nd ago` / `Nh ago` / `just now` — same shape as
+    /// `CairnTimeHelpers.relativeTime` but prefixed-friendly for the
+    /// "Retired …" label so we don't double-render "Retired Apr 21".
+    private func formatRelative(_ d: Date) -> String {
+        let diff = Int(Date().timeIntervalSince(d))
+        if diff < 60 { return "just now" }
+        let m = diff / 60
+        if m < 60 { return "\(m)m ago" }
+        let h = m / 60
+        if h < 24 { return "\(h)h ago" }
+        let days = h / 24
+        if days < 30 { return "\(days)d ago" }
+        let f = DateFormatter()
+        f.setLocalizedDateFormatFromTemplate("MMM d")
+        return f.string(from: d)
+    }
+
     // MARK: - Confirmation dialog
 
     private var confirmationTitle: String {
         switch pendingAction {
-        case .approve(let name): return "Move \(name) to Trash now?"
-        case .exclude(let name): return "Exclude \(name) from future runs?"
-        case .dismiss(let name): return "Dismiss \(name)?"
+        case .approveGroup(let g): return "Move \(groupNoun(g)) to Trash now?"
+        case .excludeGroup(let g): return "Exclude \(groupNoun(g)) from future runs?"
+        case .dismissGroup(let g): return "Dismiss \(groupNoun(g))?"
+        case .approveVersion(_, let l): return "Move \(l) version to Trash now?"
+        case .excludeVersion(_, let l): return "Exclude \(l) version from future runs?"
+        case .dismissVersion(_, let l): return "Dismiss \(l) version?"
         case .bulkOffload(let n): return "Exclude all \(n) recent deletions?"
         case .bulkApprove(let n): return "Move \(n) selected item\(n == 1 ? "" : "s") to Trash now?"
         case .bulkExcludeSelected(let n): return "Exclude \(n) selected item\(n == 1 ? "" : "s")?"
@@ -468,14 +726,43 @@ public struct PendingReviewScreen: View {
         }
     }
 
+    private func groupNoun(_ group: PendingReviewGroup) -> String {
+        // Source-id-keyed groups don't carry a filename in the key; fall
+        // back to the representative version's filename so the
+        // confirmation noun stays human-readable. Filename-keyed groups
+        // already encode the name in the key.
+        let name = group.versions.first?.originalFileName
+            ?? group.key.fallbackFilename
+            ?? "this photo"
+        if group.versions.count > 1 {
+            return "\(name) (\(group.versions.count) versions)"
+        }
+        return name
+    }
+
     private var confirmationMessage: Text {
         switch pendingAction {
-        case .approve:
+        case .approveGroup(let g):
+            if g.versions.count > 1 {
+                return Text("Skips the quarantine wait for every version. Immich keeps them in Trash for 30 days.")
+            }
             return Text("Skips the quarantine wait. Immich keeps it in Trash for 30 days.")
-        case .exclude:
+        case .excludeGroup(let g):
+            if g.versions.count > 1 {
+                return Text("Future runs will skip every version. You can unexclude later from Settings.")
+            }
             return Text("Future runs will skip this one. You can unexclude later from Settings.")
-        case .dismiss:
+        case .dismissGroup(let g):
+            if g.versions.count > 1 {
+                return Text("Removes every version from the pending list. If you delete the same photo again, they will reappear.")
+            }
             return Text("Removes it from the pending list. If you delete the same photo again, it will reappear.")
+        case .approveVersion:
+            return Text("Skips the quarantine wait for this version only. Immich keeps it in Trash for 30 days.")
+        case .excludeVersion:
+            return Text("Future runs will skip this version. The other versions in this group are unaffected.")
+        case .dismissVersion:
+            return Text("Removes this version from the pending list. Other versions in the group remain.")
         case .bulkOffload:
             return Text("All \(massOffloadCount) recent deletions will move to the excluded list. ") + .cairnWord + Text(" will stop considering them.")
         case .bulkApprove:
@@ -494,39 +781,54 @@ public struct PendingReviewScreen: View {
     @ViewBuilder
     private var confirmationButtons: some View {
         switch pendingAction {
-        case .approve(let name):
-            Button("Move to Trash", role: .destructive) { onApprove([name]) }
+        case .approveGroup(let g):
+            Button("Move to Trash", role: .destructive) {
+                onApprove(g.versions.map(\.checksum.base64))
+            }
             Button("Cancel", role: .cancel) {}
-        case .exclude(let name):
-            Button("Exclude", role: .destructive) { onExclude([name]) }
+        case .excludeGroup(let g):
+            Button("Exclude", role: .destructive) {
+                onExclude(g.versions.map(\.checksum.base64))
+            }
             Button("Cancel", role: .cancel) {}
-        case .dismiss(let name):
-            Button("Dismiss") { onDismiss([name]) }
+        case .dismissGroup(let g):
+            Button("Dismiss") {
+                onDismiss(g.versions.map(\.checksum.base64))
+            }
+            Button("Cancel", role: .cancel) {}
+        case .approveVersion(let c, _):
+            Button("Move to Trash", role: .destructive) { onApprove([c]) }
+            Button("Cancel", role: .cancel) {}
+        case .excludeVersion(let c, _):
+            Button("Exclude", role: .destructive) { onExclude([c]) }
+            Button("Cancel", role: .cancel) {}
+        case .dismissVersion(let c, _):
+            Button("Dismiss") { onDismiss([c]) }
             Button("Cancel", role: .cancel) {}
         case .bulkOffload:
             Button("Exclude all", role: .destructive) { onBulkExcludeOffload() }
             Button("Cancel", role: .cancel) {}
         case .bulkApprove:
             Button("Move selected to Trash", role: .destructive) {
-                onApprove(Array(selectedFilenames))
+                onApprove(Array(selectedChecksums))
                 exitSelectionMode()
             }
             Button("Cancel", role: .cancel) {}
         case .bulkExcludeSelected:
             Button("Exclude selected", role: .destructive) {
-                onExclude(Array(selectedFilenames))
+                onExclude(Array(selectedChecksums))
                 exitSelectionMode()
             }
             Button("Cancel", role: .cancel) {}
         case .bulkDismiss:
             Button("Dismiss selected") {
-                onDismiss(Array(selectedFilenames))
+                onDismiss(Array(selectedChecksums))
                 exitSelectionMode()
             }
             Button("Cancel", role: .cancel) {}
         case .trashAll:
             Button("Move all to Trash", role: .destructive) {
-                onApprove(allFilenames)
+                onApprove(allChecksums)
             }
             Button("Cancel", role: .cancel) {}
         case .none:
@@ -535,43 +837,218 @@ public struct PendingReviewScreen: View {
     }
 }
 
-// MARK: - Row
+// MARK: - Group model
 
-/// Single pending-review row. Shape mirrors `ExcludedRow` so the two
-/// screens feel like siblings: thumbnail, filename, metadata line, trailing
-/// chips. Two chips instead of one because pending-review has two actions
-/// where excluded has only "Remove."
-private struct PendingReviewRow: View {
-    let candidate: CairnFixtures.CandidateFixture
-    /// "eligible in N days" or similar. `nil` when unconfirmed (no positive
-    /// signal, so no quarantine clock to count down).
+extension PendingReviewScreen {
+
+    /// A logical photo cluster — every server asset whose checksums
+    /// resolve to the same source. The primary key is the source
+    /// PhotoKit `localIdentifier`, captured by the reconciler at
+    /// delete time and by `OrphanReconciler` at metadata-match time;
+    /// when no source-id is available we fall back to
+    /// `(originalFileName, fileCreatedAt)`. The fallback exists because
+    /// Immich sometimes stores microsecond-mismatched creation dates
+    /// across edited/original uploads of the same logical photo, so
+    /// pure metadata grouping fails to collapse them. Singleton groups
+    /// are still groups so the rendering path is uniform; the "N
+    /// versions" pill only appears when `versions.count > 1`.
+    public struct PendingReviewGroup: Identifiable, Equatable, Sendable {
+        public enum GroupKey: Hashable, Equatable, Sendable {
+            /// Two assets share a source PhotoKit identifier — the most
+            /// reliable signal that they're versions of the same
+            /// logical photo. Wins over filename grouping whenever
+            /// available.
+            case bySourceId(String)
+            /// Fallback when source-id isn't tracked for this asset.
+            /// Both fields can be nil; nil/nil collapses together but
+            /// stays distinct from any named group.
+            case byFilenameAndDate(filename: String?, date: Date?)
+
+            /// Stable, human-debuggable string for diagnostic IDs
+            /// (used in `PendingAction.id`). Hashing handles dedup;
+            /// this is only for SwiftUI identity stability.
+            fileprivate var stableID: String {
+                switch self {
+                case .bySourceId(let id):
+                    return "src|\(id)"
+                case .byFilenameAndDate(let filename, let date):
+                    let nameSlug = filename ?? "<no-name>"
+                    let dateSlug = date.map { String($0.timeIntervalSince1970) } ?? "<no-date>"
+                    return "fn|\(nameSlug)|\(dateSlug)"
+                }
+            }
+
+            /// Filename embedded in the key, when available. Source-id-
+            /// keyed groups don't carry a filename — callers fall back
+            /// to the representative version's `originalFileName` for
+            /// display. `nil` for `.bySourceId` and for filename-keyed
+            /// groups whose filename was itself nil.
+            fileprivate var fallbackFilename: String? {
+                switch self {
+                case .bySourceId: return nil
+                case .byFilenameAndDate(let filename, _): return filename
+                }
+            }
+        }
+
+        public let key: GroupKey
+        public let versions: [ServerAsset]
+        /// Subset of `versions` whose checksums are in
+        /// `firstObservedAnchors`. Stamped at construction time so the
+        /// view's label resolution stays in sync with the ordering decision.
+        public let firstObservedChecksums: Set<Checksum>
+
+        public var id: GroupKey { key }
+
+        public init(key: GroupKey, versions: [ServerAsset], firstObservedChecksums: Set<Checksum> = []) {
+            self.key = key
+            self.versions = versions
+            self.firstObservedChecksums = firstObservedChecksums
+        }
+
+        /// Build a list of groups from a flat asset list. Group-level
+        /// ordering preserves the order each key first appears. Per
+        /// asset, the key is resolved in this priority:
+        ///   1. `sourceLocalIdentifiersByChecksum[asset.checksum]` if
+        ///      present → `.bySourceId(localId)`. Most reliable signal.
+        ///   2. `.byFilenameAndDate(originalFileName, fileCreatedAt)`.
+        ///      Both fields may be nil; the (nil, nil) bucket still
+        ///      collapses together but stays distinct from any named
+        ///      group.
+        /// Within a group:
+        ///   1. Anchored ("Original") versions first.
+        ///   2. Then by `confirmedDeletedAt` ascending — oldest retired
+        ///      first.
+        ///   3. Then by `id` for stability when the prior keys tie.
+        public static func grouped(
+            _ assets: [ServerAsset],
+            firstObservedAnchors: Set<Checksum> = [],
+            confirmedDeletedAt: [Checksum: Date] = [:],
+            sourceLocalIdentifiersByChecksum: [Checksum: String] = [:]
+        ) -> [PendingReviewGroup] {
+            var orderedKeys: [GroupKey] = []
+            var buckets: [GroupKey: [ServerAsset]] = [:]
+            for asset in assets {
+                let key: GroupKey
+                if let localId = sourceLocalIdentifiersByChecksum[asset.checksum] {
+                    key = .bySourceId(localId)
+                } else {
+                    key = .byFilenameAndDate(
+                        filename: asset.originalFileName,
+                        date: asset.fileCreatedAt
+                    )
+                }
+                if buckets[key] == nil {
+                    orderedKeys.append(key)
+                    buckets[key] = [asset]
+                } else {
+                    buckets[key]?.append(asset)
+                }
+            }
+            return orderedKeys.map { key in
+                let versions = buckets[key, default: []]
+                let sorted = versions.sorted { lhs, rhs in
+                    let lAnchored = firstObservedAnchors.contains(lhs.checksum)
+                    let rAnchored = firstObservedAnchors.contains(rhs.checksum)
+                    if lAnchored != rAnchored { return lAnchored }
+                    let lStamp = confirmedDeletedAt[lhs.checksum]
+                    let rStamp = confirmedDeletedAt[rhs.checksum]
+                    switch (lStamp, rStamp) {
+                    case let (l?, r?) where l != r: return l < r
+                    case (.some, .none): return true
+                    case (.none, .some): return false
+                    default: return lhs.id < rhs.id
+                    }
+                }
+                let anchored = Set(sorted.map(\.checksum)).intersection(firstObservedAnchors)
+                return PendingReviewGroup(
+                    key: key,
+                    versions: sorted,
+                    firstObservedChecksums: anchored
+                )
+            }
+        }
+    }
+}
+
+// MARK: - Version label
+
+private enum VersionLabel: Equatable {
+    case original
+    /// Already retired; payload is the rendered relative-time string
+    /// ("3d ago", "just now", "Apr 21").
+    case retired(String)
+
+    var text: String {
+        switch self {
+        case .original: return "Original"
+        case .retired(let when): return "Retired \(when)"
+        }
+    }
+}
+
+// MARK: - Group row (collapsed card)
+
+private struct PendingReviewGroupRow: View {
+    let group: PendingReviewScreen.PendingReviewGroup
     let countdown: String?
     let selectionMode: Bool
     let isSelected: Bool
+    let isExpanded: Bool
+    let isMulti: Bool
     let onToggleSelect: () -> Void
+    let onToggleExpand: () -> Void
     let onApprove: () -> Void
     let onExclude: () -> Void
     let onDismiss: () -> Void
+    /// Called with the row's representative asset when the thumbnail
+    /// itself is tapped. Routes to the screen-level zoom overlay so a
+    /// tap on the thumb enlarges it without triggering selection or
+    /// expansion (handled by the row body's tap gesture).
+    let onTapThumb: (ServerAsset) -> Void
 
     @Environment(\.cairnTokens) private var t
 
     var body: some View {
+        // Pick the first version (post-sort: anchored or oldest-retired)
+        // as the "face" of the group — its assetId drives the thumbnail.
+        let representative = group.versions.first
+        let displayName = representative?.originalFileName
+            ?? group.key.fallbackFilename
+            ?? "asset-\(representative?.id.prefix(8) ?? "")"
         HStack(alignment: .center, spacing: 12) {
             if selectionMode {
                 selectionIndicator
             }
-            ImmichAssetThumb(assetId: candidate.assetId, filename: candidate.name, size: 44, isLivePair: candidate.isLivePair)
+            Button {
+                guard let asset = representative else { return }
+                onTapThumb(asset)
+            } label: {
+                ImmichAssetThumb(
+                    assetId: representative?.id,
+                    filename: displayName,
+                    size: 44,
+                    isLivePair: representative?.livePhotoVideoId != nil
+                )
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("View larger thumbnail of \(displayName)")
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(candidate.name)
-                    .font(.system(size: 13, design: .monospaced))
-                    .tracking(-0.065)
-                    .foregroundStyle(t.text)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
+                HStack(spacing: 6) {
+                    Text(displayName)
+                        .font(.system(size: 13, design: .monospaced))
+                        .tracking(-0.065)
+                        .foregroundStyle(t.text)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    if isMulti {
+                        versionsPill
+                    }
+                }
 
                 HStack(spacing: 8) {
-                    Text(kindLabel)
+                    Text(kindLabel(for: representative))
                     if let countdown {
                         Text("·")
                         Text(countdown)
@@ -584,25 +1061,52 @@ private struct PendingReviewRow: View {
             .frame(maxWidth: .infinity, alignment: .leading)
 
             if !selectionMode {
-                HStack(spacing: 8) {
-                    RowIconButton(
-                        systemName: "trash",
-                        tone: .danger,
-                        accessibilityLabel: "Move \(candidate.name) to Trash",
-                        action: onApprove
-                    )
-                    RowIconButton(
-                        systemName: "xmark.circle",
-                        tone: .neutral,
-                        accessibilityLabel: "Dismiss \(candidate.name)",
-                        action: onDismiss
-                    )
-                    RowIconButton(
-                        systemName: "shield",
-                        tone: .neutral,
-                        accessibilityLabel: "Exclude \(candidate.name)",
-                        action: onExclude
-                    )
+                if isMulti {
+                    HStack(spacing: 8) {
+                        RowIconButton(
+                            systemName: "trash",
+                            tone: .danger,
+                            accessibilityLabel: "Move all \(group.versions.count) versions of \(displayName) to Trash",
+                            action: onApprove
+                        )
+                        RowIconButton(
+                            systemName: "xmark.circle",
+                            tone: .neutral,
+                            accessibilityLabel: "Dismiss all \(group.versions.count) versions of \(displayName)",
+                            action: onDismiss
+                        )
+                        RowIconButton(
+                            systemName: "shield",
+                            tone: .neutral,
+                            accessibilityLabel: "Exclude all \(group.versions.count) versions of \(displayName)",
+                            action: onExclude
+                        )
+                        Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(t.textMuted)
+                            .frame(width: 32, height: 28)
+                    }
+                } else {
+                    HStack(spacing: 8) {
+                        RowIconButton(
+                            systemName: "trash",
+                            tone: .danger,
+                            accessibilityLabel: "Move \(displayName) to Trash",
+                            action: onApprove
+                        )
+                        RowIconButton(
+                            systemName: "xmark.circle",
+                            tone: .neutral,
+                            accessibilityLabel: "Dismiss \(displayName)",
+                            action: onDismiss
+                        )
+                        RowIconButton(
+                            systemName: "shield",
+                            tone: .neutral,
+                            accessibilityLabel: "Exclude \(displayName)",
+                            action: onExclude
+                        )
+                    }
                 }
             }
         }
@@ -610,12 +1114,31 @@ private struct PendingReviewRow: View {
         .padding(.vertical, 12)
         .contentShape(Rectangle())
         .onTapGesture {
-            // In selection mode the whole row becomes a toggle — large
-            // hit target, easier for thumb navigation through a long
-            // list. Chips are hidden in this mode so there's no
-            // competing gesture.
-            if selectionMode { onToggleSelect() }
+            // In selection mode: toggle the whole group. Otherwise: a
+            // multi-version tap expands; a singleton tap is a no-op
+            // (the icon chips on the right remain the action surface,
+            // matching the existing single-row interaction model).
+            if selectionMode {
+                onToggleSelect()
+            } else if isMulti {
+                onToggleExpand()
+            }
         }
+    }
+
+    private var versionsPill: some View {
+        Text("\(group.versions.count) versions")
+            .font(.system(size: 10, weight: .semibold))
+            .tracking(0.55)
+            .foregroundStyle(t.textBody)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(t.bg)
+            .overlay(
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .strokeBorder(t.divider, lineWidth: 0.5)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
     }
 
     private var selectionIndicator: some View {
@@ -633,12 +1156,151 @@ private struct PendingReviewRow: View {
         .accessibilityLabel(isSelected ? "Selected" : "Not selected")
     }
 
-    private var kindLabel: String {
-        switch candidate.kind {
-        case .photo:    return "photo"
-        case .video:    return "video"
-        case .livePair: return "live-pair"
+    private func kindLabel(for asset: ServerAsset?) -> String {
+        guard let asset else { return "asset" }
+        let name = asset.originalFileName ?? ""
+        let ext = (name as NSString).pathExtension.lowercased()
+        let isVideo = ["mov", "mp4", "m4v", "avi", "3gp"].contains(ext)
+        if asset.livePhotoVideoId != nil { return "live-pair" }
+        return isVideo ? "video" : "photo"
+    }
+}
+
+// MARK: - Version row (expanded leaf)
+
+private struct PendingReviewVersionRow: View {
+    let asset: ServerAsset
+    let label: VersionLabel?
+    let countdown: String?
+    let selectionMode: Bool
+    let isSelected: Bool
+    let onToggleSelect: () -> Void
+    let onApprove: () -> Void
+    let onExclude: () -> Void
+    let onDismiss: () -> Void
+    let onTapThumb: (ServerAsset) -> Void
+
+    @Environment(\.cairnTokens) private var t
+
+    var body: some View {
+        let displayName = asset.originalFileName ?? "asset-\(asset.id.prefix(8))"
+        HStack(alignment: .center, spacing: 12) {
+            // Inset to visually nest under the group row.
+            Spacer().frame(width: 8)
+            if selectionMode {
+                selectionIndicator
+            }
+            Button {
+                onTapThumb(asset)
+            } label: {
+                ImmichAssetThumb(
+                    assetId: asset.id,
+                    filename: displayName,
+                    size: 32,
+                    isLivePair: asset.livePhotoVideoId != nil
+                )
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("View larger thumbnail of \(displayName)")
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(checksumPrefix)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(t.textMuted)
+                    if let label {
+                        labelPill(label)
+                    }
+                }
+                if let countdown {
+                    Text(countdown)
+                        .font(.system(size: 11))
+                        .foregroundStyle(t.textMuted)
+                        .lineLimit(1)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            if !selectionMode {
+                HStack(spacing: 8) {
+                    RowIconButton(
+                        systemName: "trash",
+                        tone: .danger,
+                        accessibilityLabel: "Move this version to Trash",
+                        action: onApprove
+                    )
+                    RowIconButton(
+                        systemName: "xmark.circle",
+                        tone: .neutral,
+                        accessibilityLabel: "Dismiss this version",
+                        action: onDismiss
+                    )
+                    RowIconButton(
+                        systemName: "shield",
+                        tone: .neutral,
+                        accessibilityLabel: "Exclude this version",
+                        action: onExclude
+                    )
+                }
+            }
         }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(t.bg.opacity(0.4))
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if selectionMode { onToggleSelect() }
+        }
+    }
+
+    /// First 8 chars of the base64 SHA1 — enough to disambiguate
+    /// versions visually without printing the whole 28-char string.
+    private var checksumPrefix: String {
+        let s = asset.checksum.base64
+        return s.count > 8 ? String(s.prefix(8)) + "…" : s
+    }
+
+    @ViewBuilder
+    private func labelPill(_ label: VersionLabel) -> some View {
+        let tone: Color = {
+            switch label {
+            case .original: return t.verifiedInk
+            case .retired:  return t.textMuted
+            }
+        }()
+        let bg: Color = {
+            switch label {
+            case .original: return t.verifiedSoft
+            case .retired:  return t.bg
+            }
+        }()
+        Text(label.text)
+            .font(.system(size: 10, weight: .semibold))
+            .tracking(0.55)
+            .foregroundStyle(tone)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(bg)
+            .overlay(
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .strokeBorder(t.divider, lineWidth: 0.5)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+    }
+
+    private var selectionIndicator: some View {
+        ZStack {
+            Circle()
+                .strokeBorder(isSelected ? t.primary : t.divider, lineWidth: isSelected ? 0 : 1)
+                .background(Circle().fill(isSelected ? t.primary : .clear))
+                .frame(width: 18, height: 18)
+            if isSelected {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.white)
+            }
+        }
+        .accessibilityLabel(isSelected ? "Selected" : "Not selected")
     }
 }
 
@@ -689,16 +1351,17 @@ private struct RowIconButton: View {
 
 #if DEBUG
 #Preview("Pending review — populated") {
-    let held = Array(CairnFixtures.candidates.prefix(5))
-    let unconfirmed = Array(CairnFixtures.candidates.dropFirst(5).prefix(3))
-    let confirmedAt: [String: Date] = Dictionary(
-        uniqueKeysWithValues: held.enumerated().map { i, c in
-            (c.id, Date(timeIntervalSinceNow: -TimeInterval(i) * 86_400))
+    let held = Array(CairnFixtures.pendingHeldAssets.prefix(5))
+    let unconfirmed = Array(CairnFixtures.pendingUnconfirmedAssets.prefix(3))
+    let confirmedAt: [Checksum: Date] = Dictionary(
+        uniqueKeysWithValues: held.enumerated().map { i, a in
+            (a.checksum, Date(timeIntervalSinceNow: -TimeInterval(i) * 86_400))
         }
     )
     return PendingReviewScreen(
-        heldCandidates: held,
-        unconfirmedCandidates: unconfirmed,
+        heldAssets: held,
+        unconfirmedAssets: unconfirmed,
+        firstObservedAnchors: CairnFixtures.pendingFirstObservedAnchors,
         confirmedDeletedAt: confirmedAt,
         quarantineDays: 14,
         massOffloadCount: 0,
@@ -707,14 +1370,27 @@ private struct RowIconButton: View {
     .cairnTheme()
 }
 
+#Preview("Pending review — multi-version groups") {
+    return PendingReviewScreen(
+        heldAssets: CairnFixtures.pendingHeldAssets,
+        unconfirmedAssets: [],
+        firstObservedAnchors: CairnFixtures.pendingFirstObservedAnchors,
+        confirmedDeletedAt: Dictionary(uniqueKeysWithValues:
+            CairnFixtures.pendingHeldAssets.map { ($0.checksum, Date(timeIntervalSinceNow: -86_400 * 2)) }
+        ),
+        quarantineDays: 14
+    )
+    .cairnTheme()
+}
+
 #Preview("Pending review — mass offload") {
-    let held = Array(CairnFixtures.candidates.prefix(12))
-    let confirmedAt: [String: Date] = Dictionary(
-        uniqueKeysWithValues: held.map { ($0.id, Date(timeIntervalSinceNow: -3_600)) }
+    let held = Array(CairnFixtures.pendingHeldAssets.prefix(8))
+    let confirmedAt: [Checksum: Date] = Dictionary(
+        uniqueKeysWithValues: held.map { ($0.checksum, Date(timeIntervalSinceNow: -3_600)) }
     )
     return PendingReviewScreen(
-        heldCandidates: held,
-        unconfirmedCandidates: [],
+        heldAssets: held,
+        unconfirmedAssets: [],
         confirmedDeletedAt: confirmedAt,
         quarantineDays: 14,
         massOffloadCount: 312,
@@ -729,10 +1405,11 @@ private struct RowIconButton: View {
 }
 
 #Preview("Pending review — dark") {
-    let held = Array(CairnFixtures.candidates.prefix(4))
+    let held = Array(CairnFixtures.pendingHeldAssets.prefix(4))
     return PendingReviewScreen(
-        heldCandidates: held,
-        confirmedDeletedAt: Dictionary(uniqueKeysWithValues: held.map { ($0.id, Date()) }),
+        heldAssets: held,
+        unconfirmedAssets: [],
+        confirmedDeletedAt: Dictionary(uniqueKeysWithValues: held.map { ($0.checksum, Date()) }),
         quarantineDays: 14
     )
     .cairnTheme()

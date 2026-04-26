@@ -11,10 +11,16 @@ private let syncLog = Logger(subsystem: "app.cairn.ios", category: "sync")
 /// closure-based callback we can wire from `AppDependencies`. Holds a
 /// strong reference to the observer so PhotoKit keeps delivering events;
 /// nilled out on sign-out.
+///
+/// Hands the raw `PHChange` to the callback so the host can compute
+/// inserted/deleted deltas against a tracked `PHFetchResult` — early
+/// enough to record metadata before the asset disappears (the cull-
+/// burst case where the user takes and deletes a photo within the
+/// debounced-sync window).
 private final class PhotoLibraryChangeBridge: NSObject, PHPhotoLibraryChangeObserver, @unchecked Sendable {
-    let onChange: @Sendable () -> Void
-    init(onChange: @escaping @Sendable () -> Void) { self.onChange = onChange }
-    func photoLibraryDidChange(_ change: PHChange) { onChange() }
+    let onChange: @Sendable (PHChange) -> Void
+    init(onChange: @escaping @Sendable (PHChange) -> Void) { self.onChange = onChange }
+    func photoLibraryDidChange(_ change: PHChange) { onChange(change) }
 }
 
 @MainActor
@@ -38,8 +44,10 @@ final class AppDependencies {
     private(set) var everSeenStore: SwiftDataEverSeenStore?
     private(set) var exclusionStore: SwiftDataExclusionStore?
     private(set) var confirmedDeletedStore: SwiftDataConfirmedDeletedStore?
+    private(set) var deletionSourceStore: SwiftDataDeletionSourceStore?
     private(set) var tokenStore: SwiftDataPersistentChangeTokenStore?
     private(set) var thumbnailStore: SwiftDataThumbnailStore?
+    private(set) var editRetirementStore: SwiftDataEditRetirementStore?
     private(set) var journal: DeletionJournal?
 
     var persistentChangeReconciler: PhotoKitPersistentChangeReconciler? {
@@ -62,6 +70,8 @@ final class AppDependencies {
             tokens: tokens,
             deferredStore: deferredHashStore,
             metadataStore: localAssetMetadataStore,
+            editRetirement: editRetirementStore,
+            deletionSource: deletionSourceStore,
             maxAssets: Self.resolveTestingAssetCap(),
             maxICloudBytesPerAsset: bytesLimit,
             hardCeilingBytes: ceilingBytes,
@@ -157,6 +167,13 @@ final class AppDependencies {
     private var photoLibraryBridge: PhotoLibraryChangeBridge?
     private var pendingForegroundSyncTask: Task<Void, Never>?
 
+    /// Tracked fetch the foreground observer diffs against. Required to
+    /// turn a `PHChange` into `insertedObjects` without re-enumerating
+    /// the whole library — that's how we capture metadata eagerly,
+    /// before the debounced-sync runs (which is too late if the user
+    /// deletes the asset in the meantime).
+    private var trackedLibraryFetch: PHFetchResult<PHAsset>?
+
     /// Server-side checksum set, populated early in the sync so the
     /// hash-progress callback can compute a running "matched" count.
     /// Cleared at the start of each reconciliation and filled once
@@ -226,7 +243,9 @@ final class AppDependencies {
         self.everSeenStore = SwiftDataEverSeenStore(container: container)
         self.exclusionStore = SwiftDataExclusionStore(container: container)
         self.confirmedDeletedStore = SwiftDataConfirmedDeletedStore(container: container)
+        self.deletionSourceStore = SwiftDataDeletionSourceStore(container: container)
         self.tokenStore = SwiftDataPersistentChangeTokenStore(container: container)
+        self.editRetirementStore = SwiftDataEditRetirementStore(container: container)
         let thumbStore = SwiftDataThumbnailStore(container: container)
         self.thumbnailStore = thumbStore
 
@@ -298,6 +317,8 @@ final class AppDependencies {
             try? await tokenStore?.clear()
             try? await everSeenStore?.clear()
             try? await confirmedDeletedStore?.clear()
+            try? await deletionSourceStore?.clear()
+            try? await editRetirementStore?.clear()
         }
         #endif
 
@@ -362,15 +383,33 @@ final class AppDependencies {
     }
 
     /// Register a foreground PhotoKit change observer. When the photo
-    /// library changes (insert, update, delete), schedule a debounced
-    /// incremental sync so new photos get hashed within seconds —
-    /// closing the take→quickly-delete window without waiting for
-    /// background refresh.
+    /// library changes (insert, update, delete), eagerly record metadata
+    /// for the inserted assets (filename + creationDate + size) so the
+    /// orphan reconciler can match them against the server even if
+    /// they're deleted before cairn finishes hashing them. Then schedule
+    /// a debounced incremental sync so new photos get hashed within
+    /// seconds — closing the take→quickly-delete window without waiting
+    /// for background refresh.
     private func registerPhotoLibraryObserver() {
         guard photoLibraryBridge == nil else { return }
         guard PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized else { return }
-        let bridge = PhotoLibraryChangeBridge { [weak self] in
+
+        // Build the tracked fetch synchronously here on MainActor.
+        // `changeDetails(for:)` requires a fetch result against which
+        // PHChange can compute deltas. The same options as
+        // `refreshLibrarySizeStats` so observed inserts mirror what
+        // reconciliation will see.
+        let opts = PHFetchOptions()
+        opts.includeHiddenAssets = false
+        opts.includeAssetSourceTypes = [.typeUserLibrary]
+        self.trackedLibraryFetch = PHAsset.fetchAssets(with: opts)
+
+        let bridge = PhotoLibraryChangeBridge { [weak self] change in
+            // PhotoKit calls this on a background queue. Hop to
+            // MainActor before touching `trackedLibraryFetch` and
+            // before kicking the metadata-record task off the actor.
             Task { @MainActor [weak self] in
+                self?.handlePhotoLibraryChange(change)
                 self?.scheduleForegroundSync()
             }
         }
@@ -379,10 +418,72 @@ final class AppDependencies {
         syncLog.info("[cairn.boot] photo library observer registered")
     }
 
+    /// Pull `insertedObjects` out of the tracked fetch and snapshot
+    /// metadata for each one before the debounced sync runs. Without
+    /// this hop, an asset added and then deleted within the 1.5s
+    /// debounce never gets metadata recorded — and `OrphanReconciler`
+    /// has nothing to match against.
+    private func handlePhotoLibraryChange(_ change: PHChange) {
+        guard let tracked = trackedLibraryFetch,
+              let details = change.changeDetails(for: tracked) else { return }
+        // Update the tracked fetch to the post-change snapshot so the
+        // *next* event diffs against the right baseline.
+        self.trackedLibraryFetch = details.fetchResultAfterChanges
+
+        // Diagnostic — tells us whether the observer fired live (vs
+        // cairn being suspended during the edit) and what the change
+        // details report. When orphan-matching fails to surface an
+        // edited-then-deleted asset, this is the first line to check:
+        // if `chg=0` for an edit, the observer didn't see it and the
+        // metadata pipeline falls back to scan-time (which can't fetch
+        // a deleted asset).
+        syncLog.notice("[cairn.observer] photoLibraryDidChange: ins=\(details.insertedObjects.count, privacy: .public) chg=\(details.changedObjects.count, privacy: .public) rm=\(details.removedObjects.count, privacy: .public)")
+
+        // Cover both new assets AND edits-of-existing-assets. PhotoKit
+        // surfaces edits as `changedObjects` (modificationDate advances,
+        // bytes change). Without including them here, the observer-
+        // time metadata path misses the edit-then-delete race: the
+        // metadata for the about-to-be-edited id never gets refreshed,
+        // and if the user deletes within the debounce window, the scan-
+        // time fallback (`observeAndFilter`) can't fetch the deleted
+        // asset to record metadata either, leaving OrphanReconciler with
+        // nothing to match against asset_E on the server.
+        let toCapture = details.insertedObjects + details.changedObjects
+        guard !toCapture.isEmpty else { return }
+        let now = Date()
+        var entries: [LocalAssetMetadata] = []
+        entries.reserveCapacity(toCapture.count)
+        for asset in toCapture {
+            let resources = PHAssetResource.assetResources(for: asset)
+            // Primary = the same resource cairn hashes (`.fullSizePhoto`
+            // for edits, `.photo` otherwise). Aligning with the hash
+            // pipeline AND with Immich's own upload-resource selection
+            // so the filename we record matches what Immich stores.
+            let primary = PhotoKitPhotoEnumerator.selectPrimaryResource(from: resources)
+            let size = (primary?.value(forKey: "fileSize") as? NSNumber)?.int64Value
+            entries.append(LocalAssetMetadata(
+                localIdentifier: asset.localIdentifier,
+                originalFileName: primary?.originalFilename,
+                creationDate: asset.creationDate,
+                modificationDate: asset.modificationDate,
+                fileSize: size,
+                observedAt: now
+            ))
+        }
+        let store = self.localAssetMetadataStore
+        Task {
+            // Best-effort: a write failure here is non-fatal — the
+            // scan-time metadata recording in `observeAndFilter` is
+            // still in place as a fallback.
+            try? await store.record(entries)
+        }
+    }
+
     private func unregisterPhotoLibraryObserver() {
         guard let bridge = photoLibraryBridge else { return }
         PHPhotoLibrary.shared().unregisterChangeObserver(bridge)
         photoLibraryBridge = nil
+        trackedLibraryFetch = nil
     }
 
     /// Debounced sync trigger from the change observer. Coalesces bursts
@@ -418,6 +519,59 @@ final class AppDependencies {
         let scan = try await reconciler.runDeletionScan()
         let drain = try await reconciler.drainDeferred()
         return (scan, drain)
+    }
+
+    /// Backfill `LocalAssetMetadataStore` for cached ids that are still
+    /// alive in PhotoKit but missing from the metadata store. The
+    /// observer-time eager handler only captures events while cairn is
+    /// alive — older photos and observer-suspended-edits leave gaps.
+    /// Without this pass, OrphanReconciler can't match the affected
+    /// assets when they later get edited+deleted fast.
+    ///
+    /// Idempotent: only writes for ids that don't already have a
+    /// metadata entry, and reads via a single `snapshot()` call. Cheap
+    /// on warm caches; a few seconds the first time.
+    @MainActor
+    private func backfillMetadataIfNeeded(visibleFetch: PHFetchResult<PHAsset>) async {
+        let metadataSnapshot = (try? await self.localAssetMetadataStore.snapshot()) ?? []
+        let knownIds = Set(metadataSnapshot.map(\.localIdentifier))
+        let cacheIds = (try? await self.localHashStore.allLocalIdentifiers()) ?? []
+        let missingFromMetadata = cacheIds.subtracting(knownIds)
+        guard !missingFromMetadata.isEmpty else { return }
+
+        // Intersect with currently-alive PHAssets — we can only
+        // capture metadata for assets PhotoKit can still hand us. Build
+        // a quick lookup from the visibleFetch to avoid an N×M scan.
+        var liveById: [String: PHAsset] = [:]
+        liveById.reserveCapacity(visibleFetch.count)
+        visibleFetch.enumerateObjects { asset, _, _ in
+            liveById[asset.localIdentifier] = asset
+        }
+        let backfillTargets = missingFromMetadata.compactMap { liveById[$0] }
+        guard !backfillTargets.isEmpty else { return }
+
+        let now = Date()
+        var entries: [LocalAssetMetadata] = []
+        entries.reserveCapacity(backfillTargets.count)
+        for asset in backfillTargets {
+            let resources = PHAssetResource.assetResources(for: asset)
+            let primary = PhotoKitPhotoEnumerator.selectPrimaryResource(from: resources)
+            let size = (primary?.value(forKey: "fileSize") as? NSNumber)?.int64Value
+            entries.append(LocalAssetMetadata(
+                localIdentifier: asset.localIdentifier,
+                originalFileName: primary?.originalFilename,
+                creationDate: asset.creationDate,
+                modificationDate: asset.modificationDate,
+                fileSize: size,
+                observedAt: now
+            ))
+        }
+        do {
+            try await self.localAssetMetadataStore.record(entries)
+            syncLog.notice("[cairn.metadata] backfilled \(entries.count, privacy: .public) entries (cache=\(cacheIds.count, privacy: .public) had-metadata=\(knownIds.count, privacy: .public) still-missing=\(missingFromMetadata.count - entries.count, privacy: .public) — those PHAssets are no longer fetchable)")
+        } catch {
+            syncLog.error("[cairn.metadata] backfill failed: \(Self.describeSyncError(error), privacy: .public)")
+        }
     }
 
     // MARK: - Live reconciliation
@@ -485,11 +639,68 @@ final class AppDependencies {
         }
 
         syncLog.info("[cairn.sync] local checksums fetched in \(Int(Date().timeIntervalSince(t1) * 1000))ms (\(indexedCount) entries)")
+
+        // Bulk metadata backfill: cairn's observer-time metadata path
+        // only covers events fired while cairn is alive (foreground or
+        // recently active). Older photos cached before the metadata
+        // store existed, OR observed during a window when cairn was
+        // suspended, end up in `LocalHashStore` without a matching
+        // `LocalAssetMetadataStore` row. Without metadata, the orphan
+        // reconciler can't match those assets if they later get
+        // edited-then-deleted-fast (the eager observer can miss the
+        // change, and observeAndFilter can't fetch a deleted asset).
+        // Snapshot metadata for any cached id that's still alive in
+        // PhotoKit but missing from the store. Idempotent —
+        // `record(_:)` upserts, so repeating the call is cheap.
+        await backfillMetadataIfNeeded(visibleFetch: visibleFetch)
+
         let t2 = Date()
         let everSeenSet = try await everSeen.snapshot()
         let exclusionSet = Set(try await exclusions.snapshot().keys)
         let confirmedMap = try await confirmed.snapshot()
-        syncLog.info("[cairn.sync] store snapshots took \(Int(Date().timeIntervalSince(t2) * 1000))ms")
+
+        // Edit-retirement: union the firstObserved SHA1s for every
+        // alive `localIdentifier` into the "current local" set the
+        // engine sees. Effect: while a photo is alive in PhotoKit,
+        // its original-content anchor never enters the candidate
+        // diff, even if intermediate edits have replaced its
+        // current-bytes SHA1 in `LocalHashStore`. Without this
+        // union, edited-but-kept photos would have their original
+        // SHA1 silently classified as a deletion candidate (it's in
+        // ever-seen, absent from current-bytes), and the wrong-
+        // semantics fix would be only half-applied.
+        var editRetirementHeld: Set<Checksum> = []
+        if let editRetirementStore {
+            let snapshot = try await editRetirementStore.snapshot()
+            if !snapshot.isEmpty {
+                var liveLocalIds = Set<String>()
+                liveLocalIds.reserveCapacity(visibleFetch.count)
+                visibleFetch.enumerateObjects { asset, _, _ in
+                    liveLocalIds.insert(asset.localIdentifier)
+                }
+                for (id, anchorSet) in snapshot where liveLocalIds.contains(id) {
+                    editRetirementHeld.formUnion(anchorSet)
+                }
+            }
+        }
+        let extendedLocal = local.union(editRetirementHeld)
+
+        // Wrongly-stamped quarantine cleanup. Pre-fix code paths (and
+        // the EditRetirementStore-migration era) may have stamped the
+        // original SHA1 of an edited photo into ConfirmedDeletedStore
+        // when the edit ran. Now that it's anchored as firstObserved
+        // for a live id, it must NOT be sitting in quarantine — the
+        // edit-retirement contract is "anchor protects, no quarantine."
+        // Drop any held checksum from ConfirmedDeletedStore on every
+        // sync. Idempotent: nothing to remove for assets that never
+        // hit the buggy path. Mirrors the existing `confirmedDeleted.remove(allRecentlyObserved)`
+        // restoration step but covers the wider "anchored by alive id"
+        // surface, including assets not edited this scan.
+        if !editRetirementHeld.isEmpty {
+            try? await confirmed.remove(editRetirementHeld)
+        }
+
+        syncLog.info("[cairn.sync] store snapshots took \(Int(Date().timeIntervalSince(t2) * 1000))ms (edit-retirement-held=\(editRetirementHeld.count))")
         let t3 = Date()
         let serverAssets = try await serverAssetsTask.value
         syncLog.info("[cairn.sync] server fetch took \(Int(Date().timeIntervalSince(t3) * 1000))ms (\(serverAssets.count) assets)")
@@ -509,9 +720,9 @@ final class AppDependencies {
             }
         }()
         let settings = model.settings
-        let result = ReconciliationEngine.compute(.init(
+        var result = ReconciliationEngine.compute(.init(
             serverAssets: serverAssets,
-            currentLocalChecksums: local,
+            currentLocalChecksums: extendedLocal,
             everSeenChecksums: everSeenSet,
             excludedChecksums: exclusionSet,
             confirmedDeletedAt: confirmedMap,
@@ -519,6 +730,82 @@ final class AppDependencies {
             quarantineDays: settings.quarantineDays,
             strictness: settings.deletionStrictness
         ))
+
+        // Token-expiry safety gate. A full re-enumeration triggered by an
+        // expired (or unparseable) persistent-change token means the change
+        // events that would have stamped quarantine clocks are gone — every
+        // deletion accumulated during the dormant window arrives as a
+        // negative-signal-only candidate. Promote them all into the pending
+        // bucket so the user reviews them before anything trashes,
+        // regardless of strictness.
+        let wasTokenExpiry = scan.fullEnumerationCause == .tokenExpired
+        if wasTokenExpiry {
+            result = result.gatedForReview()
+        }
+
+        // Orphan reconciliation. Catches the cull-burst case the
+        // SHA1-based reconciler can't see: photo taken, uploaded to
+        // Immich, and deleted locally before cairn could hash it. By
+        // the time we look, the bytes are gone — `EverSeenStore` never
+        // got the checksum. We match server assets against the metadata
+        // we captured at observer time (filename + creationDate). See
+        // `OrphanReconciler` for the match algorithm. Orphans land in
+        // `pendingReviewCandidates` regardless of strictness; the user
+        // must approve.
+        var inferredOrphanLocalIds: [Checksum: String] = [:]
+        do {
+            let metadataSnapshot = try await self.localAssetMetadataStore.snapshot()
+            syncLog.notice("[cairn.orphan] starting match: serverAssets=\(serverAssets.count, privacy: .public) metadata=\(metadataSnapshot.count, privacy: .public) everSeen=\(everSeenSet.count, privacy: .public)")
+            if !metadataSnapshot.isEmpty {
+                var presentLocalIds = Set<String>()
+                presentLocalIds.reserveCapacity(visibleFetch.count)
+                visibleFetch.enumerateObjects { asset, _, _ in
+                    presentLocalIds.insert(asset.localIdentifier)
+                }
+                // Surface orphan candidate counts BEFORE the match so we
+                // can tell whether the gate is filtering them out vs the
+                // match algorithm not finding correlations.
+                let nonTrashedNonEverSeen = serverAssets.filter { !$0.isTrashed && !everSeenSet.contains($0.checksum) }
+                let absentMetadataCount = metadataSnapshot.filter { !presentLocalIds.contains($0.localIdentifier) }.count
+                syncLog.notice("[cairn.orphan] gate: server-non-trashed-non-everSeen=\(nonTrashedNonEverSeen.count, privacy: .public) metadata-for-absent-ids=\(absentMetadataCount, privacy: .public) presentLocalIds=\(presentLocalIds.count, privacy: .public)")
+                let orphans = OrphanReconciler.match(
+                    serverAssets: serverAssets,
+                    everSeen: everSeenSet,
+                    metadata: metadataSnapshot,
+                    presentLocalIdentifiers: presentLocalIds
+                )
+                syncLog.notice("[cairn.orphan] match result: \(orphans.count, privacy: .public) orphans found")
+                if !orphans.isEmpty {
+                    let existingPendingChecksums = Set(result.pendingReviewCandidates.map(\.checksum))
+                    let existingDeleteChecksums = Set(result.deleteCandidates.map(\.checksum))
+                    var pending = result.pendingReviewCandidates
+                    for orphan in orphans {
+                        inferredOrphanLocalIds[orphan.serverAsset.checksum] = orphan.matchedMetadata.localIdentifier
+                        // By definition, orphans aren't in everSeen and
+                        // therefore can't be in deleteCandidates; the
+                        // pending dedup is defensive in case future
+                        // engine changes blur the line.
+                        guard !existingPendingChecksums.contains(orphan.serverAsset.checksum),
+                              !existingDeleteChecksums.contains(orphan.serverAsset.checksum) else { continue }
+                        pending.append(orphan.serverAsset)
+                    }
+                    result = ReconciliationOutput(
+                        deleteCandidates: result.deleteCandidates,
+                        newlyObservedChecksums: result.newlyObservedChecksums,
+                        assetsInEverSeen: result.assetsInEverSeen,
+                        excludedCandidateCount: result.excludedCandidateCount,
+                        pendingReviewCandidates: pending,
+                        heldByQuarantineCandidates: result.heldByQuarantineCandidates
+                    )
+                    syncLog.info("[cairn.sync] inferred \(orphans.count) orphan(s) via metadata match")
+                }
+            }
+        } catch {
+            // Metadata snapshot is best-effort; a SwiftData fetch failure
+            // shouldn't poison the whole reconciliation. The standard
+            // ever-seen reconciler still ran and its results are fine.
+            syncLog.error("[cairn.sync] orphan match skipped: \(Self.describeSyncError(error), privacy: .public)")
+        }
 
         let serverNonTrashed = serverAssets.filter { !$0.isTrashed }.count
         let liveLibrary = CairnFixtures.LibrarySize(
@@ -528,16 +815,69 @@ final class AppDependencies {
             matched: result.assetsInEverSeen,
             candidates: result.deleteCandidates.count
         )
+        // Merge the source-id mapping from three sources, in
+        // precedence order:
+        //   1. Persistent `deletionSourceStore` snapshot — the
+        //      authoritative record for items not retired in this
+        //      pass; survives across syncs so quarantined entries
+        //      from previous scans keep their grouping linkage.
+        //   2. This scan's `sourceLocalIdentifierByChecksum` —
+        //      most-recent retire from a particular id; overrides
+        //      the persistent record for items just retired.
+        //   3. Inferred orphans — filename-matching is the most
+        //      authoritative for items the SHA1 reconciler can't
+        //      see (deleted before hash, never in everSeen).
+        // Each step overwrites collisions so later sources win.
+        var mergedSourceIds: [Checksum: String] = [:]
+        if let deletionSourceStore {
+            mergedSourceIds = (try? await deletionSourceStore.snapshot()) ?? [:]
+        }
+        for (checksum, localId) in scan.sourceLocalIdentifierByChecksum {
+            mergedSourceIds[checksum] = localId
+        }
+        for (checksum, localId) in inferredOrphanLocalIds {
+            mergedSourceIds[checksum] = localId
+        }
         model.reconciliation = .init(
             deleteCandidates: result.deleteCandidates,
             pendingReviewCandidates: result.pendingReviewCandidates,
             heldByQuarantineCandidates: result.heldByQuarantineCandidates,
             confirmedDeletedAt: confirmedMap,
-            quarantineDays: settings.quarantineDays
+            quarantineDays: settings.quarantineDays,
+            inferredOrphanLocalIdentifiers: inferredOrphanLocalIds,
+            firstObservedAnchors: editRetirementHeld,
+            sourceLocalIdentifiersByChecksum: mergedSourceIds
         )
         model.library = liveLibrary
         model.lastScanBurstCount = burst
+        model.inferredOrphanCount = inferredOrphanLocalIds.count
+        model.lastScanWasTokenExpiryFullEnum = wasTokenExpiry
         model.hasCompletedInitialScan = true
+
+        // Detect "user restored locally what cairn already trashed on
+        // Immich." Intersect this scan's freshly-observed checksums
+        // against successful trash runs from the journal (within
+        // Immich's 30-day hard-delete window). A non-empty intersection
+        // means the Immich mobile app's upload will silently no-op
+        // because the asset is still in Immich trash with the same
+        // SHA1 — silent data divergence the user can't see until the
+        // server purges. The Status banner surfaces the count so the
+        // user can restore on Immich too.
+        if let journal {
+            let entries = (try? await journal.readAll()) ?? []
+            let trashedIndex = JournalReader.recentlyTrashedChecksums(
+                in: entries,
+                withinDays: 30
+            )
+            let observed = scan.recentlyObservedChecksums
+            var matches: [Checksum: JournalReader.TrashedRecord] = [:]
+            for cs in observed {
+                if let record = trashedIndex[cs] {
+                    matches[cs] = record
+                }
+            }
+            model.restoredAfterCairnTrash = matches
+        }
 
         let isEventfulSync = scan.didFullEnumeration
             || scan.changeEventsProcessed > 0
@@ -702,6 +1042,18 @@ final class AppDependencies {
         }
     }
 
+    /// User-facing error copy for a non-`.authorized` Photos auth status.
+    /// `.limited` is split out from `.denied`/`.restricted` because Limited
+    /// Photo Access would silently make most of the library look "missing"
+    /// to reconciliation — the message has to name that, not just say
+    /// "needs Full Photos access."
+    nonisolated fileprivate static func photosAuthMessage(for status: PHAuthorizationStatus) -> String {
+        if status == .limited {
+            return "cairn can\u{2019}t run with Limited Photo Access \u{2014} pictures outside your limited selection look missing to cairn and would be flagged as deletions. Open Settings \u{2192} cairn \u{2192} Photos and pick All Photos."
+        }
+        return "cairn needs Full Photos access to find deleted photos. Open Settings \u{2192} cairn \u{2192} Photos and pick All Photos."
+    }
+
     nonisolated fileprivate static func degradedState(for error: Swift.Error) -> StatusScreen.Degraded? {
         if let e = error as? ImmichClientError {
             switch e {
@@ -803,8 +1155,9 @@ final class AppDependencies {
                     await MainActor.run { self.registerPhotoLibraryObserver() }
                 }
                 guard effectiveStatus == .authorized else {
+                    let message = AppDependencies.photosAuthMessage(for: effectiveStatus)
                     await MainActor.run {
-                        self.model.lastError = "cairn needs Full Photos access to find deleted photos. Open Settings \u{2192} cairn \u{2192} Photos and pick All Photos."
+                        self.model.lastError = message
                         self.model.isSyncing = false
                         self.model.syncPhase = .idle
                         self.model.syncStartedAt = nil
@@ -872,7 +1225,10 @@ final class AppDependencies {
                         self.model.reconciliation = nil
                         if trashedCount > 0 {
                             let current = self.model.library
-                            self.model.library = current.with(server: max(0, current.server - trashedCount))
+                            self.model.library = current.with(
+                                server: max(0, current.server - trashedCount),
+                                candidates: max(0, current.candidates - trashedCount)
+                            )
                         }
                     }
                     await self.refreshRunsList()
@@ -954,6 +1310,14 @@ final class AppDependencies {
                 let candidates = (live.pendingReviewCandidates + live.heldByQuarantineCandidates)
                     .filter { wanted.contains($0.checksum.base64) }
                 guard !candidates.isEmpty else { return }
+                // Capture the orphan→localId mapping for the candidates
+                // we're about to trash. After a successful trash the
+                // metadata rows are no longer useful (the asset's gone
+                // both locally and on the server) and would keep
+                // re-matching on subsequent syncs.
+                let orphanMetadataLocalIds: Set<String> = Set(candidates.compactMap {
+                    live.inferredOrphanLocalIdentifiers[$0.checksum]
+                })
                 let runId = "\(ISO8601DateFormatter().string(from: Date()))-\(UUID().uuidString.prefix(8))"
                 let orchestrator = TrashOrchestrator(writer: client, journal: journal)
                 do {
@@ -964,16 +1328,29 @@ final class AppDependencies {
                         dryRun: false
                     )
                     let trashedCount = result.trashedAssetIds.count
+                    if !orphanMetadataLocalIds.isEmpty {
+                        try? await self.localAssetMetadataStore.remove(orphanMetadataLocalIds)
+                    }
+                    let cks = Set(wanted.map { Checksum(base64: $0) })
+                    try? await self.deletionSourceStore?.remove(cks)
                     await MainActor.run {
                         guard let existing = self.model.reconciliation else { return }
+                        let prunedOrphanMap = existing.inferredOrphanLocalIdentifiers
+                            .filter { !wanted.contains($0.key.base64) }
+                        let prunedSourceIds = existing.sourceLocalIdentifiersByChecksum
+                            .filter { !wanted.contains($0.key.base64) }
                         self.model.reconciliation = .init(
                             deleteCandidates: existing.deleteCandidates,
                             pendingReviewCandidates: existing.pendingReviewCandidates.filter { !wanted.contains($0.checksum.base64) },
                             heldByQuarantineCandidates: existing.heldByQuarantineCandidates.filter { !wanted.contains($0.checksum.base64) },
                             confirmedDeletedAt: existing.confirmedDeletedAt,
                             quarantineDays: existing.quarantineDays,
-                            computedAt: existing.computedAt
+                            computedAt: existing.computedAt,
+                            inferredOrphanLocalIdentifiers: prunedOrphanMap,
+                            firstObservedAnchors: existing.firstObservedAnchors,
+                            sourceLocalIdentifiersByChecksum: prunedSourceIds
                         )
+                        self.model.inferredOrphanCount = prunedOrphanMap.count
                         if trashedCount > 0 {
                             let current = self.model.library
                             self.model.library = current.with(server: max(0, current.server - trashedCount))
@@ -1005,16 +1382,23 @@ final class AppDependencies {
                 do {
                     try await exclusions.insert(entries)
                     try await confirmed.remove(cks)
+                    try? await self.deletionSourceStore?.remove(cks)
                     await MainActor.run {
                         guard let existing = self.model.reconciliation else { return }
+                        let prunedOrphanMap = existing.inferredOrphanLocalIdentifiers.filter { !cks.contains($0.key) }
+                        let prunedSourceIds = existing.sourceLocalIdentifiersByChecksum.filter { !cks.contains($0.key) }
                         self.model.reconciliation = .init(
                             deleteCandidates: existing.deleteCandidates,
                             pendingReviewCandidates: existing.pendingReviewCandidates.filter { !cks.contains($0.checksum) },
                             heldByQuarantineCandidates: existing.heldByQuarantineCandidates.filter { !cks.contains($0.checksum) },
                             confirmedDeletedAt: existing.confirmedDeletedAt.filter { !cks.contains($0.key) },
                             quarantineDays: existing.quarantineDays,
-                            computedAt: existing.computedAt
+                            computedAt: existing.computedAt,
+                            inferredOrphanLocalIdentifiers: prunedOrphanMap,
+                            firstObservedAnchors: existing.firstObservedAnchors,
+                            sourceLocalIdentifiersByChecksum: prunedSourceIds
                         )
+                        self.model.inferredOrphanCount = prunedOrphanMap.count
                     }
                 } catch {
                     await MainActor.run {
@@ -1030,16 +1414,23 @@ final class AppDependencies {
                 do {
                     try await confirmed.remove(cks)
                     try await everSeen.remove(cks)
+                    try? await self.deletionSourceStore?.remove(cks)
                     await MainActor.run {
                         guard let existing = self.model.reconciliation else { return }
+                        let prunedOrphanMap = existing.inferredOrphanLocalIdentifiers.filter { !cks.contains($0.key) }
+                        let prunedSourceIds = existing.sourceLocalIdentifiersByChecksum.filter { !cks.contains($0.key) }
                         self.model.reconciliation = .init(
                             deleteCandidates: existing.deleteCandidates,
                             pendingReviewCandidates: existing.pendingReviewCandidates.filter { !cks.contains($0.checksum) },
                             heldByQuarantineCandidates: existing.heldByQuarantineCandidates.filter { !cks.contains($0.checksum) },
                             confirmedDeletedAt: existing.confirmedDeletedAt.filter { !cks.contains($0.key) },
                             quarantineDays: existing.quarantineDays,
-                            computedAt: existing.computedAt
+                            computedAt: existing.computedAt,
+                            inferredOrphanLocalIdentifiers: prunedOrphanMap,
+                            firstObservedAnchors: existing.firstObservedAnchors,
+                            sourceLocalIdentifiersByChecksum: prunedSourceIds
                         )
+                        self.model.inferredOrphanCount = prunedOrphanMap.count
                     }
                     await self.refreshQuarantineCount()
                 } catch {
@@ -1215,17 +1606,26 @@ final class AppDependencies {
                     )
                     try await exclusions.insert(entries)
                     try await confirmed.remove(cks)
+                    try? await self.deletionSourceStore?.remove(cks)
                     await MainActor.run {
                         guard let existing = self.model.reconciliation else { return }
+                        let prunedOrphanMap = existing.inferredOrphanLocalIdentifiers.filter { !cks.contains($0.key) }
+                        let prunedSourceIds = existing.sourceLocalIdentifiersByChecksum.filter { !cks.contains($0.key) }
                         self.model.reconciliation = .init(
                             deleteCandidates: existing.deleteCandidates,
                             pendingReviewCandidates: existing.pendingReviewCandidates.filter { !cks.contains($0.checksum) },
                             heldByQuarantineCandidates: existing.heldByQuarantineCandidates.filter { !cks.contains($0.checksum) },
                             confirmedDeletedAt: existing.confirmedDeletedAt.filter { !cks.contains($0.key) },
                             quarantineDays: existing.quarantineDays,
-                            computedAt: existing.computedAt
+                            computedAt: existing.computedAt,
+                            inferredOrphanLocalIdentifiers: prunedOrphanMap,
+                            firstObservedAnchors: existing.firstObservedAnchors,
+                            sourceLocalIdentifiersByChecksum: prunedSourceIds
                         )
+                        self.model.inferredOrphanCount = prunedOrphanMap.count
                         self.model.lastScanBurstCount = 0
+                        self.model.lastScanWasTokenExpiryFullEnum = false
+                        self.model.restoredAfterCairnTrash = [:]
                     }
                 } catch {
                     await MainActor.run {
@@ -1284,18 +1684,28 @@ final class AppDependencies {
             },
             resetIndex: { [weak self] in
                 guard let self else { return }
-                let (lh, dh, eh, cd, tk) = await MainActor.run {
-                    (self.localHashStore, self.deferredHashStore, self.everSeenStore, self.confirmedDeletedStore, self.tokenStore)
+                let (lh, dh, eh, cd, tk, er, ds) = await MainActor.run {
+                    (self.localHashStore, self.deferredHashStore, self.everSeenStore, self.confirmedDeletedStore, self.tokenStore, self.editRetirementStore, self.deletionSourceStore)
                 }
                 try? await lh.clear()
                 try? await dh.clear()
                 if let eh { try? await eh.clear() }
                 if let cd { try? await cd.clear() }
                 if let tk { try? await tk.clear() }
+                if let er { try? await er.clear() }
+                if let ds { try? await ds.clear() }
+                // The metadata store is the input to the orphan
+                // matcher. Clearing the index without clearing the
+                // metadata would leave stale rows that could resurrect
+                // ghost orphans on the next sync.
+                try? await self.localAssetMetadataStore.clear()
                 await MainActor.run {
                     self.model.reconciliation = nil
                     self.model.library = .empty
                     self.model.lastScanBurstCount = 0
+                    self.model.inferredOrphanCount = 0
+                    self.model.lastScanWasTokenExpiryFullEnum = false
+                    self.model.restoredAfterCairnTrash = [:]
                     self.model.syncProgress = nil
                     self.model.hasCompletedInitialScan = false
                     self.model.didAutoSyncThisSession = false
@@ -1333,7 +1743,9 @@ final class AppDependencies {
                     self.everSeenStore = nil
                     self.exclusionStore = nil
                     self.confirmedDeletedStore = nil
+                    self.deletionSourceStore = nil
                     self.tokenStore = nil
+                    self.editRetirementStore = nil
                     self.thumbnailStore = nil
                     self.journal = nil
                     self.serverChecksumSet = nil
@@ -1349,6 +1761,9 @@ final class AppDependencies {
                     self.model.reconciliation = nil
                     self.model.library = .empty
                     self.model.lastScanBurstCount = 0
+                    self.model.inferredOrphanCount = 0
+                    self.model.lastScanWasTokenExpiryFullEnum = false
+                    self.model.restoredAfterCairnTrash = [:]
                     self.model.hasCompletedInitialScan = false
                     self.model.excludedChecksums = []
                 }
@@ -1379,18 +1794,24 @@ final class AppDependencies {
             },
             startOverInitialScan: { [weak self] in
                 guard let self else { return }
-                let (lh, dh, tk, eh, cd) = await MainActor.run {
-                    (self.localHashStore, self.deferredHashStore, self.tokenStore, self.everSeenStore, self.confirmedDeletedStore)
+                let (lh, dh, tk, eh, cd, er, ds) = await MainActor.run {
+                    (self.localHashStore, self.deferredHashStore, self.tokenStore, self.everSeenStore, self.confirmedDeletedStore, self.editRetirementStore, self.deletionSourceStore)
                 }
                 try? await lh.clear()
                 try? await dh.clear()
                 if let tk { try? await tk.clear() }
                 if let eh { try? await eh.clear() }
                 if let cd { try? await cd.clear() }
+                if let er { try? await er.clear() }
+                if let ds { try? await ds.clear() }
+                try? await self.localAssetMetadataStore.clear()
                 await MainActor.run {
                     self.model.reconciliation = nil
                     self.model.library = .empty
                     self.model.lastScanBurstCount = 0
+                    self.model.inferredOrphanCount = 0
+                    self.model.lastScanWasTokenExpiryFullEnum = false
+                    self.model.restoredAfterCairnTrash = [:]
                     self.model.syncProgress = nil
                     self.model.pausedSyncElapsedSeconds = nil
                     self.model.syncStartedAt = nil
@@ -1402,8 +1823,9 @@ final class AppDependencies {
                 guard let self else { return }
                 let photoStatus = await MainActor.run { PHPhotoLibrary.authorizationStatus(for: .readWrite) }
                 guard photoStatus == .authorized else {
+                    let message = AppDependencies.photosAuthMessage(for: photoStatus)
                     await MainActor.run {
-                        self.model.lastError = "cairn needs Full Photos access to hash deferred assets."
+                        self.model.lastError = message
                     }
                     return
                 }

@@ -368,6 +368,14 @@ public struct CairnAppRoot: View {
                 deletionBacklog: backlogCount,
                 backlogAlertThreshold: model.settings.deletionBacklogAlertThreshold,
                 syncToast: model.syncToast,
+                restoredAfterCairnTrashCount: model.restoredAfterCairnTrash.count,
+                onDismissRestoredAfterCairnTrash: {
+                    model.restoredAfterCairnTrash = [:]
+                },
+                inferredOrphanCount: model.inferredOrphanCount,
+                onOpenInferredOrphans: {
+                    model.presentedSheet = .pendingReview
+                },
                 initialScanPending: !model.hasCompletedInitialScan && !model.isSyncing,
                 isSyncing: model.isSyncing,
                 syncProgress: model.syncProgress.map { (hashed: $0.hashed, total: $0.total) },
@@ -539,49 +547,33 @@ public struct CairnAppRoot: View {
             )
             .cairnTheme(palette)
         case .pendingReview:
-            let heldFixtures = (model.reconciliation?.heldByQuarantineCandidates ?? [])
-                .map(CairnFixtures.CandidateFixture.from)
-            let heldAll = Set(model.reconciliation?.heldByQuarantineCandidates.map(\.checksum.base64) ?? [])
-            let unconfirmedFixtures = (model.reconciliation?.pendingReviewCandidates ?? [])
-                .filter { !heldAll.contains($0.checksum.base64) }
-                .map(CairnFixtures.CandidateFixture.from)
-            // Countdown lookup: candidate.id (== filename) → confirmedAt.
-            // We don't have a direct filename→checksum map, so we look up by
-            // walking the held set once.
-            let confirmedAtByFilename: [String: Date] = {
-                var out: [String: Date] = [:]
-                guard let live = model.reconciliation else { return out }
-                for asset in live.heldByQuarantineCandidates {
-                    let fixture = CairnFixtures.CandidateFixture.from(asset)
-                    if let stamp = live.confirmedDeletedAt[asset.checksum] {
-                        out[fixture.id] = stamp
-                    }
-                }
-                return out
-            }()
+            let heldAssets = model.reconciliation?.heldByQuarantineCandidates ?? []
+            let heldChecksumSet = Set(heldAssets.map(\.checksum))
+            let unconfirmedAssets = (model.reconciliation?.pendingReviewCandidates ?? [])
+                .filter { !heldChecksumSet.contains($0.checksum) }
             PendingReviewScreen(
-                heldCandidates: heldFixtures,
-                unconfirmedCandidates: unconfirmedFixtures,
-                confirmedDeletedAt: confirmedAtByFilename,
+                heldAssets: heldAssets,
+                unconfirmedAssets: unconfirmedAssets,
+                firstObservedAnchors: model.reconciliation?.firstObservedAnchors ?? [],
+                confirmedDeletedAt: model.reconciliation?.confirmedDeletedAt ?? [:],
+                sourceLocalIdentifiersByChecksum: model.reconciliation?.sourceLocalIdentifiersByChecksum ?? [:],
                 quarantineDays: model.reconciliation?.quarantineDays ?? model.settings.quarantineDays,
                 massOffloadCount: model.lastScanBurstCount,
                 showsMassOffloadBanner: model.lastScanLooksLikeMassOffload,
+                showsTokenExpiryBanner: model.lastScanWasTokenExpiryFullEnum,
                 onBack: { model.presentedSheet = nil },
-                onApprove: { filenames in
+                onApprove: { checksums in
                     Task { @MainActor in
-                        let checksums = checksumsForFilenames(filenames, in: model.reconciliation?.pendingReviewCandidates ?? [])
                         try? await model.actions.approvePending(checksums)
                     }
                 },
-                onExclude: { filenames in
+                onExclude: { checksums in
                     Task { @MainActor in
-                        let checksums = checksumsForFilenames(filenames, in: model.reconciliation?.pendingReviewCandidates ?? [])
                         try? await model.actions.excludePending(checksums)
                     }
                 },
-                onDismiss: { filenames in
+                onDismiss: { checksums in
                     Task { @MainActor in
-                        let checksums = checksumsForFilenames(filenames, in: model.reconciliation?.pendingReviewCandidates ?? [])
                         try? await model.actions.dismissPending(checksums)
                     }
                 },
@@ -601,19 +593,6 @@ public struct CairnAppRoot: View {
                 onClose: { model.presentedSheet = nil }
             )
             .cairnTheme(palette)
-        }
-    }
-
-    /// Look up the base64 checksums corresponding to a list of candidate
-    /// filenames, walking the candidate pool produced by reconciliation.
-    /// The UI operates in filenames (that's what `CandidateFixture.id`
-    /// exposes); the host-facing actions take checksums since that's the
-    /// durable identity across runs.
-    private func checksumsForFilenames(_ filenames: [String], in candidates: [ServerAsset]) -> [String] {
-        let wanted = Set(filenames)
-        return candidates.compactMap { asset in
-            let fixture = CairnFixtures.CandidateFixture.from(asset)
-            return wanted.contains(fixture.id) ? asset.checksum.base64 : nil
         }
     }
 

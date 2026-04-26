@@ -443,6 +443,26 @@ public struct SettingsScreen: View {
     private var howItWorksBody: some View {
         VStack(alignment: .leading, spacing: 14) {
             howItWorksParagraph(
+                title: "What cairn proposes for trash",
+                body: Text("A photo becomes a trash candidate only when all three are true:\n\n1. ") + .cairnWord + Text(" observed the photo on this iPhone (its checksum entered the local index).\n2. The photo is no longer in this iPhone's library.\n3. Immich still has the photo.\n\nPhotos uploaded to Immich from a different device — never on this iPhone — are invisible to ") + .cairnWord + Text(" and stay put.")
+            )
+            howItWorksParagraph(
+                title: "Quarantine window",
+                body: Text("When ") + .cairnWord + Text(" detects a deletion, it starts a 14-day clock (adjustable in Settings → Quarantine). The photo sits in Pending Review for the full window, giving you time to undo. After 14 days it moves to Ready to Trash and the next sync calls Immich.")
+            )
+            howItWorksParagraph(
+                title: "Edits stay safe",
+                body: Text("Editing a photo in iOS Photos doesn't propagate to Immich as a trash. ") + .cairnWord + Text(" anchors the original checksum and protects it for as long as the photo is alive on this iPhone — even after edits change the bytes locally. The Immich mobile app uploads each edit as a separate version, so Immich typically holds two versions per edited photo: the original (anchored) and the current rendered edit. When you delete the photo locally, both versions enter quarantine together.\n\nMultiple edits without reverting: intermediate versions quarantine and trash; the original-content and the latest edit stay on Immich indefinitely.\n\nApple's edit history is private to Photos.app — neither ") + .cairnWord + Text(" nor Immich can replay edits from a downloaded file. Keep the photo on this iPhone if you want to revert later.")
+            )
+            howItWorksParagraph(
+                title: "Changing your mind before quarantine",
+                body: Text("Restoring a deleted photo from iOS's Recently Deleted (Photos → Albums → Recently Deleted → Recover) within the quarantine window cancels propagation. ") + .cairnWord + Text(" detects the asset returning and clears its entry — the next sync removes it from Pending Review without ever calling Immich.")
+            )
+            howItWorksParagraph(
+                title: "Live Photos",
+                body: Text("A Live Photo on iOS is two assets on Immich: the still and a paired motion video (hidden by default). ") + .cairnWord + Text(" includes both halves in the same trash call so they propagate together — neither orphans.")
+            )
+            howItWorksParagraph(
                 title: "Trash flow",
                 body: Text("When you confirm a sync, ") + .cairnWord + Text(" does the following on your Immich server, in order:\n\n1. Upserts a tag named ")
                     + Text("cairn/v1/run/<run-id>").font(.system(size: 12, design: .monospaced)).foregroundStyle(t.text)
@@ -453,10 +473,10 @@ public struct SettingsScreen: View {
                     + Text(" — the asset moves to Immich's Trash folder, which retains it for 30 days.")
             )
             howItWorksParagraph(
-                title: "Restore flow",
-                body: Text("Restoring from the Runs tab calls ")
+                title: "Undoing a cairn run",
+                body: Text("After a sync has run, the Runs tab can restore any past run via ")
                     + Text("POST /api/trash/restore/assets").font(.system(size: 12, design: .monospaced)).foregroundStyle(t.text)
-                    + Text(" with the asset ids from that run. The tag stays on the asset — it's a breadcrumb, not a state flag — so you can always find what a given run touched via Immich's Tags view.")
+                    + Text(". The ") + Text("cairn/v1/run/…").font(.system(size: 12, design: .monospaced)).foregroundStyle(t.text) + Text(" tag stays on the asset — it's a breadcrumb, not a state flag — so you can always find what a given run touched via Immich's Tags view.")
             )
             howItWorksParagraph(
                 title: "Nothing is permanent",

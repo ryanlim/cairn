@@ -181,4 +181,119 @@ struct JournalReaderTests {
         let s = JournalReader.summarize(es)[0]
         #expect(s.durationMs == 5000)
     }
+
+    // MARK: - recentlyTrashedChecksums
+
+    @Test("empty journal produces an empty trash index")
+    func recentlyTrashedEmpty() {
+        let now = date("2026-04-25T00:00:00Z")
+        let map = JournalReader.recentlyTrashedChecksums(in: [], withinDays: 30, now: now)
+        #expect(map.isEmpty)
+    }
+
+    @Test("a single trashed run surfaces its checksums with the right runId and timestamp")
+    func recentlyTrashedOneRun() {
+        let target = JournalEntry.TrashTarget(
+            assetId: "asset-1",
+            checksum: "ck1",
+            livePhotoVideoId: nil
+        )
+        let trashedAt = date("2026-04-20T12:00:00Z")
+        let es = [
+            entry("R1", "2026-04-20T11:59:00Z", .runStarted(dryRun: false, candidateCount: 1, assetsInPurview: 100)),
+            entry("R1", "2026-04-20T11:59:30Z", .planningTrash(targets: [target])),
+            JournalEntry(timestamp: trashedAt, runId: "R1", event: .trashSucceeded(assetIds: ["asset-1"])),
+            entry("R1", "2026-04-20T12:00:01Z", .runCompleted(deletedCount: 1)),
+        ]
+        let now = date("2026-04-25T00:00:00Z")
+        let map = JournalReader.recentlyTrashedChecksums(in: es, withinDays: 30, now: now)
+        #expect(map.count == 1)
+        let record = map[Checksum(base64: "ck1")]
+        #expect(record?.runId == "R1")
+        #expect(record?.trashedAt == trashedAt)
+    }
+
+    @Test("when the same checksum appears in two runs, the more recent one wins")
+    func recentlyTrashedNewerWins() {
+        let target = JournalEntry.TrashTarget(
+            assetId: "asset-1",
+            checksum: "ck1",
+            livePhotoVideoId: nil
+        )
+        let oldTrashedAt = date("2026-04-10T12:00:00Z")
+        let newTrashedAt = date("2026-04-20T12:00:00Z")
+        let es = [
+            entry("OLD", "2026-04-10T11:59:00Z", .runStarted(dryRun: false, candidateCount: 1, assetsInPurview: 100)),
+            entry("OLD", "2026-04-10T11:59:30Z", .planningTrash(targets: [target])),
+            JournalEntry(timestamp: oldTrashedAt, runId: "OLD", event: .trashSucceeded(assetIds: ["asset-1"])),
+            entry("NEW", "2026-04-20T11:59:00Z", .runStarted(dryRun: false, candidateCount: 1, assetsInPurview: 100)),
+            entry("NEW", "2026-04-20T11:59:30Z", .planningTrash(targets: [target])),
+            JournalEntry(timestamp: newTrashedAt, runId: "NEW", event: .trashSucceeded(assetIds: ["asset-1"])),
+        ]
+        let now = date("2026-04-25T00:00:00Z")
+        let map = JournalReader.recentlyTrashedChecksums(in: es, withinDays: 30, now: now)
+        let record = map[Checksum(base64: "ck1")]
+        #expect(record?.runId == "NEW")
+        #expect(record?.trashedAt == newTrashedAt)
+    }
+
+    @Test("trashed runs older than withinDays are excluded")
+    func recentlyTrashedRespectsWindow() {
+        let target = JournalEntry.TrashTarget(
+            assetId: "asset-1",
+            checksum: "ck1",
+            livePhotoVideoId: nil
+        )
+        // Trashed 45 days before `now` — past the 30-day window.
+        let es = [
+            entry("R1", "2026-03-10T11:59:00Z", .runStarted(dryRun: false, candidateCount: 1, assetsInPurview: 100)),
+            entry("R1", "2026-03-10T11:59:30Z", .planningTrash(targets: [target])),
+            entry("R1", "2026-03-10T12:00:00Z", .trashSucceeded(assetIds: ["asset-1"])),
+        ]
+        let now = date("2026-04-25T00:00:00Z")
+        let map = JournalReader.recentlyTrashedChecksums(in: es, withinDays: 30, now: now)
+        #expect(map.isEmpty)
+    }
+
+    @Test("trashFailed-only runs do not contribute checksums")
+    func recentlyTrashedFailureOnly() {
+        let target = JournalEntry.TrashTarget(
+            assetId: "asset-1",
+            checksum: "ck1",
+            livePhotoVideoId: nil
+        )
+        let es = [
+            entry("R1", "2026-04-20T11:59:00Z", .runStarted(dryRun: false, candidateCount: 1, assetsInPurview: 100)),
+            entry("R1", "2026-04-20T11:59:30Z", .planningTrash(targets: [target])),
+            entry("R1", "2026-04-20T12:00:00Z", .trashFailed(assetIds: ["asset-1"], message: "server error")),
+        ]
+        let now = date("2026-04-25T00:00:00Z")
+        let map = JournalReader.recentlyTrashedChecksums(in: es, withinDays: 30, now: now)
+        #expect(map.isEmpty)
+    }
+
+    @Test("Live Photo motion video paired ID resolves through planningTrash")
+    func recentlyTrashedLivePhotoPair() {
+        // The trashSucceeded event lists both the still and the paired
+        // video; planningTrash only carries the still target with
+        // `livePhotoVideoId` set. The video id won't appear in the
+        // planning map, so it gets omitted from the result — which is
+        // correct: the index is keyed by *checksum*, and we only know
+        // the still's checksum from the journal.
+        let target = JournalEntry.TrashTarget(
+            assetId: "still-1",
+            checksum: "still-ck",
+            livePhotoVideoId: "video-1"
+        )
+        let trashedAt = date("2026-04-20T12:00:00Z")
+        let es = [
+            entry("R1", "2026-04-20T11:59:00Z", .runStarted(dryRun: false, candidateCount: 1, assetsInPurview: 100)),
+            entry("R1", "2026-04-20T11:59:30Z", .planningTrash(targets: [target])),
+            JournalEntry(timestamp: trashedAt, runId: "R1", event: .trashSucceeded(assetIds: ["still-1", "video-1"])),
+        ]
+        let now = date("2026-04-25T00:00:00Z")
+        let map = JournalReader.recentlyTrashedChecksums(in: es, withinDays: 30, now: now)
+        #expect(map.count == 1)
+        #expect(map[Checksum(base64: "still-ck")]?.runId == "R1")
+    }
 }

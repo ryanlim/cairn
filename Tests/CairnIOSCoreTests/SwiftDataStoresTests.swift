@@ -783,3 +783,186 @@ struct SwiftDataLocalAssetMetadataStoreTests {
         #expect(try await store.metadata(for: "id-1") != nil)
     }
 }
+
+// MARK: - SwiftDataEditRetirementStore
+
+@Suite("SwiftDataEditRetirementStore")
+struct SwiftDataEditRetirementStoreTests {
+
+    @Test("empty container reads as empty for any id")
+    func emptyContainer() async throws {
+        let container = try makeContainer()
+        let store = SwiftDataEditRetirementStore(container: container)
+        #expect(try await store.firstObserved(for: "id-X") == [])
+        #expect(try await store.snapshot().isEmpty)
+    }
+
+    @Test("recordFirstObserved + read round-trips Live-Photo-style sets")
+    func recordRoundTrip() async throws {
+        let container = try makeContainer()
+        let store = SwiftDataEditRetirementStore(container: container)
+        try await store.recordFirstObserved(cks("STILL", "MOTION"), for: "id-live")
+        #expect(try await store.firstObserved(for: "id-live") == cks("STILL", "MOTION"))
+    }
+
+    @Test("recordFirstObserved is first-write-wins — second call cannot overwrite")
+    func firstWriteWins() async throws {
+        let container = try makeContainer()
+        let store = SwiftDataEditRetirementStore(container: container)
+        try await store.recordFirstObserved(cks("ORIGINAL"), for: "id-1")
+        // Same id, different (post-edit) checksums must NOT win.
+        try await store.recordFirstObserved(cks("EDITED"), for: "id-1")
+        #expect(try await store.firstObserved(for: "id-1") == cks("ORIGINAL"))
+    }
+
+    @Test("empty checksum set is a no-op")
+    func emptyRecordIsNoOp() async throws {
+        let container = try makeContainer()
+        let store = SwiftDataEditRetirementStore(container: container)
+        try await store.recordFirstObserved([], for: "id-1")
+        #expect(try await store.firstObserved(for: "id-1") == [])
+        // The slot is still claimable.
+        try await store.recordFirstObserved(cks("REAL"), for: "id-1")
+        #expect(try await store.firstObserved(for: "id-1") == cks("REAL"))
+    }
+
+    @Test("snapshot returns every id with its full checksum set")
+    func snapshotContents() async throws {
+        let container = try makeContainer()
+        let store = SwiftDataEditRetirementStore(container: container)
+        try await store.recordFirstObserved(cks("A"), for: "id-1")
+        try await store.recordFirstObserved(cks("B", "C"), for: "id-2")
+
+        let snap = try await store.snapshot()
+        #expect(snap.count == 2)
+        #expect(snap["id-1"] == cks("A"))
+        #expect(snap["id-2"] == cks("B", "C"))
+    }
+
+    @Test("remove drops the requested ids and silently skips absent ones")
+    func removeDropsEntries() async throws {
+        let container = try makeContainer()
+        let store = SwiftDataEditRetirementStore(container: container)
+        try await store.recordFirstObserved(cks("A"), for: "id-1")
+        try await store.recordFirstObserved(cks("B"), for: "id-2")
+
+        try await store.remove(for: ["id-2", "id-MISSING"])
+
+        #expect(try await store.firstObserved(for: "id-1") == cks("A"))
+        #expect(try await store.firstObserved(for: "id-2") == [])
+    }
+
+    @Test("clear wipes every entry")
+    func clearWipes() async throws {
+        let container = try makeContainer()
+        let store = SwiftDataEditRetirementStore(container: container)
+        try await store.recordFirstObserved(cks("A"), for: "id-1")
+        try await store.recordFirstObserved(cks("B"), for: "id-2")
+
+        try await store.clear()
+        #expect(try await store.snapshot().isEmpty)
+    }
+
+    @Test("two stores sharing one container see each other's writes")
+    func sharedContainerCrossVisibility() async throws {
+        let container = try makeContainer()
+        let writer = SwiftDataEditRetirementStore(container: container)
+        let reader = SwiftDataEditRetirementStore(container: container)
+
+        try await writer.recordFirstObserved(cks("X", "Y"), for: "id-shared")
+        #expect(try await reader.firstObserved(for: "id-shared") == cks("X", "Y"))
+    }
+
+    @Test("re-record after explicit remove DOES seed a fresh anchor")
+    func reseedAfterRemove() async throws {
+        // The "first-write-wins" rule is scoped to the lifetime of an
+        // entry. Once removed (id genuinely deleted), a later
+        // observation under the same id should be allowed to seed
+        // again — otherwise a re-imported asset (same localIdentifier
+        // recycled, theoretically possible across a restore-from-iCloud
+        // window) would lose protection forever.
+        let container = try makeContainer()
+        let store = SwiftDataEditRetirementStore(container: container)
+        try await store.recordFirstObserved(cks("A"), for: "id-1")
+        try await store.remove(for: ["id-1"])
+        try await store.recordFirstObserved(cks("B"), for: "id-1")
+        #expect(try await store.firstObserved(for: "id-1") == cks("B"))
+    }
+}
+
+// MARK: - SwiftDataDeletionSourceStore
+
+@Suite("SwiftDataDeletionSourceStore")
+struct SwiftDataDeletionSourceStoreTests {
+
+    @Test("empty container snapshot is empty")
+    func emptySnapshot() async throws {
+        let container = try makeContainer()
+        let store = SwiftDataDeletionSourceStore(container: container)
+        #expect(try await store.snapshot().isEmpty)
+    }
+
+    @Test("record + snapshot round-trips per-checksum localIdentifier")
+    func recordRoundTrip() async throws {
+        let container = try makeContainer()
+        let store = SwiftDataDeletionSourceStore(container: container)
+        try await store.record([ck("A"): "id-1", ck("B"): "id-2"])
+
+        let snap = try await store.snapshot()
+        #expect(snap.count == 2)
+        #expect(snap[ck("A")] == "id-1")
+        #expect(snap[ck("B")] == "id-2")
+    }
+
+    @Test("record overwrites the localIdentifier on collision (last write wins)")
+    func recordOverwrites() async throws {
+        let container = try makeContainer()
+        let store = SwiftDataDeletionSourceStore(container: container)
+        try await store.record([ck("A"): "id-old"])
+        try await store.record([ck("A"): "id-new"])
+
+        let snap = try await store.snapshot()
+        #expect(snap.count == 1)
+        #expect(snap[ck("A")] == "id-new")
+    }
+
+    @Test("remove drops present entries and silently skips absent ones")
+    func removeDropsEntries() async throws {
+        let container = try makeContainer()
+        let store = SwiftDataDeletionSourceStore(container: container)
+        try await store.record([ck("A"): "id-1", ck("B"): "id-2", ck("C"): "id-3"])
+        try await store.remove([ck("B"), ck("ZZZ")])
+
+        let snap = try await store.snapshot()
+        #expect(Set(snap.keys) == Set([ck("A"), ck("C")]))
+    }
+
+    @Test("clear wipes every entry")
+    func clearWipes() async throws {
+        let container = try makeContainer()
+        let store = SwiftDataDeletionSourceStore(container: container)
+        try await store.record([ck("A"): "id-1", ck("B"): "id-2"])
+        try await store.clear()
+        #expect(try await store.snapshot().isEmpty)
+    }
+
+    @Test("empty record / remove is a no-op")
+    func emptyOpsAreNoOps() async throws {
+        let container = try makeContainer()
+        let store = SwiftDataDeletionSourceStore(container: container)
+        try await store.record([:])
+        try await store.remove([])
+        #expect(try await store.snapshot().isEmpty)
+    }
+
+    @Test("two stores sharing one container see each other's writes")
+    func sharedContainerCrossVisibility() async throws {
+        let container = try makeContainer()
+        let writer = SwiftDataDeletionSourceStore(container: container)
+        let reader = SwiftDataDeletionSourceStore(container: container)
+
+        try await writer.record([ck("X"): "id-X"])
+        let snap = try await reader.snapshot()
+        #expect(snap[ck("X")] == "id-X")
+    }
+}

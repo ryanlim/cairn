@@ -102,6 +102,25 @@ public struct ReconciliationOutput: Sendable, Equatable {
         self.pendingReviewCandidates = pendingReviewCandidates
         self.heldByQuarantineCandidates = heldByQuarantineCandidates
     }
+
+    /// Move every `deleteCandidate` into `pendingReviewCandidates`. Used
+    /// when the platform-side reconciler signals that this scan rebuilt
+    /// the index after losing prior state (e.g. iOS persistent-change
+    /// token expired) — any candidate this pass arrived without a
+    /// quarantine clock, so user review is required regardless of
+    /// strictness. Pure transform; lives here so the eventual Kotlin
+    /// port reuses it.
+    public func gatedForReview() -> ReconciliationOutput {
+        guard !deleteCandidates.isEmpty else { return self }
+        return ReconciliationOutput(
+            deleteCandidates: [],
+            newlyObservedChecksums: newlyObservedChecksums,
+            assetsInEverSeen: assetsInEverSeen,
+            excludedCandidateCount: excludedCandidateCount,
+            pendingReviewCandidates: deleteCandidates + pendingReviewCandidates,
+            heldByQuarantineCandidates: heldByQuarantineCandidates
+        )
+    }
 }
 
 /// Pure function that maps a `ReconciliationInput` to a

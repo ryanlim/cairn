@@ -158,6 +158,47 @@ final class StoredLocalAssetMetadata {
     }
 }
 
+/// Deletion-source row. Sidecar to `StoredConfirmedDeletedChecksum`
+/// that records the source `localIdentifier` a checksum was retired
+/// from. Lets Pending Review group quarantined entries with inferred
+/// orphans across syncs (the scan-time mapping from the reconciler
+/// only covers items deleted in the current pass; on subsequent
+/// syncs that data is gone). One row per checksum, keyed unique on
+/// `base64`.
+@Model
+final class StoredDeletionSourceEntry {
+    @Attribute(.unique) var base64: String
+    var localIdentifier: String
+
+    init(base64: String, localIdentifier: String) {
+        self.base64 = base64
+        self.localIdentifier = localIdentifier
+    }
+}
+
+/// Edit-retirement row. One per `(localIdentifier, base64)` pair —
+/// Live Photos contribute two rows under the same id (still + motion
+/// video). Compound unique key mirrors `StoredLocalHashEntry`'s
+/// approach so SwiftData enforces dedup at the schema layer.
+///
+/// **First-write-wins semantics.** Writes diff against the existing
+/// rows for the id and only insert when the id has no rows at all.
+/// Once seeded, an id's rows are immutable until explicit removal.
+/// That's the contract that protects edited-then-saved photos from
+/// having their original SHA1 silently flow into quarantine.
+@Model
+final class StoredEditRetirementEntry {
+    @Attribute(.unique) var compoundKey: String
+    var localIdentifier: String
+    var base64: String
+
+    init(localIdentifier: String, base64: String) {
+        self.compoundKey = "\(localIdentifier)|\(base64)"
+        self.localIdentifier = localIdentifier
+        self.base64 = base64
+    }
+}
+
 @Model
 final class StoredThumbnail {
     @Attribute(.unique) var assetId: String
@@ -192,7 +233,8 @@ public enum CairnSwiftDataContainer {
     }
 
     /// Build a `ModelContainer` for per-server state (ever-seen,
-    /// exclusions, confirmed-deleted, persistent-change token).
+    /// exclusions, confirmed-deleted, persistent-change token,
+    /// edit-retirement anchors).
     public static func makePerServer(url: URL, inMemory: Bool = false) throws -> ModelContainer {
         let schema = Schema([
             StoredEverSeenChecksum.self,
@@ -200,11 +242,13 @@ public enum CairnSwiftDataContainer {
             StoredConfirmedDeletedChecksum.self,
             StoredPersistentChangeToken.self,
             StoredThumbnail.self,
+            StoredEditRetirementEntry.self,
+            StoredDeletionSourceEntry.self,
         ])
         return try container(schema: schema, url: inMemory ? nil : url, inMemory: inMemory)
     }
 
-    /// Legacy factory — all six model types in one container. Used
+    /// Legacy factory — every model type in one container. Used
     /// only by tests and the one-shot migration path.
     public static func make(url: URL? = nil, inMemory: Bool = false) throws -> ModelContainer {
         let schema = Schema([
@@ -216,6 +260,8 @@ public enum CairnSwiftDataContainer {
             StoredPersistentChangeToken.self,
             StoredThumbnail.self,
             StoredLocalAssetMetadata.self,
+            StoredEditRetirementEntry.self,
+            StoredDeletionSourceEntry.self,
         ])
         return try container(schema: schema, url: url, inMemory: inMemory)
     }
@@ -478,6 +524,87 @@ public actor SwiftDataConfirmedDeletedStore: ConfirmedDeletedStore {
     public func clear() async throws {
         var changed = false
         for row in try context.fetch(FetchDescriptor<StoredConfirmedDeletedChecksum>()) {
+            context.delete(row)
+            changed = true
+        }
+        if changed { try context.save() }
+    }
+}
+
+// MARK: - SwiftDataDeletionSourceStore
+
+/// SwiftData-backed `DeletionSourceStore`. One row per
+/// `(checksum, localIdentifier)` pair; schema-level dedup on
+/// `base64` so the unique index does the work. Last-writer-wins on
+/// the `localIdentifier` — re-recording an existing checksum with
+/// the same id is idempotent and skips the save call entirely.
+public actor SwiftDataDeletionSourceStore: DeletionSourceStore {
+    private let context: ModelContext
+
+    public init(container: ModelContainer) {
+        self.context = ModelContext(container)
+    }
+
+    public func snapshot() async throws -> [Checksum: String] {
+        let rows = try context.fetch(FetchDescriptor<StoredDeletionSourceEntry>())
+        var out: [Checksum: String] = [:]
+        out.reserveCapacity(rows.count)
+        for row in rows {
+            out[Checksum(base64: row.base64)] = row.localIdentifier
+        }
+        return out
+    }
+
+    public func record(_ entries: [Checksum: String]) async throws {
+        guard !entries.isEmpty else { return }
+        var changed = false
+        for (checksum, localId) in entries {
+            let base64 = checksum.base64
+            var descriptor = FetchDescriptor<StoredDeletionSourceEntry>(
+                predicate: #Predicate<StoredDeletionSourceEntry> { $0.base64 == base64 }
+            )
+            descriptor.fetchLimit = 1
+            if let existing = try context.fetch(descriptor).first {
+                // Idempotent: skip the in-place mutation when the
+                // mapping is already what the caller is recording.
+                // SwiftData treats untouched rows as no-ops on save,
+                // but the explicit guard avoids paying the row read
+                // for no reason on hot paths.
+                if existing.localIdentifier != localId {
+                    existing.localIdentifier = localId
+                    changed = true
+                }
+            } else {
+                context.insert(StoredDeletionSourceEntry(
+                    base64: base64,
+                    localIdentifier: localId
+                ))
+                changed = true
+            }
+        }
+        if changed { try context.save() }
+    }
+
+    public func remove(_ checksums: Set<Checksum>) async throws {
+        guard !checksums.isEmpty else { return }
+        var changed = false
+        for checksum in checksums {
+            let base64 = checksum.base64
+            var descriptor = FetchDescriptor<StoredDeletionSourceEntry>(
+                predicate: #Predicate<StoredDeletionSourceEntry> { $0.base64 == base64 }
+            )
+            descriptor.fetchLimit = 1
+            if let existing = try context.fetch(descriptor).first {
+                context.delete(existing)
+                changed = true
+            }
+        }
+        if changed { try context.save() }
+    }
+
+    public func clear() async throws {
+        var changed = false
+        for row in try context.fetch(FetchDescriptor<StoredDeletionSourceEntry>()) {
             context.delete(row)
             changed = true
         }
@@ -797,6 +924,11 @@ public actor SwiftDataLocalAssetMetadataStore: LocalAssetMetadataStore {
         if changed { try context.save() }
     }
 
+    public func snapshot() async throws -> [LocalAssetMetadata] {
+        let rows = try context.fetch(FetchDescriptor<StoredLocalAssetMetadata>())
+        return rows.map(Self.toEntry)
+    }
+
     public func clear() async throws {
         var changed = false
         for row in try context.fetch(FetchDescriptor<StoredLocalAssetMetadata>()) {
@@ -815,6 +947,87 @@ public actor SwiftDataLocalAssetMetadataStore: LocalAssetMetadataStore {
             fileSize: row.fileSize,
             observedAt: row.observedAt
         )
+    }
+}
+
+// MARK: - SwiftDataEditRetirementStore
+
+/// SwiftData-backed `EditRetirementStore`. Tracks the first-observed
+/// SHA1 set per `localIdentifier`; first-write-wins so retirement
+/// anchors stay stable across re-observations (full enumeration,
+/// orphan-sweep recovery). Same plain-actor-with-private-context
+/// pattern as the other stores.
+public actor SwiftDataEditRetirementStore: EditRetirementStore {
+    private let context: ModelContext
+
+    public init(container: ModelContainer) {
+        self.context = ModelContext(container)
+    }
+
+    public func firstObserved(for localIdentifier: String) async throws -> Set<Checksum> {
+        let descriptor = FetchDescriptor<StoredEditRetirementEntry>(
+            predicate: #Predicate<StoredEditRetirementEntry> { $0.localIdentifier == localIdentifier }
+        )
+        let rows = try context.fetch(descriptor)
+        var out: Set<Checksum> = []
+        out.reserveCapacity(rows.count)
+        for row in rows {
+            out.insert(Checksum(base64: row.base64))
+        }
+        return out
+    }
+
+    public func recordFirstObserved(_ checksums: Set<Checksum>, for localIdentifier: String) async throws {
+        guard !checksums.isEmpty else { return }
+        // First-write-wins: bail if any row already exists for this id.
+        // The id-level fetchLimit avoids materializing more than one
+        // row just to test presence.
+        var existsDescriptor = FetchDescriptor<StoredEditRetirementEntry>(
+            predicate: #Predicate<StoredEditRetirementEntry> { $0.localIdentifier == localIdentifier }
+        )
+        existsDescriptor.fetchLimit = 1
+        if try context.fetch(existsDescriptor).first != nil { return }
+
+        for checksum in checksums {
+            context.insert(StoredEditRetirementEntry(
+                localIdentifier: localIdentifier,
+                base64: checksum.base64
+            ))
+        }
+        try context.save()
+    }
+
+    public func snapshot() async throws -> [String: Set<Checksum>] {
+        let rows = try context.fetch(FetchDescriptor<StoredEditRetirementEntry>())
+        var out: [String: Set<Checksum>] = [:]
+        for row in rows {
+            out[row.localIdentifier, default: []].insert(Checksum(base64: row.base64))
+        }
+        return out
+    }
+
+    public func remove(for localIdentifiers: Set<String>) async throws {
+        guard !localIdentifiers.isEmpty else { return }
+        var changed = false
+        for id in localIdentifiers {
+            let descriptor = FetchDescriptor<StoredEditRetirementEntry>(
+                predicate: #Predicate<StoredEditRetirementEntry> { $0.localIdentifier == id }
+            )
+            for row in try context.fetch(descriptor) {
+                context.delete(row)
+                changed = true
+            }
+        }
+        if changed { try context.save() }
+    }
+
+    public func clear() async throws {
+        var changed = false
+        for row in try context.fetch(FetchDescriptor<StoredEditRetirementEntry>()) {
+            context.delete(row)
+            changed = true
+        }
+        if changed { try context.save() }
     }
 }
 

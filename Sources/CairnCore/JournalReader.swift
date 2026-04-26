@@ -57,9 +57,79 @@ public struct RunSummary: Sendable, Equatable {
 
 public enum JournalReader {
 
+    /// Provenance for one previously-trashed checksum: which run sent it
+    /// to Immich's trash and when. Returned by
+    /// `recentlyTrashedChecksums` so callers can label or deep-link the
+    /// source run when surfacing the "you restored this; restore it on
+    /// Immich too" warning.
+    ///
+    /// Not persisted — derived from the journal each sync, so no Codable
+    /// conformance is needed.
+    public struct TrashedRecord: Sendable, Equatable {
+        public let runId: String
+        public let trashedAt: Date
+
+        public init(runId: String, trashedAt: Date) {
+            self.runId = runId
+            self.trashedAt = trashedAt
+        }
+    }
+
     /// Entries whose runId matches. Order preserved.
     public static func entries(for runId: String, in entries: [JournalEntry]) -> [JournalEntry] {
         entries.filter { $0.runId == runId }
+    }
+
+    /// Map of checksum → (runId, trashedAt) for every checksum recorded
+    /// as successfully trashed in the last `withinDays` days.
+    ///
+    /// Walks the journal, pairing each `.trashSucceeded(assetIds:)` with
+    /// the matching `.planningTrash(targets:)` events for the same runId
+    /// to recover the per-asset checksum (the `.trashSucceeded` payload
+    /// is asset IDs only). Older runs lose to newer ones if the same
+    /// checksum was trashed twice — the most recent record wins, since
+    /// that's the one whose 30-day clock is currently ticking on Immich.
+    ///
+    /// `withinDays` defaults to 30 to match Immich's hard-delete window.
+    /// After the server actually purges the asset, the warning is moot
+    /// (the photo is gone server-side; nothing the user can do).
+    public static func recentlyTrashedChecksums(
+        in entries: [JournalEntry],
+        withinDays days: Int = 30,
+        now: Date = Date()
+    ) -> [Checksum: TrashedRecord] {
+        let cutoff = now.addingTimeInterval(-Double(days) * 86_400)
+
+        // Build runId → [assetId: checksum] from `.planningTrash` events.
+        // A run can have multiple planningTrash entries (rare but
+        // possible if the host appended in batches); merge them.
+        var planByRun: [String: [String: String]] = [:]
+        for entry in entries {
+            if case .planningTrash(let targets) = entry.event {
+                var existing = planByRun[entry.runId] ?? [:]
+                for target in targets {
+                    existing[target.assetId] = target.checksum
+                }
+                planByRun[entry.runId] = existing
+            }
+        }
+
+        // Walk `.trashSucceeded` events in chronological order so
+        // newer-wins falls out naturally — later iterations overwrite
+        // any earlier record for the same checksum.
+        let sorted = entries.sorted { $0.timestamp < $1.timestamp }
+        var out: [Checksum: TrashedRecord] = [:]
+        for entry in sorted {
+            guard case .trashSucceeded(let assetIds) = entry.event else { continue }
+            guard entry.timestamp >= cutoff else { continue }
+            guard let plan = planByRun[entry.runId] else { continue }
+            let record = TrashedRecord(runId: entry.runId, trashedAt: entry.timestamp)
+            for assetId in assetIds {
+                guard let raw = plan[assetId] else { continue }
+                out[Checksum(base64: raw)] = record
+            }
+        }
+        return out
     }
 
     /// Group the full journal into one RunSummary per distinct runId. Ordered

@@ -10,6 +10,20 @@ Conventions:
 
 ---
 
+## Edit-retirement metadata coverage
+
+### PhotoKit edited-resource filename consistency
+**Impact:** medium — when divergent, OrphanReconciler can't match an edited-then-deleted-fast asset against its server counterpart.
+**Cost:** low — investigation + a normalization pass in `OrphanReconciler.match`.
+
+cairn's `selectPrimaryResource` prefers `.fullSizePhoto` over `.photo` for edited assets — same as Immich's mobile pick (`isCurrent`). The recorded `originalFileName` in `LocalAssetMetadataStore` should therefore equal the `originalFileName` that lands in `ServerAsset` from Immich's upload metadata.
+
+But: PhotoKit's `.fullSizePhoto.originalFilename` can be `"FullSizeRender.HEIC"` (a synthesized name) on some iOS versions, while Immich's mobile app passes `dto.filename` from a different source that may resolve to the original `IMG_NNNN.HEIC`. Empirically observed (2026-04-26): a user's two server copies of the same edited photo both showed `IMG_3787.heic` via Immich's API — but cairn's eager observer-time recording used `selectPrimaryResource`, which on this device produced the same name (presumably PhotoKit preserved the filename here). Other devices/iOS versions may differ.
+
+Fix when encountered: add filename normalization to `OrphanReconciler.match` — strip known synthesized prefixes (`FullSizeRender`, `IMG_E*`, etc.) before comparing, OR record BOTH the `.photo` and `.fullSizePhoto` filenames in `LocalAssetMetadata` and try each. Wait until a real on-device case fails so the normalization is data-driven rather than speculative. File `Sources/CairnCore/OrphanReconciler.swift` (the case-insensitive filename match at lines 70–73 and 82) is the exact spot.
+
+---
+
 ## Error handling
 
 ### Surface partial failures in destructive operations

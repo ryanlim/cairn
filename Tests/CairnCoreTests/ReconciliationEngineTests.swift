@@ -381,4 +381,67 @@ struct ReconciliationEngineTests {
         #expect(pendingIds == ["s1", "s2"])
         #expect(output.deleteCandidates.map(\.id) == ["s3"])
     }
+
+    // MARK: - gatedForReview()
+
+    @Test("gatedForReview promotes every deleteCandidate into pendingReviewCandidates")
+    func gatedForReviewPromotesAll() {
+        // A trusting-mode result: two diff-only candidates, no quarantine.
+        // After gating, deleteCandidates is empty and pending holds both.
+        let base = ReconciliationEngine.compute(.init(
+            serverAssets: [asset("s1", "A"), asset("s2", "B"), asset("s3", "MAC_ONLY")],
+            currentLocalChecksums: [],
+            everSeenChecksums: checksums("A", "B"),
+            strictness: .trusting
+        ))
+        #expect(Set(base.deleteCandidates.map(\.id)) == ["s1", "s2"])
+        #expect(base.pendingReviewCandidates.isEmpty)
+
+        let gated = base.gatedForReview()
+        #expect(gated.deleteCandidates.isEmpty)
+        #expect(Set(gated.pendingReviewCandidates.map(\.id)) == ["s1", "s2"])
+        // Other fields pass through unchanged — the gate only moves
+        // candidates between two buckets, no other transformation.
+        #expect(gated.assetsInEverSeen == base.assetsInEverSeen)
+        #expect(gated.excludedCandidateCount == base.excludedCandidateCount)
+        #expect(gated.heldByQuarantineCandidates.map(\.id) == base.heldByQuarantineCandidates.map(\.id))
+    }
+
+    @Test("gatedForReview merges existing pending entries with promoted candidates")
+    func gatedForReviewMergesPending() {
+        // Strict mode, mixed input: one past-quarantine eligible + one
+        // unconfirmed already in pending. After gating, the eligible one
+        // joins the unconfirmed in pending.
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let base = ReconciliationEngine.compute(.init(
+            serverAssets: [asset("s1", "A"), asset("s2", "B")],
+            currentLocalChecksums: [],
+            everSeenChecksums: checksums("A", "B"),
+            confirmedDeletedAt: [Checksum(base64: "A"): .distantPast],
+            now: now,
+            quarantineDays: 14,
+            strictness: .strict
+        ))
+        #expect(base.deleteCandidates.map(\.id) == ["s1"])
+        #expect(base.pendingReviewCandidates.map(\.id) == ["s2"])
+
+        let gated = base.gatedForReview()
+        #expect(gated.deleteCandidates.isEmpty)
+        #expect(Set(gated.pendingReviewCandidates.map(\.id)) == ["s1", "s2"])
+    }
+
+    @Test("gatedForReview is a no-op when deleteCandidates is empty")
+    func gatedForReviewNoOpWhenEmpty() {
+        // Already-empty candidates: gating returns the same shape.
+        let base = ReconciliationEngine.compute(.init(
+            serverAssets: [asset("s1", "A")],
+            currentLocalChecksums: checksums("A"),
+            everSeenChecksums: checksums("A")
+        ))
+        #expect(base.deleteCandidates.isEmpty)
+
+        let gated = base.gatedForReview()
+        #expect(gated.deleteCandidates.isEmpty)
+        #expect(gated.pendingReviewCandidates.isEmpty)
+    }
 }

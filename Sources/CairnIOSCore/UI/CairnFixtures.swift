@@ -277,6 +277,111 @@ public enum CairnFixtures {
         .init(name: "IMG_4210.HEIC", kind: .photo,    date: "2026-03-11", bytes: 2_210_004,  isLivePair: false),
     ]
 
+    // MARK: - Pending-review fixtures (grouped)
+    //
+    // These exist to drive `PendingReviewScreen` previews in their grouped
+    // form: most groups are singletons, but `IMG_4821.HEIC` has two
+    // versions (original + edited) and `IMG_4754.HEIC` has three (original
+    // + two edits) so the multi-version card layout is exercised. The
+    // first-observed anchor set marks the original-content checksum for
+    // each multi-version group, which is what the UI uses to render the
+    // "Original" pill.
+
+    private static func pendingDate(_ s: String) -> Date {
+        ISO8601DateFormatter().date(from: s) ?? Date()
+    }
+
+    /// Fixture server assets for the held/aging-out section. Includes two
+    /// multi-version groups so the grouping UI is exercised in previews.
+    public static let pendingHeldAssets: [ServerAsset] = [
+        // Multi-version: IMG_4821.HEIC original + edited
+        ServerAsset(
+            id: "00000000-0000-0000-0000-0000000004821a",
+            checksum: Checksum(base64: "AAAA4821AAAAoriginalcontent"),
+            originalFileName: "IMG_4821.HEIC",
+            fileCreatedAt: pendingDate("2026-04-19T12:00:00Z")
+        ),
+        ServerAsset(
+            id: "00000000-0000-0000-0000-0000000004821b",
+            checksum: Checksum(base64: "BBBB4821BBBBeditedcontent01"),
+            originalFileName: "IMG_4821.HEIC",
+            fileCreatedAt: pendingDate("2026-04-19T12:00:00Z")
+        ),
+
+        ServerAsset(
+            id: "00000000-0000-0000-0000-0000000004820a",
+            checksum: Checksum(base64: "AAAA4820AAAAsingleversion01"),
+            originalFileName: "IMG_4820.HEIC",
+            fileCreatedAt: pendingDate("2026-04-19T12:01:00Z")
+        ),
+        ServerAsset(
+            id: "00000000-0000-0000-0000-0000000004819a",
+            checksum: Checksum(base64: "AAAA4819AAAAlivepairversion"),
+            livePhotoVideoId: "ffffffff-0000-0000-0000-0000000004819b",
+            originalFileName: "IMG_4819.HEIC",
+            fileCreatedAt: pendingDate("2026-04-19T12:02:00Z")
+        ),
+
+        // Multi-version: IMG_4754.HEIC with 3 versions (1 anchored)
+        ServerAsset(
+            id: "00000000-0000-0000-0000-0000000004754a",
+            checksum: Checksum(base64: "AAAA4754AAAAoriginalcontent"),
+            originalFileName: "IMG_4754.HEIC",
+            fileCreatedAt: pendingDate("2026-04-14T09:00:00Z")
+        ),
+        ServerAsset(
+            id: "00000000-0000-0000-0000-0000000004754b",
+            checksum: Checksum(base64: "BBBB4754BBBBeditedcontent01"),
+            originalFileName: "IMG_4754.HEIC",
+            fileCreatedAt: pendingDate("2026-04-14T09:00:00Z")
+        ),
+        ServerAsset(
+            id: "00000000-0000-0000-0000-0000000004754c",
+            checksum: Checksum(base64: "CCCC4754CCCCeditedcontent02"),
+            originalFileName: "IMG_4754.HEIC",
+            fileCreatedAt: pendingDate("2026-04-14T09:00:00Z")
+        ),
+
+        ServerAsset(
+            id: "00000000-0000-0000-0000-0000000004612a",
+            checksum: Checksum(base64: "AAAA4612AAAAvideoversion010"),
+            originalFileName: "IMG_4612.MP4",
+            fileCreatedAt: pendingDate("2026-04-08T19:30:00Z")
+        ),
+    ]
+
+    /// Fixture server assets for the unconfirmed section. Singletons —
+    /// the multi-version case is already exercised by the held set.
+    public static let pendingUnconfirmedAssets: [ServerAsset] = [
+        ServerAsset(
+            id: "00000000-0000-0000-0000-0000000004498a",
+            checksum: Checksum(base64: "AAAA4498AAAAunconfirmed0001"),
+            originalFileName: "IMG_4498.HEIC",
+            fileCreatedAt: pendingDate("2026-04-02T10:00:00Z")
+        ),
+        ServerAsset(
+            id: "00000000-0000-0000-0000-0000000004412a",
+            checksum: Checksum(base64: "AAAA4412AAAAunconfirmed0002"),
+            originalFileName: "IMG_4412.HEIC",
+            fileCreatedAt: pendingDate("2026-03-29T11:00:00Z")
+        ),
+        ServerAsset(
+            id: "00000000-0000-0000-0000-0000000004302a",
+            checksum: Checksum(base64: "AAAA4302AAAAlivepairunconf0"),
+            livePhotoVideoId: "ffffffff-0000-0000-0000-0000000004302b",
+            originalFileName: "IMG_4302.HEIC",
+            fileCreatedAt: pendingDate("2026-03-18T14:00:00Z")
+        ),
+    ]
+
+    /// Anchored "Original" checksums — the first-observed bytes for each
+    /// multi-version group above. The view labels these versions
+    /// "Original" and pins them first within their group.
+    public static let pendingFirstObservedAnchors: Set<Checksum> = [
+        Checksum(base64: "AAAA4821AAAAoriginalcontent"),
+        Checksum(base64: "AAAA4754AAAAoriginalcontent"),
+    ]
+
     public struct JournalTailEntry: Sendable, Identifiable {
         public var id: String { time + event }
         public let time: String
