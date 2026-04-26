@@ -313,12 +313,28 @@ final class AppDependencies {
 
         #if DEBUG
         if ProcessInfo.processInfo.environment["CAIRN_RESET"] == "1" {
-            try? await localHashStore.clear()
-            try? await tokenStore?.clear()
-            try? await everSeenStore?.clear()
-            try? await confirmedDeletedStore?.clear()
-            try? await deletionSourceStore?.clear()
-            try? await editRetirementStore?.clear()
+            // Bootstrap-time debug reset. Use the same aggregated-
+            // failure pattern so a Keychain or SwiftData hiccup
+            // surfaces in the log instead of being silently dropped.
+            let lh = self.localHashStore
+            let tk = self.tokenStore
+            let eh = self.everSeenStore
+            let cd = self.confirmedDeletedStore
+            let ds = self.deletionSourceStore
+            let er = self.editRetirementStore
+            var ops: [(label: String, body: @Sendable () async throws -> Void)] = [
+                ("local hash cache", { try await lh.clear() }),
+            ]
+            if let tk { ops.append(("change-token store", { try await tk.clear() })) }
+            if let eh { ops.append(("ever-seen store", { try await eh.clear() })) }
+            if let cd { ops.append(("confirmed-deleted store", { try await cd.clear() })) }
+            if let ds { ops.append(("deletion-source store", { try await ds.clear() })) }
+            if let er { ops.append(("edit-retirement store", { try await er.clear() })) }
+            let failures = await Self.aggregateClears(ops)
+            if !failures.isEmpty {
+                let detail = failures.map { "\($0.label): \(Self.describeSyncError($0.error))" }.joined(separator: "; ")
+                syncLog.error("[cairn.reset.debug] partial failure: \(detail, privacy: .public)")
+            }
         }
         #endif
 
@@ -1074,6 +1090,40 @@ final class AppDependencies {
         return nil
     }
 
+    /// Run a batch of async-throwing operations, collecting failures
+    /// without short-circuiting. Used by destructive paths (sign-out,
+    /// reset-index, etc.) where one failed store-clear shouldn't
+    /// prevent the rest from being attempted, but the user still
+    /// needs to know something went wrong rather than seeing "ok"
+    /// after a half-completed reset.
+    nonisolated fileprivate static func aggregateClears(
+        _ ops: [(label: String, body: @Sendable () async throws -> Void)]
+    ) async -> [(label: String, error: Swift.Error)] {
+        var failures: [(label: String, error: Swift.Error)] = []
+        for op in ops {
+            do {
+                try await op.body()
+            } catch {
+                failures.append((op.label, error))
+            }
+        }
+        return failures
+    }
+
+    /// Format a failures list for `model.lastError`. Shows a friendly
+    /// summary plus the labels of what didn't clear; the full error
+    /// detail goes to the syncLog.
+    nonisolated fileprivate static func summarizeClearFailures(
+        action: String,
+        _ failures: [(label: String, error: Swift.Error)]
+    ) -> String {
+        let labels = failures.map(\.label).joined(separator: ", ")
+        if failures.count == 1 {
+            return "\(action) didn't fully complete — \(labels) couldn't be cleared. Some data may persist on this device."
+        }
+        return "\(action) didn't fully complete — \(failures.count) items couldn't be cleared (\(labels)). Some data may persist on this device."
+    }
+
     nonisolated fileprivate static func describeSyncError(_ error: Swift.Error) -> String {
         if let e = error as? ImmichClientError {
             switch e {
@@ -1684,21 +1734,29 @@ final class AppDependencies {
             },
             resetIndex: { [weak self] in
                 guard let self else { return }
-                let (lh, dh, eh, cd, tk, er, ds) = await MainActor.run {
-                    (self.localHashStore, self.deferredHashStore, self.everSeenStore, self.confirmedDeletedStore, self.tokenStore, self.editRetirementStore, self.deletionSourceStore)
+                let (lh, dh, eh, cd, tk, er, ds, mdStore) = await MainActor.run {
+                    (self.localHashStore, self.deferredHashStore, self.everSeenStore, self.confirmedDeletedStore, self.tokenStore, self.editRetirementStore, self.deletionSourceStore, self.localAssetMetadataStore)
                 }
-                try? await lh.clear()
-                try? await dh.clear()
-                if let eh { try? await eh.clear() }
-                if let cd { try? await cd.clear() }
-                if let tk { try? await tk.clear() }
-                if let er { try? await er.clear() }
-                if let ds { try? await ds.clear() }
-                // The metadata store is the input to the orphan
-                // matcher. Clearing the index without clearing the
-                // metadata would leave stale rows that could resurrect
-                // ghost orphans on the next sync.
-                try? await self.localAssetMetadataStore.clear()
+                // Aggregate failures so a single store's hiccup
+                // doesn't leave the user with partial-but-silent
+                // state. The metadata store is the input to the
+                // orphan matcher; clearing the index without it would
+                // leave stale rows that could resurrect ghost orphans.
+                var ops: [(label: String, body: @Sendable () async throws -> Void)] = [
+                    ("local hash cache", { try await lh.clear() }),
+                    ("deferred queue", { try await dh.clear() }),
+                    ("metadata store", { try await mdStore.clear() }),
+                ]
+                if let eh { ops.append(("ever-seen store", { try await eh.clear() })) }
+                if let cd { ops.append(("confirmed-deleted store", { try await cd.clear() })) }
+                if let tk { ops.append(("change-token store", { try await tk.clear() })) }
+                if let er { ops.append(("edit-retirement store", { try await er.clear() })) }
+                if let ds { ops.append(("deletion-source store", { try await ds.clear() })) }
+                let failures = await Self.aggregateClears(ops)
+                if !failures.isEmpty {
+                    let detail = failures.map { "\($0.label): \(Self.describeSyncError($0.error))" }.joined(separator: "; ")
+                    syncLog.error("[cairn.reset] partial failure: \(detail, privacy: .public)")
+                }
                 await MainActor.run {
                     self.model.reconciliation = nil
                     self.model.library = .empty
@@ -1713,25 +1771,52 @@ final class AppDependencies {
                     self.model.journalTail = []
                     self.model.runs = []
                     self.model.runAssets = [:]
-                    self.showStatusToast(.indexReset)
+                    if failures.isEmpty {
+                        self.showStatusToast(.indexReset)
+                    } else {
+                        self.model.lastError = Self.summarizeClearFailures(action: "Reset index", failures)
+                    }
                 }
             },
             clearJournal: { [weak self] in
                 guard let self else { return }
                 let journal = await MainActor.run { self.journal }
+                var deleteError: Swift.Error?
                 if let journal {
                     let path = await journal.path
-                    try? FileManager.default.removeItem(at: path)
+                    do {
+                        try FileManager.default.removeItem(at: path)
+                    } catch {
+                        // ENOENT is fine — file simply wasn't there
+                        // (cairn never wrote a journal). Anything else
+                        // is real and the user should see it.
+                        let nsError = error as NSError
+                        if !(nsError.domain == NSCocoaErrorDomain
+                             && nsError.code == NSFileNoSuchFileError) {
+                            deleteError = error
+                            syncLog.error("[cairn.journal] clear failed: \(Self.describeSyncError(error), privacy: .public)")
+                        }
+                    }
                 }
                 await MainActor.run {
-                    self.model.journalTail = []
-                    self.model.runs = []
-                    self.model.runAssets = [:]
-                    self.showStatusToast(.journalCleared)
+                    if let deleteError {
+                        self.model.lastError = "Couldn't delete the local journal file. (\(Self.describeSyncError(deleteError)))"
+                    } else {
+                        self.model.journalTail = []
+                        self.model.runs = []
+                        self.model.runAssets = [:]
+                        self.showStatusToast(.journalCleared)
+                    }
                 }
             },
             signOut: { [weak self] in
-                try? secrets.clear()
+                var keychainError: Swift.Error?
+                do {
+                    try secrets.clear()
+                } catch {
+                    keychainError = error
+                    syncLog.error("[cairn.signout] keychain clear failed: \(Self.describeSyncError(error), privacy: .public)")
+                }
                 await self?.thumbnailLoader?.clearCache()
                 await MainActor.run {
                     guard let self else { return }
@@ -1766,24 +1851,51 @@ final class AppDependencies {
                     self.model.restoredAfterCairnTrash = [:]
                     self.model.hasCompletedInitialScan = false
                     self.model.excludedChecksums = []
+                    if let keychainError {
+                        // Sign-out cleared in-memory state successfully,
+                        // but the credential delete from Keychain failed.
+                        // Surface so the user knows their key may still
+                        // be on this device.
+                        self.model.lastError = "Sign-out couldn't fully clear the saved credentials. (\(Self.describeSyncError(keychainError)))"
+                    }
                 }
             },
             rescanLibrary: { [weak self] in
                 guard let self else { return }
                 let (dh, tk) = await MainActor.run { (self.deferredHashStore, self.tokenStore) }
-                try? await dh.clear()
-                if let tk { try? await tk.clear() }
+                var ops: [(label: String, body: @Sendable () async throws -> Void)] = [
+                    ("deferred queue", { @Sendable in try await dh.clear() }),
+                ]
+                if let tk {
+                    ops.append(("change-token store", { @Sendable in try await tk.clear() }))
+                }
+                let failures = await Self.aggregateClears(ops)
+                if !failures.isEmpty {
+                    let detail = failures.map { "\($0.label): \(Self.describeSyncError($0.error))" }.joined(separator: "; ")
+                    syncLog.error("[cairn.rescan] partial failure: \(detail, privacy: .public)")
+                }
                 await MainActor.run {
                     self.model.hasCompletedInitialScan = false
                     self.model.reconciliation = nil
                     self.model.syncProgress = nil
                     self.model.deferredQueue = .empty
-                    self.showStatusToast(.rescanQueued)
+                    if failures.isEmpty {
+                        self.showStatusToast(.rescanQueued)
+                    } else {
+                        self.model.lastError = Self.summarizeClearFailures(action: "Rescan setup", failures)
+                    }
                 }
             },
             persistSettings: { [weak self] settings in
                 guard let self else { return }
-                try? await self.settingsStore.save(settings)
+                do {
+                    try await self.settingsStore.save(settings)
+                } catch {
+                    syncLog.error("[cairn.settings] save failed: \(Self.describeSyncError(error), privacy: .public)")
+                    await MainActor.run {
+                        self.model.lastError = "Couldn't save your settings — they'll revert on next launch. (\(Self.describeSyncError(error)))"
+                    }
+                }
                 await self.refreshDeferredQueueSummary()
             },
             dismissInitialScan: { [weak self] in
@@ -1794,17 +1906,24 @@ final class AppDependencies {
             },
             startOverInitialScan: { [weak self] in
                 guard let self else { return }
-                let (lh, dh, tk, eh, cd, er, ds) = await MainActor.run {
-                    (self.localHashStore, self.deferredHashStore, self.tokenStore, self.everSeenStore, self.confirmedDeletedStore, self.editRetirementStore, self.deletionSourceStore)
+                let (lh, dh, tk, eh, cd, er, ds, mdStore) = await MainActor.run {
+                    (self.localHashStore, self.deferredHashStore, self.tokenStore, self.everSeenStore, self.confirmedDeletedStore, self.editRetirementStore, self.deletionSourceStore, self.localAssetMetadataStore)
                 }
-                try? await lh.clear()
-                try? await dh.clear()
-                if let tk { try? await tk.clear() }
-                if let eh { try? await eh.clear() }
-                if let cd { try? await cd.clear() }
-                if let er { try? await er.clear() }
-                if let ds { try? await ds.clear() }
-                try? await self.localAssetMetadataStore.clear()
+                var ops: [(label: String, body: @Sendable () async throws -> Void)] = [
+                    ("local hash cache", { try await lh.clear() }),
+                    ("deferred queue", { try await dh.clear() }),
+                    ("metadata store", { try await mdStore.clear() }),
+                ]
+                if let tk { ops.append(("change-token store", { try await tk.clear() })) }
+                if let eh { ops.append(("ever-seen store", { try await eh.clear() })) }
+                if let cd { ops.append(("confirmed-deleted store", { try await cd.clear() })) }
+                if let er { ops.append(("edit-retirement store", { try await er.clear() })) }
+                if let ds { ops.append(("deletion-source store", { try await ds.clear() })) }
+                let failures = await Self.aggregateClears(ops)
+                if !failures.isEmpty {
+                    let detail = failures.map { "\($0.label): \(Self.describeSyncError($0.error))" }.joined(separator: "; ")
+                    syncLog.error("[cairn.startover] partial failure: \(detail, privacy: .public)")
+                }
                 await MainActor.run {
                     self.model.reconciliation = nil
                     self.model.library = .empty
@@ -1816,6 +1935,9 @@ final class AppDependencies {
                     self.model.pausedSyncElapsedSeconds = nil
                     self.model.syncStartedAt = nil
                     self.model.hasCompletedInitialScan = false
+                    if !failures.isEmpty {
+                        self.model.lastError = Self.summarizeClearFailures(action: "Start-over reset", failures)
+                    }
                 }
                 await self.refreshDeferredQueueSummary()
             },
