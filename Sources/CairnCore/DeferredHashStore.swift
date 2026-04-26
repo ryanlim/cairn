@@ -18,9 +18,15 @@ import Foundation
 ///   - Removed on successful hash (the next attempt cleared them).
 ///   - Entry's `firstDeferredAt` is stable across retries — useful for
 ///     surfacing "been deferred for N days" in Settings.
-///   - Hard-ceiling assets (`DeferReason.aboveHardCeiling`) are
-///     intentionally **not** persisted here — they're out-of-scope by
-///     user choice and shouldn't grow the queue.
+///   - Hard-ceiling assets are persisted with the
+///     `.aboveHardCeiling` reason — see the migration note on that
+///     case. Earlier versions deliberately skipped them on the theory
+///     that "permanent skips shouldn't grow the queue"; in practice
+///     that meant users had no visibility into what was out-of-scope
+///     and the library→cache untracked sweep re-discovered them on
+///     every sync. Persisting wins both: actionable count is
+///     unchanged (the drain skips them), the UI can surface them, and
+///     the untracked sweep stays cheap.
 public protocol DeferredHashStore: Sendable {
     /// Every queued entry. Ordered is not guaranteed — callers that need
     /// deterministic ordering should sort client-side.
@@ -80,9 +86,7 @@ public struct DeferredHashEntry: Sendable, Equatable {
     }
 
     /// Mirrors the iOS reconciler's `DeferReason` but lives in Core so
-    /// it's portable. `aboveHardCeiling` is intentionally not listed
-    /// here — hard-ceiling skips are permanent, and never land in the
-    /// defer queue.
+    /// it's portable.
     public enum DeferReason: String, Sendable, Equatable, Codable {
         /// iCloud fetch exceeded the soft limit on the last attempt.
         /// The background drain (no soft limit) will pick these up.
@@ -93,5 +97,16 @@ public struct DeferredHashEntry: Sendable, Equatable {
         /// PHAsset had no hashable resources. Rare; retry rarely
         /// helps, but we keep the entry so the UI can warn the user.
         case noHashableResources
+        /// Asset's iCloud download size exceeded the user's hard
+        /// ceiling (`hardCeilingBytes` / `iCloudMaxEverBytesMB`) at
+        /// hash time. Persisted so the asset is visible in the
+        /// deferred-queue UI and so the library→cache untracked sweep
+        /// doesn't re-discover it every sync. Drain skips these by
+        /// both size filter (existing) and reason filter (added
+        /// alongside this case). If the user raises the ceiling, the
+        /// size filter naturally promotes them to actionable without
+        /// needing a reason update — the next foreground/background
+        /// drain hashes them and removes the row on success.
+        case aboveHardCeiling
     }
 }

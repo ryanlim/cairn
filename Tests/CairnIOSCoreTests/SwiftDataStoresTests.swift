@@ -625,12 +625,50 @@ struct SwiftDataDeferredHashStoreTests {
             entry("A", reason: .tooLarge),
             entry("B", reason: .timedOut, size: nil),
             entry("C", reason: .noHashableResources, size: nil),
+            entry("D", reason: .aboveHardCeiling, size: 4_000_000_000),
         ])
         let snap = try await store.snapshot()
         let byId = Dictionary(uniqueKeysWithValues: snap.map { ($0.localIdentifier, $0.reason) })
         #expect(byId["A"] == .tooLarge)
         #expect(byId["B"] == .timedOut)
         #expect(byId["C"] == .noHashableResources)
+        #expect(byId["D"] == .aboveHardCeiling)
+    }
+
+    @Test("aboveHardCeiling row preserves size + firstDeferredAt across upsert")
+    func aboveHardCeilingPersists() async throws {
+        // The whole point of persisting these rows is so they show up
+        // in the deferred-queue UI with their download size — verify
+        // that the size and the deferred timestamp survive the
+        // SwiftData round-trip and a re-upsert from a later sync
+        // doesn't clobber the original timestamp.
+        let container = try makeContainer()
+        let store = SwiftDataDeferredHashStore(container: container)
+        let original = entry(
+            "huge-asset",
+            reason: .aboveHardCeiling,
+            size: 3_500_000_000,
+            at: 1_700_000_000
+        )
+        try await store.upsert([original])
+
+        // Second sync re-observes the same id at a different time —
+        // first-write-wins on the timestamp, but the size + reason
+        // come through.
+        let reobserved = entry(
+            "huge-asset",
+            reason: .aboveHardCeiling,
+            size: 3_500_000_000,
+            at: 1_700_090_000
+        )
+        try await store.upsert([reobserved])
+
+        let snap = try await store.snapshot()
+        #expect(snap.count == 1)
+        let row = snap[0]
+        #expect(row.reason == .aboveHardCeiling)
+        #expect(row.sizeBytes == 3_500_000_000)
+        #expect(row.firstDeferredAt == Date(timeIntervalSince1970: 1_700_000_000))
     }
 }
 

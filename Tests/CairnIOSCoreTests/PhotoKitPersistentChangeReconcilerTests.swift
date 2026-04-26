@@ -269,6 +269,26 @@ struct PhotoKitPersistentChangeReconcilerTests {
         snap = try await store.snapshot()
         #expect(snap[Self.shaA] == t1)
     }
+
+    @Test("DeferReason exposes all four expected cases with stable raw values")
+    func deferReasonCasesAreStable() {
+        // Pin the rawValue strings — SwiftData stores rows by rawValue
+        // (`StoredDeferredHash.reasonRaw`), so renaming any of these
+        // would silently break decode of existing rows on upgrade.
+        // Adding cases is fine; bump the test when the list grows.
+        let all: [DeferredHashEntry.DeferReason] = [
+            .tooLarge,
+            .timedOut,
+            .noHashableResources,
+            .aboveHardCeiling,
+        ]
+        let raws = Set(all.map(\.rawValue))
+        #expect(raws == ["tooLarge", "timedOut", "noHashableResources", "aboveHardCeiling"])
+        // Round-trip every case through its rawValue to catch typos.
+        for reason in all {
+            #expect(DeferredHashEntry.DeferReason(rawValue: reason.rawValue) == reason)
+        }
+    }
 }
 
 #endif

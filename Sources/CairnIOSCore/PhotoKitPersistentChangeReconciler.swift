@@ -856,11 +856,19 @@ public final class PhotoKitPersistentChangeReconciler {
         //     (which passes `.unlimited`) will, eventually.
         //   - `.timedOut` → always retry. Transient by nature.
         //   - `.noHashableResources` → always retry. Cheap.
+        //   - `.aboveHardCeiling` → drained iff size now fits under
+        //     the current ceiling. If the user raises
+        //     `iCloudMaxEverBytesMB`, previously-skipped items
+        //     auto-promote without needing a fresh PhotoKit insert
+        //     event. The size check below is the sole gate; reason
+        //     is stored for UI categorization, not drain semantics.
         //   - Unknown size → retry (let the pipeline re-measure).
         //
         // For the BG `.unlimited` path, everything qualifies except
-        // items above the hard ceiling. The soft limit is a foreground
-        // budget concern; the hard ceiling is a permanent scope boundary.
+        // items still above the current hard ceiling. The soft limit
+        // is a foreground budget concern; the hard ceiling is the
+        // user's "permanent scope" but is editable in Settings, so
+        // raising it should re-include previously-skipped rows.
         let softLimitBytes = self.maxICloudBytesPerAsset
         let hardCeiling = self.hardCeilingBytes
         let candidates: [DeferredHashEntry]
@@ -873,7 +881,10 @@ public final class PhotoKitPersistentChangeReconciler {
             }
         case .useSettings:
             candidates = queued.filter { entry in
-                guard entry.reason == .tooLarge,
+                // `.aboveHardCeiling` and `.tooLarge` rows both gate
+                // on size below; `.timedOut` / `.noHashableResources`
+                // (no recorded size) always retry.
+                guard entry.reason == .tooLarge || entry.reason == .aboveHardCeiling,
                       let size = entry.sizeBytes else {
                     return true
                 }
@@ -1395,11 +1406,27 @@ public final class PhotoKitPersistentChangeReconciler {
                         ))
                     case .aboveHardCeiling(let bytes):
                         // Not counted in the `deferred*` buckets because
-                        // it's not deferred — it's out-of-scope.
-                        // Surfaced via the log so on-device testers see
-                        // what was permanently skipped.
+                        // it's not deferred under the soft-limit
+                        // taxonomy — it's out-of-scope. We still
+                        // persist a queue row (with `.aboveHardCeiling`
+                        // reason) so:
+                        //   1. the UI can surface what's out-of-scope
+                        //      rather than silently dropping it,
+                        //   2. the library→cache untracked sweep
+                        //      treats the id as known and stops
+                        //      re-discovering it every sync.
+                        // The drain filter skips `.aboveHardCeiling`
+                        // explicitly; raising the ceiling later
+                        // naturally promotes the row to actionable
+                        // because the size-based filter takes over.
                         out.aboveHardCeiling += 1
                         out.aboveHardCeilingBytes += bytes
+                        deferredUpserts.append(DeferredHashEntry(
+                            localIdentifier: result.assetID,
+                            reason: .aboveHardCeiling,
+                            sizeBytes: bytes,
+                            firstDeferredAt: now
+                        ))
                         let msg = "[cairn.hash] above-hard-ceiling: id=\(result.assetID.prefix(12))… would-download=\(Self.formatBytes(bytes)) (out-of-scope)"
                         hashLog.notice("\(msg, privacy: .public)")
                         print(msg)
@@ -1468,8 +1495,9 @@ public final class PhotoKitPersistentChangeReconciler {
         // cheaper than per-asset saves and keeps the `DeferredHashStore`
         // transaction surface small. Successful re-hashes drop any
         // prior queue entry; defer outcomes upsert (first-write-wins
-        // on `firstDeferredAt`). Hard-ceiling outcomes are intentionally
-        // absent — they're out-of-scope, not deferred.
+        // on `firstDeferredAt`). Hard-ceiling outcomes also upsert
+        // (with `.aboveHardCeiling` reason) so the UI can surface them
+        // and the untracked sweep stops re-discovering them.
         if let deferredStore {
             if !deferredUpserts.isEmpty {
                 try? await deferredStore.upsert(deferredUpserts)

@@ -172,6 +172,12 @@ public struct DeferredQueueSheet: View {
         case .tooLarge: "too large"
         case .timedOut: "timed out"
         case .noHashableResources: "no resources"
+        // The "above cap" group already gets its own section in the
+        // sheet (resolved.aboveCeiling filter), but a row can still
+        // carry this reason if the user changed the ceiling between
+        // the hash attempt and now — keep the label short and aligned
+        // with the section header copy.
+        case .aboveHardCeiling: "above cap"
         }
     }
 
