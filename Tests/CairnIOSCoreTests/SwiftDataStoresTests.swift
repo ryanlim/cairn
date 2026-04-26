@@ -391,6 +391,69 @@ struct SwiftDataLocalHashStoreTests {
         #expect(try await store.checksums(for: "id-1") == cks("B", "C"))
         #expect(try await store.modificationDate(for: "id-1") == second)
     }
+
+    @Test("allLocalIdentifiers returns just the keys without checksum values")
+    func allLocalIdentifiersReturnsKeys() async throws {
+        let container = try makeContainer()
+        let store = SwiftDataLocalHashStore(container: container)
+
+        try await store.set(cks("A", "B"), for: "id-1")
+        try await store.set(cks("C"), for: "id-2")
+        try await store.set(cks("D"), for: "id-3")
+
+        let ids = try await store.allLocalIdentifiers()
+        #expect(ids == ["id-1", "id-2", "id-3"])
+    }
+
+    @Test("allLocalIdentifiers on empty store returns empty set")
+    func allLocalIdentifiersEmpty() async throws {
+        let container = try makeContainer()
+        let store = SwiftDataLocalHashStore(container: container)
+        #expect(try await store.allLocalIdentifiers().isEmpty)
+    }
+
+    @Test("allChecksums flattens Live Photo pairs into a single set")
+    func allChecksumsFlattens() async throws {
+        let container = try makeContainer()
+        let store = SwiftDataLocalHashStore(container: container)
+
+        // Live Photo: still + motion video share one localIdentifier.
+        try await store.set(cks("A", "A_motion"), for: "id-1")
+        try await store.set(cks("B"), for: "id-2")
+
+        let all = try await store.allChecksums()
+        #expect(all == cks("A", "A_motion", "B"))
+    }
+
+    @Test("entries(forIdentifiers:) batch-fetches matching ids only")
+    func entriesForIdentifiersBatch() async throws {
+        let container = try makeContainer()
+        let store = SwiftDataLocalHashStore(container: container)
+
+        let modDate = Date(timeIntervalSince1970: 1_700_000_000)
+        try await store.set(cks("A", "B"), for: "id-1", modificationDate: modDate)
+        try await store.set(cks("C"), for: "id-2", modificationDate: nil)
+        try await store.set(cks("D"), for: "id-3")
+
+        let result = try await store.entries(forIdentifiers: ["id-1", "id-3", "id-absent"])
+        #expect(result.count == 2)
+        #expect(result["id-1"]?.checksums == cks("A", "B"))
+        #expect(result["id-1"]?.modificationDate == modDate)
+        #expect(result["id-3"]?.checksums == cks("D"))
+        #expect(result["id-3"]?.modificationDate == nil)
+        #expect(result["id-absent"] == nil)
+        // id-2 was not in the request set, must not appear
+        #expect(result["id-2"] == nil)
+    }
+
+    @Test("entries(forIdentifiers:) on empty input returns empty dict")
+    func entriesForIdentifiersEmptyInput() async throws {
+        let container = try makeContainer()
+        let store = SwiftDataLocalHashStore(container: container)
+        try await store.set(cks("A"), for: "id-1")
+        let result = try await store.entries(forIdentifiers: [])
+        #expect(result.isEmpty)
+    }
 }
 
 // MARK: - SwiftDataPersistentChangeTokenStore
@@ -568,5 +631,155 @@ struct SwiftDataDeferredHashStoreTests {
         #expect(byId["A"] == .tooLarge)
         #expect(byId["B"] == .timedOut)
         #expect(byId["C"] == .noHashableResources)
+    }
+}
+
+// MARK: - SwiftDataLocalAssetMetadataStore
+
+@Suite("SwiftDataLocalAssetMetadataStore")
+struct SwiftDataLocalAssetMetadataStoreTests {
+    private func entry(
+        _ id: String,
+        filename: String? = "IMG_0001.HEIC",
+        creation: Date? = Date(timeIntervalSince1970: 1_700_000_000),
+        modification: Date? = nil,
+        size: Int64? = 1024
+    ) -> LocalAssetMetadata {
+        LocalAssetMetadata(
+            localIdentifier: id,
+            originalFileName: filename,
+            creationDate: creation,
+            modificationDate: modification,
+            fileSize: size,
+            observedAt: Date(timeIntervalSince1970: 2_000_000_000)
+        )
+    }
+
+    @Test("empty container returns nil for any id")
+    func emptyContainer() async throws {
+        let container = try makeContainer()
+        let store = SwiftDataLocalAssetMetadataStore(container: container)
+        #expect(try await store.metadata(for: "anything") == nil)
+    }
+
+    @Test("record then metadata(for:) round-trips all fields")
+    func recordRoundTrips() async throws {
+        let container = try makeContainer()
+        let store = SwiftDataLocalAssetMetadataStore(container: container)
+
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let created = Date(timeIntervalSince1970: 1_700_000_000)
+        let modified = Date(timeIntervalSince1970: 1_800_000_000)
+        try await store.record(LocalAssetMetadata(
+            localIdentifier: "id-1",
+            originalFileName: "IMG_0001.HEIC",
+            creationDate: created,
+            modificationDate: modified,
+            fileSize: 12345,
+            observedAt: now
+        ))
+
+        let got = try await store.metadata(for: "id-1")
+        #expect(got?.localIdentifier == "id-1")
+        #expect(got?.originalFileName == "IMG_0001.HEIC")
+        #expect(got?.creationDate == created)
+        #expect(got?.modificationDate == modified)
+        #expect(got?.fileSize == 12345)
+        #expect(got?.observedAt == now)
+    }
+
+    @Test("record bulk overload writes every entry")
+    func recordBulkWritesAll() async throws {
+        let container = try makeContainer()
+        let store = SwiftDataLocalAssetMetadataStore(container: container)
+        try await store.record([
+            entry("id-1", filename: "a.heic"),
+            entry("id-2", filename: "b.heic"),
+            entry("id-3", filename: "c.heic"),
+        ])
+        #expect(try await store.metadata(for: "id-1")?.originalFileName == "a.heic")
+        #expect(try await store.metadata(for: "id-2")?.originalFileName == "b.heic")
+        #expect(try await store.metadata(for: "id-3")?.originalFileName == "c.heic")
+    }
+
+    @Test("re-recording the same id replaces fields except observedAt")
+    func reRecordReplaces() async throws {
+        let container = try makeContainer()
+        let store = SwiftDataLocalAssetMetadataStore(container: container)
+
+        let firstObserved = Date(timeIntervalSince1970: 2_000_000_000)
+        let secondObserved = Date(timeIntervalSince1970: 2_500_000_000)
+
+        try await store.record(LocalAssetMetadata(
+            localIdentifier: "id-1",
+            originalFileName: "old.heic",
+            creationDate: nil, modificationDate: nil, fileSize: 100,
+            observedAt: firstObserved
+        ))
+        try await store.record(LocalAssetMetadata(
+            localIdentifier: "id-1",
+            originalFileName: "new.heic",
+            creationDate: nil, modificationDate: nil, fileSize: 200,
+            observedAt: secondObserved
+        ))
+
+        let got = try await store.metadata(for: "id-1")
+        #expect(got?.originalFileName == "new.heic")
+        #expect(got?.fileSize == 200)
+        // observedAt is "first observation" — must not advance on re-record.
+        #expect(got?.observedAt == firstObserved)
+    }
+
+    @Test("remove drops the requested entries only")
+    func removeDropsEntries() async throws {
+        let container = try makeContainer()
+        let store = SwiftDataLocalAssetMetadataStore(container: container)
+        try await store.record([
+            entry("id-1"), entry("id-2"), entry("id-3"),
+        ])
+        try await store.remove(["id-1", "id-3", "id-absent"])
+        #expect(try await store.metadata(for: "id-1") == nil)
+        #expect(try await store.metadata(for: "id-3") == nil)
+        #expect(try await store.metadata(for: "id-2") != nil)
+    }
+
+    @Test("clear wipes the store")
+    func clearWipes() async throws {
+        let container = try makeContainer()
+        let store = SwiftDataLocalAssetMetadataStore(container: container)
+        try await store.record([entry("id-1"), entry("id-2")])
+        try await store.clear()
+        #expect(try await store.metadata(for: "id-1") == nil)
+        #expect(try await store.metadata(for: "id-2") == nil)
+    }
+
+    @Test("nullable fields round-trip nil correctly")
+    func nullableFieldsRoundTripNil() async throws {
+        let container = try makeContainer()
+        let store = SwiftDataLocalAssetMetadataStore(container: container)
+        try await store.record(LocalAssetMetadata(
+            localIdentifier: "id-1",
+            originalFileName: nil,
+            creationDate: nil,
+            modificationDate: nil,
+            fileSize: nil,
+            observedAt: Date()
+        ))
+        let got = try await store.metadata(for: "id-1")
+        #expect(got != nil)
+        #expect(got?.originalFileName == nil)
+        #expect(got?.creationDate == nil)
+        #expect(got?.modificationDate == nil)
+        #expect(got?.fileSize == nil)
+    }
+
+    @Test("empty remove + empty record are no-ops")
+    func emptyOpsAreNoops() async throws {
+        let container = try makeContainer()
+        let store = SwiftDataLocalAssetMetadataStore(container: container)
+        try await store.record([])
+        try await store.remove([])
+        try await store.record([entry("id-1")])
+        #expect(try await store.metadata(for: "id-1") != nil)
     }
 }

@@ -285,6 +285,77 @@ struct ReconciliationEngineTests {
         #expect(output.pendingReviewCandidates.isEmpty)
     }
 
+    // MARK: - Autonomous mode
+
+    @Test("autonomous mode: every diff candidate flows straight to deleteCandidates regardless of confirmed-deleted state")
+    func autonomousIgnoresConfirmedDeleted() {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let output = ReconciliationEngine.compute(.init(
+            serverAssets: [asset("s1", "A"), asset("s2", "B"), asset("s3", "C")],
+            currentLocalChecksums: [],
+            everSeenChecksums: checksums("A", "B", "C"),
+            // Mix of fresh-confirmed, past-confirmed, and unconfirmed.
+            // Autonomous should ignore all distinctions.
+            confirmedDeletedAt: [
+                Checksum(base64: "A"): now,
+                Checksum(base64: "C"): .distantPast,
+            ],
+            now: now,
+            quarantineDays: 14,
+            strictness: .autonomous
+        ))
+        #expect(Set(output.deleteCandidates.map(\.id)) == ["s1", "s2", "s3"])
+        #expect(output.pendingReviewCandidates.isEmpty)
+        #expect(output.heldByQuarantineCandidates.isEmpty)
+    }
+
+    @Test("autonomous mode: exclusions still protect candidates from deletion")
+    func autonomousRespectsExclusions() {
+        let output = ReconciliationEngine.compute(.init(
+            serverAssets: [asset("s1", "A"), asset("s2", "B")],
+            currentLocalChecksums: [],
+            everSeenChecksums: checksums("A", "B"),
+            excludedChecksums: checksums("A"),
+            strictness: .autonomous
+        ))
+        #expect(output.deleteCandidates.map(\.id) == ["s2"])
+        #expect(output.excludedCandidateCount == 1)
+    }
+
+    @Test("autonomous mode: server assets never seen locally are still safe (Mac-only uploads not flagged)")
+    func autonomousNeverSeenIsStillSafe() {
+        let output = ReconciliationEngine.compute(.init(
+            serverAssets: [asset("s1", "A"), asset("s2", "MAC_ONLY")],
+            currentLocalChecksums: [],
+            everSeenChecksums: checksums("A"),
+            strictness: .autonomous
+        ))
+        // s2 was never on the iPhone, so it's not a candidate. Only s1.
+        #expect(output.deleteCandidates.map(\.id) == ["s1"])
+    }
+
+    @Test("autonomous mode: trashed server assets are not flagged again")
+    func autonomousSkipsAlreadyTrashed() {
+        let output = ReconciliationEngine.compute(.init(
+            serverAssets: [asset("s1", "A", isTrashed: true), asset("s2", "B")],
+            currentLocalChecksums: [],
+            everSeenChecksums: checksums("A", "B"),
+            strictness: .autonomous
+        ))
+        #expect(output.deleteCandidates.map(\.id) == ["s2"])
+    }
+
+    @Test("autonomous mode: assets currently on iPhone are not flagged")
+    func autonomousSkipsCurrentLocal() {
+        let output = ReconciliationEngine.compute(.init(
+            serverAssets: [asset("s1", "A"), asset("s2", "B")],
+            currentLocalChecksums: checksums("A"),
+            everSeenChecksums: checksums("A", "B"),
+            strictness: .autonomous
+        ))
+        #expect(output.deleteCandidates.map(\.id) == ["s2"])
+    }
+
     @Test("heldByQuarantineCandidates is always a proper subset of pendingReviewCandidates")
     func heldIsSubsetOfPending() {
         let now = Date(timeIntervalSince1970: 2_000_000_000)
