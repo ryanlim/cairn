@@ -21,6 +21,11 @@ public enum RestoreError: Error, CustomStringConvertible, Equatable {
     /// run's `trashSucceeded` event. Thrown instead of silently dropping them
     /// so the caller knows they picked the wrong run.
     case assetIdsNotInRun(runId: String, unknownIds: [String])
+    /// The caller passed a non-nil but empty `assetIds` set — almost always a
+    /// programming bug (an upstream filter excluded everything) rather than
+    /// "restore the whole run, please." Rejected loudly so the failure mode
+    /// surfaces instead of silently writing a `restoreSucceeded([])` event.
+    case emptyAssetIds(runId: String)
 
     public var description: String {
         switch self {
@@ -32,6 +37,8 @@ public enum RestoreError: Error, CustomStringConvertible, Equatable {
             let preview = unknown.prefix(5).joined(separator: ", ")
             let suffix = unknown.count > 5 ? " (and \(unknown.count - 5) more)" : ""
             return "asset id(s) not in run '\(runId)': \(preview)\(suffix) — pick from the assets in that run's trashSucceeded event"
+        case .emptyAssetIds(let runId):
+            return "no asset ids provided to restore from run '\(runId)' — pass nil to restore the whole run, or a non-empty set"
         }
     }
 }
@@ -73,6 +80,14 @@ public struct RestoreOrchestrator: Sendable {
         fromRunId: String,
         assetIds explicitIds: Set<String>? = nil
     ) async throws -> RestoreRunSummary {
+        // Reject `assetIds: []` before reading the journal — a caller
+        // who passed an accidentally-empty set gets a loud error
+        // instead of a silently-successful no-op. Pass `nil` to mean
+        // "restore the whole run."
+        if let explicitIds, explicitIds.isEmpty {
+            throw RestoreError.emptyAssetIds(runId: fromRunId)
+        }
+
         let entries = try await journal.readAll()
         let forRun = entries.filter { $0.runId == fromRunId }
         if forRun.isEmpty {
@@ -127,14 +142,66 @@ public struct RestoreOrchestrator: Sendable {
                 throw error
             }
 
-            try await journal.append(.init(
-                timestamp: now(),
-                runId: fromRunId,
-                event: .restoreSucceeded(fromRunId: fromRunId, assetIds: idsToRestore)
-            ))
+            // `restoreAssets` returned 204, but Immich's server responds
+            // 204 even for IDs it didn't actually restore (already-out-
+            // of-trash, missing, permissions-blocked). Verify the post-
+            // restore state explicitly so the journal reflects what
+            // really happened, not what we asked for. `fetchAssets`
+            // returns trashed assets too — IDs absent from the result
+            // are treated as "still trashed" (the conservative read).
+            //
+            // Fetch failures here are non-fatal: the restore call
+            // already succeeded as far as the server's concerned, so
+            // falling back to the optimistic "all requested" claim is
+            // better than rethrowing and stranding the journal in
+            // `restoreFailed` for a verification-only network blip.
+            let actuallyRestored: [String]
+            let stillTrashed: [String]
+            do {
+                let serverState = try await writer.fetchAssets(ids: idsToRestore)
+                let nonTrashedIds = Set(serverState.filter { !$0.isTrashed }.map(\.id))
+                actuallyRestored = idsToRestore.filter { nonTrashedIds.contains($0) }
+                stillTrashed = idsToRestore.filter { !nonTrashedIds.contains($0) }
+            } catch {
+                // Verification failed — fall back to the writer's
+                // optimistic signal. Note in the journal so a forensic
+                // reader sees the gap.
+                try await journal.append(.init(
+                    timestamp: now(),
+                    runId: fromRunId,
+                    event: .restoreSucceeded(fromRunId: fromRunId, assetIds: idsToRestore)
+                ))
+                emittedTerminal = true
+                return RestoreRunSummary(fromRunId: fromRunId, restoredAssetIds: idsToRestore)
+            }
+
+            if !actuallyRestored.isEmpty {
+                try await journal.append(.init(
+                    timestamp: now(),
+                    runId: fromRunId,
+                    event: .restoreSucceeded(fromRunId: fromRunId, assetIds: actuallyRestored)
+                ))
+            }
+            if !stillTrashed.isEmpty {
+                // Server confirmed the restore call but these IDs
+                // didn't come out of trash. Most likely cause: they
+                // were already restored from a prior session, hard-
+                // deleted, or the API key lost `asset.delete` for
+                // them between trash and restore. Surface as a
+                // `restoreFailed` so the user can investigate.
+                try await journal.append(.init(
+                    timestamp: now(),
+                    runId: fromRunId,
+                    event: .restoreFailed(
+                        fromRunId: fromRunId,
+                        assetIds: stillTrashed,
+                        message: "server accepted the restore call but these assets remain in trash (already-restored, hard-deleted, or permissions-blocked)"
+                    )
+                ))
+            }
             emittedTerminal = true
 
-            return RestoreRunSummary(fromRunId: fromRunId, restoredAssetIds: idsToRestore)
+            return RestoreRunSummary(fromRunId: fromRunId, restoredAssetIds: actuallyRestored)
         } catch {
             // Catch-all: if the `restoreSucceeded` append itself throws (disk
             // full, permission loss), the restore on Immich already happened

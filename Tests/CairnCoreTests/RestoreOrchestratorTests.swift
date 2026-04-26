@@ -381,86 +381,117 @@ struct RestoreOrchestratorTests {
         #expect(await writer.restoredBatches.isEmpty)
     }
 
-    /// Empty `explicitIds` set is a degenerate case: `unknown` is
-    /// empty (passes the guard), expansion of `{}` is `{}`, so the
-    /// orchestrator writes `restoreStarted` with `[]`, calls the
-    /// writer with `[]` (a no-op for `ImmichClient`), and writes
-    /// `restoreSucceeded` with `[]`.
-    ///
-    /// TODO: this is arguably a footgun — a caller passing an
-    /// accidentally-empty set gets a successful no-op rather than
-    /// a clear "you didn't ask to restore anything" signal. Worth
-    /// reconsidering whether to throw here. Pinning current behavior
-    /// for now so any change to it is intentional.
-    @Test("empty explicitIds is a no-op success: restoreStarted/Succeeded with [], writer called with []")
-    func emptyExplicitIdsIsNoOpSuccess() async throws {
+    /// Empty `explicitIds` set is rejected with `RestoreError.emptyAssetIds`
+    /// before the journal is touched. Pass `nil` to mean "restore the whole
+    /// run" — `[]` is almost always a programming bug (an upstream filter
+    /// excluded everything) and silently writing a `restoreSucceeded([])`
+    /// hides that.
+    @Test("empty explicitIds is rejected with RestoreError.emptyAssetIds — no journal write, no writer call")
+    func emptyExplicitIdsRejected() async throws {
         let (journal, path) = tempJournal()
         defer { try? FileManager.default.removeItem(at: path) }
         try await seedTrashRun(journal, runId: "R-EMPTY", assetIds: ["a1", "a2"])
 
         let writer = FakeWriter()
         let orch = RestoreOrchestrator(writer: writer, journal: journal)
-        let summary = try await orch.restore(fromRunId: "R-EMPTY", assetIds: [])
 
-        #expect(summary.restoredAssetIds.isEmpty)
-        #expect(await writer.restoredBatches == [[]])
+        await #expect {
+            _ = try await orch.restore(fromRunId: "R-EMPTY", assetIds: [])
+        } throws: { error in
+            guard case RestoreError.emptyAssetIds(let runId) = error else { return false }
+            return runId == "R-EMPTY"
+        }
 
+        // Writer never called.
+        #expect(await writer.restoredBatches.isEmpty)
+
+        // Journal carries only the seeded trash-run events — no
+        // restoreStarted / restoreSucceeded / restoreFailed.
         let entries = try await journal.readAll()
-        let started = entries.compactMap { entry -> [String]? in
-            if case .restoreStarted(_, let ids) = entry.event { return ids }
-            return nil
+        let restoreEvents = entries.filter {
+            switch $0.event {
+            case .restoreStarted, .restoreSucceeded, .restoreFailed: return true
+            default: return false
+            }
         }
-        let succeeded = entries.compactMap { entry -> [String]? in
-            if case .restoreSucceeded(_, let ids) = entry.event { return ids }
-            return nil
-        }
-        #expect(started == [[]])
-        #expect(succeeded == [[]])
+        #expect(restoreEvents.isEmpty)
     }
 
-    /// Documents an actual gap in the orchestrator's failure handling:
-    /// `RestoreOrchestrator.restore` trusts the writer's "no error
-    /// thrown" signal as proof that all requested IDs were restored.
-    /// In reality, Immich's `POST /api/trash/restore/assets` can
-    /// silently no-op for IDs that don't exist (or were already
-    /// restored, or the API key lacks `asset.delete` for them) — the
-    /// HTTP response is still 204. The orchestrator then writes
-    /// `restoreSucceeded` with the FULL requested set, even though
-    /// some assets remain trashed on the server.
-    ///
-    /// TODO: out of scope for this test pass, but the fix would be
-    /// for `restoreAssets` to return the count actually restored (or
-    /// the orchestrator to do a follow-up read), then journal that
-    /// number rather than the requested set. Until then, the journal
-    /// can over-claim success. Pinning current behavior here so a
-    /// future fix has a failing test to flip.
-    @Test("partial server restore (writer returns success but server no-ops): journal over-claims restoreSucceeded — TODO")
-    func partialServerRestoreOverClaimsSuccess() async throws {
+    /// Immich's `POST /api/trash/restore/assets` returns 204 even for
+    /// IDs that didn't actually move out of trash (already-restored,
+    /// hard-deleted, or permissions-blocked). The orchestrator
+    /// post-restores by calling `fetchAssets` and partitions the
+    /// requested set into actually-restored (journaled as
+    /// `restoreSucceeded`) and still-trashed (journaled as
+    /// `restoreFailed` with an explanatory message). The summary
+    /// reflects the verified set, not the requested one.
+    @Test("partial server restore: journal records actually-restored vs still-trashed via post-call verification")
+    func partialServerRestoreVerifiedAgainstFetch() async throws {
         let (journal, path) = tempJournal()
         defer { try? FileManager.default.removeItem(at: path) }
         try await seedTrashRun(journal, runId: "R-OVER", assetIds: ["a1", "a2", "a3"])
 
-        // Writer returns success — that's all the orchestrator can see.
-        // In a real partial-restore scenario, the server may have only
-        // restored a2 (a1, a3 silently no-op'd because they were
-        // already-restored from a prior session, missing, or
-        // permissions-blocked). The journal-level invariant we're
-        // pinning is the optimistic one: the orchestrator records
-        // exactly what it asked for.
+        // Server claims success on the restore call but only `a2`
+        // actually moved out of trash; `a1` and `a3` remain trashed.
+        // `fetchAssets` is what the orchestrator uses to learn this.
         let writer = FakeWriter()
+        await writer.setFetchAssetsHandler { ids in
+            ids.map { id in
+                ServerAsset(
+                    id: id,
+                    checksum: Checksum(base64: "ck-\(id)"),
+                    isTrashed: id != "a2"
+                )
+            }
+        }
         let orch = RestoreOrchestrator(writer: writer, journal: journal)
         let summary = try await orch.restore(fromRunId: "R-OVER")
 
-        #expect(summary.restoredAssetIds == ["a1", "a2", "a3"])
+        // Summary reflects what the verification call actually
+        // confirmed — only `a2`, not the full requested set.
+        #expect(summary.restoredAssetIds == ["a2"])
 
         let entries = try await journal.readAll()
         let succeeded = entries.compactMap { entry -> [String]? in
             if case .restoreSucceeded(_, let ids) = entry.event { return ids }
             return nil
         }
-        // Journal claims all three restored, even though in reality
-        // (per the TODO above) we don't actually verify that.
-        #expect(succeeded == [["a1", "a2", "a3"]])
+        let failed = entries.compactMap { entry -> ([String], String)? in
+            if case .restoreFailed(_, let ids, let message) = entry.event { return (ids, message) }
+            return nil
+        }
+        #expect(succeeded == [["a2"]])
+        #expect(failed.count == 1)
+        #expect(failed.first?.0 == ["a1", "a3"])
+        #expect(failed.first?.1.contains("remain in trash") == true)
+    }
+
+    /// Verification fetch failure (transient network blip on the
+    /// follow-up read, after the actual restore call already
+    /// succeeded): the orchestrator can't tell what really happened,
+    /// so it falls back to the writer's optimistic signal — journals
+    /// `restoreSucceeded` with the full requested set rather than
+    /// stranding the run in `restoreFailed` for a verification-only
+    /// failure.
+    @Test("post-restore verification failure: falls back to optimistic restoreSucceeded with full requested set")
+    func verificationFailureFallsBackOptimistic() async throws {
+        let (journal, path) = tempJournal()
+        defer { try? FileManager.default.removeItem(at: path) }
+        try await seedTrashRun(journal, runId: "R-VERIFY-FAIL", assetIds: ["a1", "a2"])
+
+        let writer = FakeWriter()
+        await writer.setFailFetchAssets(FakeError(message: "network-blip-during-verify"))
+        let orch = RestoreOrchestrator(writer: writer, journal: journal)
+        let summary = try await orch.restore(fromRunId: "R-VERIFY-FAIL")
+
+        #expect(summary.restoredAssetIds == ["a1", "a2"])
+
+        let entries = try await journal.readAll()
+        let succeeded = entries.compactMap { entry -> [String]? in
+            if case .restoreSucceeded(_, let ids) = entry.event { return ids }
+            return nil
+        }
+        #expect(succeeded == [["a1", "a2"]])
     }
 
     @Test("multiple runs in the same journal: restore only touches the requested run's assets")

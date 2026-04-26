@@ -350,6 +350,60 @@ public struct ImmichClient: Sendable {
         return out
     }
 
+    /// `DELETE /api/tags/{id}` — remove a tag from the server. Used by
+    /// `TrashOrchestrator` to clean up the just-created run tag when
+    /// `bulkTagAssets` fails: the upsertTag call already committed the
+    /// tag, so without this cleanup the server keeps an orphan
+    /// `cairn/v1/run/<id>` with zero attached assets. Best-effort — if
+    /// the delete itself fails the caller logs and continues with the
+    /// original error.
+    public func deleteTag(id: String) async throws {
+        let req = try makeRequest(method: "DELETE", path: "tags/\(id)")
+        let (data, resp) = try await session.data(for: req)
+        try Self.expectOK(resp, data: data)
+    }
+
+    // MARK: - Assets by ID
+
+    /// Fetch the current server-side state of each asset in `ids` via
+    /// `GET /api/assets/{id}`. Used by `RestoreOrchestrator` to verify
+    /// which IDs actually moved out of trash after a restore call —
+    /// Immich's restore endpoint is silently idempotent (204 even for
+    /// IDs that don't exist or were already non-trashed), so the
+    /// response alone can't distinguish "restored" from "no-op'd."
+    ///
+    /// `GET /api/assets/{id}` returns trashed assets unconditionally,
+    /// so no `withDeleted` knob is needed — `isTrashed` on the response
+    /// is the source of truth. Missing IDs (404 from the server) are
+    /// dropped from the result rather than thrown; the orchestrator
+    /// treats "absent" as "still trashed" so the user errs toward
+    /// review rather than false success. Other HTTP errors propagate.
+    public func fetchAssets(ids: [String]) async throws -> [ServerAsset] {
+        guard !ids.isEmpty else { return [] }
+        var out: [ServerAsset] = []
+        for id in ids {
+            try Task.checkCancellation()
+            let req = try makeRequest(method: "GET", path: "assets/\(id)")
+            let (data, resp) = try await session.data(for: req)
+            guard let http = resp as? HTTPURLResponse else {
+                throw ImmichClientError.unexpectedResponse("not an HTTP response")
+            }
+            if http.statusCode == 404 {
+                // Asset is gone (hard-deleted, never existed, or the API
+                // key can't see it). Treated as "still trashed" by
+                // RestoreOrchestrator so the user reviews rather than
+                // assumes success.
+                continue
+            }
+            guard (200..<300).contains(http.statusCode) else {
+                throw ImmichClientError.httpStatus(http.statusCode, body: String(data: data, encoding: .utf8) ?? "")
+            }
+            let dto = try JSONDecoder().decode(AssetItemDTO.self, from: data)
+            out.append(dto.asServerAsset)
+        }
+        return out
+    }
+
     /// `PUT /api/tags/assets` — attach the given tags to every asset in
     /// `assetIds`. Used at trash time to stamp the per-run breadcrumb
     /// tag across every trashed asset. Empty input on either side is a

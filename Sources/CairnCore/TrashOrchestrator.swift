@@ -10,11 +10,25 @@ public protocol ImmichWriter: Sendable {
     func upsertTag(value: String) async throws -> ImmichTag
     /// Attach `tagIds` to every asset in `assetIds`. Calls `PUT /api/tags/assets`.
     func bulkTagAssets(tagIds: [String], assetIds: [String]) async throws
+    /// Delete a tag by id. Calls `DELETE /api/tags/{id}`. Used to clean up
+    /// orphan breadcrumb tags when `bulkTagAssets` fails after `upsertTag`
+    /// already committed the tag — leaving an empty `cairn/v1/run/<id>` tag
+    /// on the server is harmless but forensically untidy.
+    func deleteTag(id: String) async throws
     /// Move assets to Immich's Trash folder (30-day retention), not a hard
     /// delete. Calls `DELETE /api/assets` with `force: false`.
     func trashAssets(ids: [String]) async throws
     /// Pull assets back out of Trash. Calls `POST /api/trash/restore/assets`.
     func restoreAssets(ids: [String]) async throws
+    /// Fetch the current server-side state of the given asset IDs. Used by
+    /// `RestoreOrchestrator` to verify which assets actually moved out of
+    /// trash — Immich's `POST /api/trash/restore/assets` returns 204 even
+    /// for IDs that don't exist or were already restored, so the response
+    /// alone can't tell the orchestrator what happened. Implementations
+    /// MUST include trashed assets in the result so callers can read each
+    /// asset's `isTrashed` field. Missing IDs (404) are silently dropped —
+    /// the caller treats absence as "still trashed" by default.
+    func fetchAssets(ids: [String]) async throws -> [ServerAsset]
 }
 
 /// A tag as returned by the Immich API. Only the fields cairn reads are
@@ -159,7 +173,21 @@ public struct TrashOrchestrator: Sendable {
 
             let tagValue = TagSchema.runTagValue(runId: runId)
             let tag = try await writer.upsertTag(value: tagValue)
-            try await writer.bulkTagAssets(tagIds: [tag.id], assetIds: allIds)
+            // `upsertTag` committed the tag on the server. If
+            // `bulkTagAssets` now fails, the tag is left behind with
+            // zero attached assets — harmless for cairn's read paths
+            // (lookups by run-id surface nothing) but forensically
+            // untidy. Best-effort cleanup: if the bulk-tag call
+            // throws, try to delete the just-created tag and
+            // re-throw the original error. The cleanup itself is
+            // non-fatal; if it also fails, the user-visible error
+            // stays the original `bulkTagAssets` failure.
+            do {
+                try await writer.bulkTagAssets(tagIds: [tag.id], assetIds: allIds)
+            } catch {
+                try? await writer.deleteTag(id: tag.id)
+                throw error
+            }
             try await journal.append(.init(
                 timestamp: now(),
                 runId: runId,

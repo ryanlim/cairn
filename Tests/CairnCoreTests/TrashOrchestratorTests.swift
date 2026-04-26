@@ -177,21 +177,19 @@ struct TrashOrchestratorTests {
         #expect(!events.contains { $0.hasPrefix("runCompleted") })
     }
 
-    /// `bulkTagAssets` runs after `upsertTag`. If it 500s the tag exists
-    /// on the server (an orphan) but no assets are tagged with it and
-    /// nothing is trashed. Journal records `runAborted`, and notably
-    /// NO `tagApplied` event — that event is only written after a
-    /// successful `bulkTagAssets` call. This means `cairn history` /
-    /// restore replay won't be misled into thinking the breadcrumb
-    /// was wired up.
+    /// `bulkTagAssets` runs after `upsertTag`. If it 500s the tag is
+    /// already committed on the server, so the orchestrator does a
+    /// best-effort `deleteTag` cleanup before re-throwing the original
+    /// error. No `tagApplied` event is written (that fires only on a
+    /// successful bulk-tag call), and the journal still resolves to
+    /// `runAborted` for the run summary.
     ///
-    /// Side effect to be aware of: a stale `cairn/v1/run/<id>` tag is
-    /// left on the server with zero attached assets. It's harmless
-    /// (lookups by run-id surface no assets, restore is a no-op) but
-    /// it's a known footprint of this failure mode. Not currently
-    /// cleaned up.
-    @Test("bulkTagAssets failure: tag exists on server but no tagApplied / trashSucceeded; journal has runAborted")
-    func bulkTagAssetsFailureLeavesOrphanTagOnServer() async throws {
+    /// The cleanup keeps the server's tag list tidy after a failure —
+    /// without it, every transient bulk-tag 500 would leave an empty
+    /// `cairn/v1/run/<id>` tag behind for the user to garbage-collect
+    /// manually.
+    @Test("bulkTagAssets failure: orchestrator cleans up the orphan tag with deleteTag before re-throwing")
+    func bulkTagAssetsFailureCleansUpOrphanTag() async throws {
         let writer = FakeWriter()
         await writer.setFailBulkTag(FakeError(message: "bulk-tag-500"))
         let (journal, path) = tempJournal()
@@ -207,12 +205,14 @@ struct TrashOrchestratorTests {
             )
         }
 
-        // upsertTag landed (the tag now exists on the server) but the
-        // bulk-tag call threw, so taggedBatches is empty and nothing
-        // was trashed.
+        // upsertTag landed (the tag was created on the server) but
+        // bulk-tag threw, so taggedBatches is empty and nothing was
+        // trashed. The orchestrator then called `deleteTag` to remove
+        // the orphan.
         #expect(await writer.upsertedTagValues == ["cairn/v1/run/BULK-FAIL"])
         #expect(await writer.taggedBatches.isEmpty)
         #expect(await writer.trashedBatches.isEmpty)
+        #expect(await writer.deletedTagIds == ["tag-uuid-1"])
 
         let entries = try await journal.readAll()
         let events = entries.map { String(describing: $0.event) }
@@ -223,6 +223,38 @@ struct TrashOrchestratorTests {
         #expect(!events.contains { $0.hasPrefix("trashSucceeded") })
         #expect(!events.contains { $0.hasPrefix("trashFailed") })
         #expect(!events.contains { $0.hasPrefix("runCompleted") })
+    }
+
+    /// If the cleanup `deleteTag` ALSO fails (e.g. server now down),
+    /// the original `bulkTagAssets` error is what surfaces — the
+    /// cleanup-failure is swallowed (best-effort). The user's error
+    /// message stays the actionable one ("bulk-tag-500") rather than
+    /// being masked by the secondary cleanup failure.
+    @Test("bulkTagAssets failure + deleteTag failure: original bulk-tag error surfaces; cleanup failure is swallowed")
+    func bulkTagAssetsFailureWithCleanupFailureSurfacesOriginalError() async throws {
+        let writer = FakeWriter()
+        await writer.setFailBulkTag(FakeError(message: "bulk-tag-500"))
+        await writer.setFailDeleteTag(FakeError(message: "delete-tag-500"))
+        let (journal, path) = tempJournal()
+        defer { try? FileManager.default.removeItem(at: path) }
+
+        let orch = TrashOrchestrator(writer: writer, journal: journal)
+        await #expect {
+            _ = try await orch.run(
+                runId: "BULK-FAIL-CLEANUP-FAIL",
+                candidates: [asset("a1", "ck1")],
+                assetsInPurview: 50,
+                dryRun: false
+            )
+        } throws: { error in
+            guard let fake = error as? FakeError else { return false }
+            return fake.message == "bulk-tag-500"
+        }
+
+        // The orphan-cleanup attempt happened (deleteTagIds is empty
+        // because the call threw), but the original bulk-tag failure
+        // is what bubbles up.
+        #expect(await writer.deletedTagIds.isEmpty)
     }
 
     /// Pin the journal-event ordering for an upsertTag failure: the
