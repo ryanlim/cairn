@@ -559,7 +559,11 @@ final class AppDependencies {
                     )
                 ))
             } catch {
-                model.lastError = "Couldn't write the sync event to the journal — \(Self.describeSyncError(error)). Your sync completed, but the forensic log didn't."
+                // The sync itself succeeded; only the forensic journal
+                // entry failed to write. Don't alert the user — that
+                // makes a successful sync look like an error. Log for
+                // diagnostics; the next sync will record a fresh entry.
+                syncLog.error("[cairn.sync] journal write failed: \(Self.describeSyncError(error), privacy: .public)")
             }
         }
 
@@ -873,11 +877,15 @@ final class AppDependencies {
                     }
                     await self.refreshRunsList()
                 } catch {
+                    // Surface the error via model.lastError (the UI alert
+                    // binding reads this). We deliberately don't re-throw:
+                    // every caller invokes the action via `Task { try? await
+                    // ... }`, so a re-throw silently vanishes anyway.
+                    // Setting lastError is the single source of truth.
                     await MainActor.run {
                         self.model.lastError = Self.describeSyncError(error)
                     }
                     await self.refreshRunsList()
-                    throw error
                 }
             },
             restore: { [weak self] assetIds, runId in
@@ -890,11 +898,15 @@ final class AppDependencies {
                     _ = try await orch.restore(fromRunId: runId, assetIds: scope)
                     await self.refreshRunsList()
                 } catch {
+                    // Surface the error via model.lastError (the UI alert
+                    // binding reads this). We deliberately don't re-throw:
+                    // every caller invokes the action via `Task { try? await
+                    // ... }`, so a re-throw silently vanishes anyway.
+                    // Setting lastError is the single source of truth.
                     await MainActor.run {
                         self.model.lastError = Self.describeSyncError(error)
                     }
                     await self.refreshRunsList()
-                    throw error
                 }
             },
             exclude: { [weak self] checksums, filenames, runId in
@@ -917,7 +929,6 @@ final class AppDependencies {
                     await MainActor.run {
                         self.model.lastError = Self.describeSyncError(error)
                     }
-                    throw error
                 }
                 _ = filenames
             },
@@ -932,7 +943,6 @@ final class AppDependencies {
                     await MainActor.run {
                         self.model.lastError = Self.describeSyncError(error)
                     }
-                    throw error
                 }
             },
             approvePending: { [weak self] checksums in
@@ -971,11 +981,15 @@ final class AppDependencies {
                     }
                     await self.refreshRunsList()
                 } catch {
+                    // Surface the error via model.lastError (the UI alert
+                    // binding reads this). We deliberately don't re-throw:
+                    // every caller invokes the action via `Task { try? await
+                    // ... }`, so a re-throw silently vanishes anyway.
+                    // Setting lastError is the single source of truth.
                     await MainActor.run {
                         self.model.lastError = Self.describeSyncError(error)
                     }
                     await self.refreshRunsList()
-                    throw error
                 }
             },
             excludePending: { [weak self] checksums in
@@ -1006,7 +1020,6 @@ final class AppDependencies {
                     await MainActor.run {
                         self.model.lastError = Self.describeSyncError(error)
                     }
-                    throw error
                 }
             },
             dismissPending: { [weak self] checksums in
@@ -1033,7 +1046,6 @@ final class AppDependencies {
                     await MainActor.run {
                         self.model.lastError = Self.describeSyncError(error)
                     }
-                    throw error
                 }
             },
             loadDeferredEntries: { [weak self] in
@@ -1219,7 +1231,6 @@ final class AppDependencies {
                     await MainActor.run {
                         self.model.lastError = Self.describeSyncError(error)
                     }
-                    throw error
                 }
             },
             verifyServer: { [weak self] urlString, key in
