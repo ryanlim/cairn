@@ -669,7 +669,7 @@ public struct StatusScreen: View {
                         Chip(label: String(format: "%.2f%% of synced", pct),
                              tone: withinBudget ? .verified : .pending)
                         HStack(spacing: 0) {
-                            Text(String(format: "stops above %.1f%% (≥%d)", maxDeletePercent, minDeleteFloor))
+                            Text(String(format: "stops above %.1f%% past %d items", maxDeletePercent, minDeleteFloor))
                                 .font(.system(size: 11))
                                 .foregroundStyle(t.textMuted)
                             HelpPopover {
@@ -678,7 +678,7 @@ public struct StatusScreen: View {
                                 Text("**Percent threshold** — a run aborts if it would trash more than \(String(format: "%.1f%%", maxDeletePercent)) of your synced photos. Catches runaway deletions like accidental select-all, iCloud library glitches, etc.")
                                     .padding(.top, 4)
 
-                                Text("**Count floor** — the percent check only engages when a run would move at least \(minDeleteFloor) assets. Below the floor the run proceeds without the percent check, so small real deletions on small libraries aren't blocked by 1% rounding to 1–2 photos.")
+                                Text("**Count floor** — the percent check only engages when a run would move more than \(minDeleteFloor) assets. At or below the floor the run proceeds without the percent check, so small real deletions on small libraries aren't blocked by 1% rounding to 1–2 photos.")
                                     .padding(.top, 4)
 
                                 Text("Adjust both in Settings → Safety rails. Raise the floor if your library is small, or tighten the percent if you want stricter brakes.")
