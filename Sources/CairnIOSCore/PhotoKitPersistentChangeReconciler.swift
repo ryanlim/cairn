@@ -130,6 +130,13 @@ public final class PhotoKitPersistentChangeReconciler {
         /// and for scans with no deletes.
         public let sourceLocalIdentifierByChecksum: [Checksum: String]
 
+        /// Count of PHAssets discovered by the library→cache sweep —
+        /// visible in the photo library but absent from both
+        /// `LocalHashStore` and `DeferredHashStore` at scan time. They're
+        /// folded into the insert pipeline for this scan; subsequent
+        /// scans see an empty diff once they're hashed (or deferred).
+        public let untrackedDiscovered: Int
+
         public init(
             newlyConfirmedDeleted: Set<Checksum>,
             unconfirmedByRestoration: Set<Checksum>,
@@ -144,7 +151,8 @@ public final class PhotoKitPersistentChangeReconciler {
             aboveHardCeilingBytes: Int64 = 0,
             drainedFromQueue: Int = 0,
             recentlyObservedChecksums: Set<Checksum> = [],
-            sourceLocalIdentifierByChecksum: [Checksum: String] = [:]
+            sourceLocalIdentifierByChecksum: [Checksum: String] = [:],
+            untrackedDiscovered: Int = 0
         ) {
             self.newlyConfirmedDeleted = newlyConfirmedDeleted
             self.unconfirmedByRestoration = unconfirmedByRestoration
@@ -160,6 +168,7 @@ public final class PhotoKitPersistentChangeReconciler {
             self.drainedFromQueue = drainedFromQueue
             self.recentlyObservedChecksums = recentlyObservedChecksums
             self.sourceLocalIdentifierByChecksum = sourceLocalIdentifierByChecksum
+            self.untrackedDiscovered = untrackedDiscovered
         }
     }
 
@@ -381,6 +390,20 @@ public final class PhotoKitPersistentChangeReconciler {
                 // iteration could trigger a full re-enum in this case.
                 continue
             }
+        }
+
+        // Library→cache untracked sweep. PHAssets that exist in the visible
+        // library but aren't in either `LocalHashStore` or `DeferredHashStore`
+        // are entirely invisible to cairn — they were never enumerated, never
+        // hashed, never deferred. (Causes: stale CAIRN_ASSET_CAP from a debug
+        // run, an interrupted full enum, missed insert events while cairn was
+        // suspended.) Find them and merge into `insertedIds` so the existing
+        // hash + ever-seen + metadata pipeline picks them up. Subsequent syncs
+        // see an empty diff once the gap is closed.
+        let untrackedIds = try await discoverUntrackedAssets()
+        if !untrackedIds.isEmpty {
+            Self.reconLog.notice("[cairn.recon] untracked sweep: \(untrackedIds.count, privacy: .public) PHAssets visible but neither indexed nor queued — adding to insert pipeline")
+            insertedIds.formUnion(untrackedIds)
         }
 
         // Diagnostic log — makes "why didn't my delete propagate?"
@@ -701,7 +724,8 @@ public final class PhotoKitPersistentChangeReconciler {
             aboveHardCeilingBytes: insertedBatch.aboveHardCeilingBytes + updatedBatch.aboveHardCeilingBytes + drained.batch.aboveHardCeilingBytes,
             drainedFromQueue: drained.successCount,
             recentlyObservedChecksums: allRecentlyObserved,
-            sourceLocalIdentifierByChecksum: sourceLocalIdentifierByChecksum
+            sourceLocalIdentifierByChecksum: sourceLocalIdentifierByChecksum,
+            untrackedDiscovered: untrackedIds.count
         )
     }
 
@@ -719,6 +743,21 @@ public final class PhotoKitPersistentChangeReconciler {
         stillLocal: Set<Checksum>
     ) -> Set<Checksum> {
         removed.subtracting(stillLocal)
+    }
+
+    /// Pure set-difference for the library→cache untracked sweep:
+    /// PHAssets visible in the live library but absent from both
+    /// `LocalHashStore` and `DeferredHashStore`. The live
+    /// `discoverUntrackedAssets` helper is just this op wrapped around
+    /// three PhotoKit / store snapshots; factored out so tests can
+    /// exercise the load-bearing logic without a fake PHPhotoLibrary.
+    /// `nonisolated` because the body is pure.
+    nonisolated static func untrackedFromLibrary(
+        liveIds: Set<String>,
+        cacheIds: Set<String>,
+        deferredIds: Set<String>
+    ) -> Set<String> {
+        liveIds.subtracting(cacheIds).subtracting(deferredIds)
     }
 
     /// Pure partition: split edit-retired SHA1s into "protected"
@@ -1687,6 +1726,42 @@ public final class PhotoKitPersistentChangeReconciler {
     /// Cheap: `PHAsset.fetchAssets` is an index query and the
     /// subtract is a hash-set op. Runs at the end of every
     /// incremental scan.
+    /// Find PHAssets visible in the user library that are neither in
+    /// `LocalHashStore` nor in `DeferredHashStore` — i.e. invisible to
+    /// cairn's normal pipeline. Returns the localIdentifiers so the
+    /// caller can fold them into `insertedIds` and let the standard
+    /// hash + metadata + ever-seen flow handle them.
+    ///
+    /// Cheap when the gap is empty: one `PHAsset.fetchAssets` call (which
+    /// the orphan sweep also does — could share if we ever notice the
+    /// duplicate cost) plus two store snapshots (`allLocalIdentifiers`,
+    /// `deferredStore.snapshot()`), all set-membership-only.
+    private func discoverUntrackedAssets() async throws -> Set<String> {
+        let opts = PHFetchOptions()
+        opts.includeHiddenAssets = false
+        opts.includeAssetSourceTypes = [.typeUserLibrary]
+        let fetch = PHAsset.fetchAssets(with: opts)
+        var liveIds: Set<String> = []
+        liveIds.reserveCapacity(fetch.count)
+        fetch.enumerateObjects { asset, _, _ in liveIds.insert(asset.localIdentifier) }
+
+        let cacheIds = try await hashStore.allLocalIdentifiers()
+        var deferredIds: Set<String> = []
+        if let deferredStore {
+            let snapshot = try await deferredStore.snapshot()
+            deferredIds.reserveCapacity(snapshot.count)
+            for entry in snapshot {
+                deferredIds.insert(entry.localIdentifier)
+            }
+        }
+
+        return Self.untrackedFromLibrary(
+            liveIds: liveIds,
+            cacheIds: cacheIds,
+            deferredIds: deferredIds
+        )
+    }
+
     private func reconcileCacheAgainstLibrary(
         alreadyHandledDeletedIds: Set<String>,
         protectedIds: Set<String>,

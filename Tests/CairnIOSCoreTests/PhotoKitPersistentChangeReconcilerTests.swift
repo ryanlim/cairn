@@ -165,6 +165,71 @@ struct PhotoKitPersistentChangeReconcilerTests {
         #expect(parts.intermediate == [Self.shaA, Self.shaB])
     }
 
+    @Test("untrackedFromLibrary: empty inputs yield empty result")
+    func untrackedEmptyInputs() {
+        // No library, no cache, no queue — the gap is trivially zero.
+        // Pin the no-op shape so the foreground sync stays cheap when
+        // there's nothing to discover.
+        let untracked = PhotoKitPersistentChangeReconciler.untrackedFromLibrary(
+            liveIds: [],
+            cacheIds: [],
+            deferredIds: []
+        )
+        #expect(untracked.isEmpty)
+    }
+
+    @Test("untrackedFromLibrary: library ⊆ cache yields empty result")
+    func untrackedFullyCovered() {
+        // Steady state on a closed gap: every visible PHAsset already
+        // hashed. The sweep must return empty so the existing pipeline
+        // sees zero synthetic inserts.
+        let untracked = PhotoKitPersistentChangeReconciler.untrackedFromLibrary(
+            liveIds: ["id1", "id2"],
+            cacheIds: ["id1", "id2", "id3"],
+            deferredIds: []
+        )
+        #expect(untracked.isEmpty)
+    }
+
+    @Test("untrackedFromLibrary: live id absent from both stores → discovered")
+    func untrackedDiscovered() {
+        // The empirical case: a PHAsset visible in PhotoKit but missing
+        // from both stores (never hashed, never queued). The sweep must
+        // surface it so the caller can fold it into the insert pipeline.
+        let untracked = PhotoKitPersistentChangeReconciler.untrackedFromLibrary(
+            liveIds: ["id1", "id2"],
+            cacheIds: ["id1"],
+            deferredIds: []
+        )
+        #expect(untracked == ["id2"])
+    }
+
+    @Test("untrackedFromLibrary: deferred id is NOT untracked")
+    func untrackedAlreadyDeferred() {
+        // An id that's already queued for a later re-hash (above the
+        // soft limit, awaiting BG slot) is being tracked — the sweep
+        // must not double-route it through the insert pipeline. Models
+        // the user's "215 above-cap-deferred" bucket.
+        let untracked = PhotoKitPersistentChangeReconciler.untrackedFromLibrary(
+            liveIds: ["id1", "id2"],
+            cacheIds: ["id1"],
+            deferredIds: ["id2"]
+        )
+        #expect(untracked.isEmpty)
+    }
+
+    @Test("untrackedFromLibrary: cached id is NOT untracked")
+    func untrackedAlreadyCached() {
+        // The "indexed" bucket: cache lookup wins over the sweep so we
+        // don't waste a re-hash on a steady-state asset.
+        let untracked = PhotoKitPersistentChangeReconciler.untrackedFromLibrary(
+            liveIds: ["id1"],
+            cacheIds: ["id1"],
+            deferredIds: []
+        )
+        #expect(untracked.isEmpty)
+    }
+
     @Test("first-write-wins quarantine timestamp survives flap")
     func flappingPreservesOriginalTimestamp() async throws {
         // Models the integration semantic: the reconciler's filter

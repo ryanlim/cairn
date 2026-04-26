@@ -12,7 +12,7 @@ Conventions:
 
 ## Cache coverage gap
 
-### Untracked assets — visible in PhotoKit but not in cache and not in deferred queue
+### `[done]` Untracked assets — visible in PhotoKit but not in cache and not in deferred queue
 **Impact:** medium — silently ignored assets won't be candidates for trash even when the user deletes them. UX-confusing because the Status banner shows `indexed < total` without a clear explanation.
 **Cost:** low–medium — one new sweep at sync time.
 
@@ -23,6 +23,8 @@ Possible causes: a stale `CAIRN_ASSET_CAP` debug env var, an interrupted full en
 The orphan sweep catches the inverse direction (cache id no longer in library). We need a sibling sweep for "library id not in cache and not in deferred-queue" that adds the unknowns to `DeferredHashStore` (or directly schedules them for hashing) so they enter the normal pipeline. File: `Sources/CairnIOSCore/PhotoKitPersistentChangeReconciler.swift` `reconcileCacheAgainstLibrary` already does the cache→library diff; mirror it for the library→cache direction.
 
 Status banner now distinguishes the three buckets (`queued / above cap / not yet processed`) so the user can at least *see* the gap, but auto-recovery is the proper fix.
+
+**Resolved 2026-04-27**: `discoverUntrackedAssets` runs at the top of `runIncremental`, computing `liveIds.subtracting(cacheIds).subtracting(deferredIds)` and folding the result into `insertedIds` so the existing hash + ever-seen + metadata pipeline picks them up. Soft-limit / hard-ceiling / timeout behavior is preserved (large items still defer correctly). `Result.untrackedDiscovered` surfaces the count for diagnostic logging. Pure set logic factored as `untrackedFromLibrary(liveIds:cacheIds:deferredIds:)` and unit-tested.
 
 ---
 
