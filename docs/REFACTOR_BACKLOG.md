@@ -44,16 +44,13 @@ Fix when encountered: add filename normalization to `OrphanReconciler.match` —
 
 ## Error handling
 
-### Surface partial failures in destructive operations
+### `[done]` Surface partial failures in destructive operations
 **Impact:** medium — silent inconsistency between in-memory model state and on-disk stores.
 **Cost:** medium — needs a "warnings" surface (banner or toast) and a logger plumbed through several actions.
 
 `signOut`, `resetIndex`, `clearJournal`, `startOverInitialScan`, `rescanLibrary` all use `try?` for every store clear. If one of N store clears fails, the model is reset but the persistent store still has data — next sync rebuilds against the leftover data and the user has no indication anything went wrong. Touches `iOS/App/AppDependencies.swift` lines ~1279, 1303, 1313, 1374-1378.
 
-The fix needs:
-- A logged-event mechanism for non-fatal partial failures (above and beyond `model.lastError`).
-- A "Some things didn't clear cleanly" banner on Status when warnings exist.
-- Or, simpler: just `do/catch` each clear and aggregate failures into a final summary `lastError`.
+**Resolved 2026-04-27** (commit `c6cfe64`): new `aggregateClears` + `summarizeClearFailures` helpers; per-site `do/catch` around the throwing operation; `model.lastError` set with a labeled summary on partial failure. Success toast suppressed when failures occur. `clearJournal` treats ENOENT as success (file simply wasn't there).
 
 ---
 
@@ -61,31 +58,29 @@ The fix needs:
 
 Most are flagged in the code review reports under `docs/` (none committed yet — paste from session if needed). Highlights:
 
-### Orchestrator error paths
+### `[done]` Orchestrator error paths
 **Impact:** high (destructive paths) but **likelihood:** low.
 **Cost:** medium — needs additional `MockHTTP` fixtures.
 
-`TrashOrchestrator.run` — the `upsertTag` failure and partial `bulkTagAssets` failure paths aren't exercised. If tagging succeeds but trashing fails (or vice versa), assets end up tagged but live, or trashed without the run-id breadcrumb.
+**Resolved 2026-04-27** (commit `031f295`): +13 tests across `TrashOrchestratorTests` + `RestoreOrchestratorTests`. Pinned journal sequencing under each failure ordering. Surfaced three real bugs as TODOs (not fixed): RestoreOrchestrator over-claims success on `POST /api/trash/restore/assets` 204 for nonexistent IDs; empty `explicitIds` set silently succeeds; `bulkTagAssets` 500 leaves an orphan `cairn/v1/run/<id>` tag on the server.
 
-`RestoreOrchestrator.restore` — error cases aren't tested. Partial restore could leave the journal claiming success while assets remain trashed.
-
-Files: `Tests/CairnCoreTests/TrashOrchestratorTests.swift`, `RestoreOrchestratorTests.swift`.
-
-### `ImmichClient` HTTP error mapping
+### `[done]` `ImmichClient` HTTP error mapping
 **Impact:** medium — affects how user-facing alerts are categorized.
 **Cost:** low — `MockHTTP` infrastructure exists, just needs additional fixtures.
 
-Only HTTP 404 is tested. 401, 403, 500, 503 should each have a fixture verifying the expected `ImmichClientError.httpStatus(code:body:)` shape and downstream `describeSyncError` message. Pagination retry (added recently) has no test for retry success or final failure after maxRetries.
+**Resolved 2026-04-27** (commit `031f295`): +6 tests covering 401/403/500/503 plus pagination retry (success-after-failure and exhaustion). `describeSyncError` lives in the iOS app target so couldn't be exercised from `CairnCoreTests`; status-code → user-message mapping is documented in test names instead.
 
-### `CairnExportPayload` round-trip
+### `[done]` `CairnExportPayload` round-trip
 **Impact:** medium — silent corruption on import is hard to detect.
 **Cost:** low.
 
-Encode-decode round-trip for the canonical shape, version-mismatch detection, optional-field handling. Currently the export/import action wiring is tested via integration; the payload type itself has no unit tests.
+**Resolved 2026-04-27** (commit `031f295`): +9 tests in new `CairnExportPayloadTests`. Round-trips full + minimal payloads, future-version rejection, optional-field decoding, unknown-field forward-compat. Added `Equatable` conformance (auto-synthesized) for direct struct comparison in tests.
 
-### `apiKeyInfo()` + `assetStatistics()`
+### `[done]` `apiKeyInfo()` + `assetStatistics()`
 **Impact:** medium — these silently fail today (`try?`) so a regression goes unnoticed.
 **Cost:** low — straightforward HTTP mock fixtures.
+
+**Resolved 2026-04-27** (commit `031f295`): +13 tests covering both endpoints' success/auth-failure/server-error/malformed-JSON paths, plus the `isTrashed` query-param flow on `assetStatistics`. The `x-api-key` header path on `assetStatistics` is pinned separately because it builds `URLRequest` directly rather than via `makeRequest`.
 
 ### `JournalReader` edge cases
 **Impact:** low — display artifacts only.
