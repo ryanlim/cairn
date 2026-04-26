@@ -354,6 +354,7 @@ public struct CairnAppRoot: View {
                 journalTail: model.journalTail,
                 serverHost: model.serverHost,
                 maxDeletePercent: model.settings.maxDeletePercent,
+                minDeleteFloor: model.settings.minDeleteFloor,
                 // `pendingReviewCandidates` already *includes*
                 // `heldByQuarantineCandidates` — the engine
                 // populates the held array as a subset (see the

@@ -42,6 +42,10 @@ public struct StatusScreen: View {
     public let journalTail: [CairnFixtures.JournalTailEntry]
     public let serverHost: String
     public let maxDeletePercent: Double
+    /// Minimum candidate count before the percent-threshold rail
+    /// engages. Surfaced on the sync card as the "(≥N items)" qualifier
+    /// next to the percent cap so the user sees both gates together.
+    public let minDeleteFloor: Int
     /// Total count of candidates awaiting the user's call (held +
     /// unconfirmed). When > 0 the screen surfaces a compact pending-review
     /// card directly below the sync card.
@@ -142,6 +146,7 @@ public struct StatusScreen: View {
         journalTail: [CairnFixtures.JournalTailEntry] = CairnFixtures.journalTail,
         serverHost: String = "immich.home.arpa",
         maxDeletePercent: Double = 1.0,
+        minDeleteFloor: Int = 5,
         pendingReviewCount: Int = 0,
         quarantineCount: Int = 0,
         earliestQuarantineEligible: Date? = nil,
@@ -177,6 +182,7 @@ public struct StatusScreen: View {
         self.journalTail = journalTail
         self.serverHost = serverHost
         self.maxDeletePercent = maxDeletePercent
+        self.minDeleteFloor = minDeleteFloor
         self.pendingReviewCount = pendingReviewCount
         self.quarantineCount = quarantineCount
         self.earliestQuarantineEligible = earliestQuarantineEligible
@@ -660,11 +666,25 @@ public struct StatusScreen: View {
                     }
                     Spacer()
                     VStack(alignment: .trailing, spacing: 4) {
-                        Chip(label: String(format: "%.2f%% of matched", pct),
+                        Chip(label: String(format: "%.2f%% of synced", pct),
                              tone: withinBudget ? .verified : .pending)
-                        Text(String(format: "cap %.1f%%", maxDeletePercent))
-                            .font(.system(size: 11))
-                            .foregroundStyle(t.textMuted)
+                        HStack(spacing: 0) {
+                            Text(String(format: "stops above %.1f%% (≥%d)", maxDeletePercent, minDeleteFloor))
+                                .font(.system(size: 11))
+                                .foregroundStyle(t.textMuted)
+                            HelpPopover {
+                                Text("**Two safety rails on every run.** Both must be true for cairn to actually move assets to Immich's Trash.")
+
+                                Text("**Percent threshold** — a run aborts if it would trash more than \(String(format: "%.1f%%", maxDeletePercent)) of your synced photos. Catches runaway deletions like accidental select-all, iCloud library glitches, etc.")
+                                    .padding(.top, 4)
+
+                                Text("**Count floor** — the percent check only engages when a run would move at least \(minDeleteFloor) assets. Below the floor the run proceeds without the percent check, so small real deletions on small libraries aren't blocked by 1% rounding to 1–2 photos.")
+                                    .padding(.top, 4)
+
+                                Text("Adjust both in Settings → Safety rails. Raise the floor if your library is small, or tighten the percent if you want stricter brakes.")
+                                    .padding(.top, 4)
+                            }
+                        }
                     }
                 }
 
