@@ -618,6 +618,23 @@ public struct StatusScreen: View {
 
     // MARK: - Sync card
 
+    /// Three-band color for the "ready to trash" hero number. Tied to
+    /// the user's existing `backlogAlertThreshold` setting so the
+    /// red/yellow boundary lines up with the alert they've already
+    /// opted into:
+    ///   - 0 candidates → verified (green) — nothing to act on
+    ///   - 1 to threshold-1 → pending (yellow) — accumulating
+    ///   - ≥ threshold → danger (red) — past the user's alert line
+    /// When the threshold is 0 (alerts disabled), fall back to a
+    /// two-band "0 vs non-zero" mapping using yellow for any positive
+    /// count — there's no calibrated red boundary to fall back to.
+    private var readyToTrashColor: Color {
+        let n = library.candidates
+        if n == 0 { return t.verifiedInk }
+        if backlogAlertThreshold > 0 && n >= backlogAlertThreshold { return t.dangerInk }
+        return t.pendingInk
+    }
+
     private var syncCard: some View {
         CairnCard {
             VStack(alignment: .leading, spacing: 14) {
@@ -630,7 +647,7 @@ public struct StatusScreen: View {
                             Text("\(library.candidates)")
                                 .font(.system(size: 52, weight: .semibold).monospacedDigit())
                                 .tracking(-2.0)
-                                .foregroundStyle(t.dangerInk)
+                                .foregroundStyle(readyToTrashColor)
                                 .lineLimit(1)
                         }
                         .buttonStyle(.plain)
