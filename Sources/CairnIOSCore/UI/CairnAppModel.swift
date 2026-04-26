@@ -532,6 +532,13 @@ public struct CairnAppActions: Sendable {
     /// the asset count for the "1,204 assets visible to this key" success state.
     public var verifyServer: @Sendable (_ url: String, _ apiKey: String) async -> SetupScreen.ServerVerifyResult
 
+    /// Re-ping the configured Immich server and refresh
+    /// `connectionStatus` + `degraded` based on the result. Wired to
+    /// the "Retry" button on the server-unreachable banner so users
+    /// don't have to tap Sync (a heavier operation) just to recover
+    /// from a transient network blip.
+    public var retryConnection: @Sendable () async -> Void
+
     /// Setup wizard step: request iOS Photos `.authorized` access.
     public var requestPhotosAccess: @Sendable () async -> Bool
 
@@ -602,6 +609,7 @@ public struct CairnAppActions: Sendable {
         verifyServer: @escaping @Sendable (String, String) async -> SetupScreen.ServerVerifyResult = { _, _ in
             SetupScreen.ServerVerifyResult(success: true, assetCount: 0, errorMessage: nil)
         },
+        retryConnection: @escaping @Sendable () async -> Void = {},
         requestPhotosAccess: @escaping @Sendable () async -> Bool = { true },
         requestBackgroundRefresh: @escaping @Sendable () async -> Bool = { true },
         resetIndex: @escaping @Sendable () async -> Void = {},
@@ -627,6 +635,7 @@ public struct CairnAppActions: Sendable {
         self.importData = importData
         self.bulkExcludeRecentOffload = bulkExcludeRecentOffload
         self.verifyServer = verifyServer
+        self.retryConnection = retryConnection
         self.requestPhotosAccess = requestPhotosAccess
         self.requestBackgroundRefresh = requestBackgroundRefresh
         self.resetIndex = resetIndex

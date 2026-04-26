@@ -422,6 +422,9 @@ public struct CairnAppRoot: View {
                     activeSyncTask = Task { @MainActor in
                         await model.actions.forceDrainDeferred()
                     }
+                },
+                onRetryConnection: {
+                    Task { @MainActor in await model.actions.retryConnection() }
                 }
             )
         case "runs":

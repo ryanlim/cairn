@@ -1725,6 +1725,14 @@ final class AppDependencies {
                     return SetupScreen.ServerVerifyResult(success: false, assetCount: nil, errorMessage: String(describing: error))
                 }
             },
+            retryConnection: { [weak self] in
+                // Re-ping the configured server and refresh
+                // connectionStatus + degraded. Wired to the "Retry"
+                // button on the server-unreachable banner so a
+                // transient blip can be cleared without running a
+                // full sync.
+                await self?.checkServerHealth()
+            },
             requestPhotosAccess: {
                 let status = await PHPhotoLibrary.requestAuthorization(for: .readWrite)
                 return status == .authorized

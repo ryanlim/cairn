@@ -98,6 +98,11 @@ public struct StatusScreen: View {
     /// doesn't have to dig into Settings to clear the queue.
     public let deferredQueue: CairnAppModel.DeferredQueueSummary
     public let onForceDrainDeferred: () -> Void
+    /// Action wired to the "Retry" button in the
+    /// `Immich server unreachable` banner. Re-pings the configured
+    /// server and refreshes `connectionStatus` + `degraded` based on
+    /// the result.
+    public let onRetryConnection: () -> Void
     /// True while `actions.requestSync` is mid-flight. Drives spinner +
     /// disabled state on the CTA so taps don't feel dead.
     public let isSyncing: Bool
@@ -173,7 +178,8 @@ public struct StatusScreen: View {
         onOpenDeferredQueue: @escaping () -> Void = {},
         onResumeInitialScan: @escaping () -> Void = {},
         deferredQueue: CairnAppModel.DeferredQueueSummary = .empty,
-        onForceDrainDeferred: @escaping () -> Void = {}
+        onForceDrainDeferred: @escaping () -> Void = {},
+        onRetryConnection: @escaping () -> Void = {}
     ) {
         self.appState = appState
         self.degraded = degraded
@@ -210,6 +216,7 @@ public struct StatusScreen: View {
         self.onResumeInitialScan = onResumeInitialScan
         self.deferredQueue = deferredQueue
         self.onForceDrainDeferred = onForceDrainDeferred
+        self.onRetryConnection = onRetryConnection
     }
 
     private var pct: Double {
@@ -346,10 +353,24 @@ public struct StatusScreen: View {
         case .none: EmptyView()
         case .serverDown:
             Callout(.danger, icon: "server.rack") {
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: 8) {
                     Text("Immich server unreachable").fontWeight(.semibold)
-                    (Text("Tried ") + Text(serverHost).font(.system(size: 12, design: .monospaced)) + Text(" three times over 2m. Check VPN or server health before syncing."))
+                    (Text("Tried ") + Text(serverHost).font(.system(size: 12, design: .monospaced)) + Text(" three times over 2m. Check VPN or server health, then retry."))
                         .opacity(0.88).fixedSize(horizontal: false, vertical: true)
+                    Button(action: onRetryConnection) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "arrow.clockwise")
+                                .font(.system(size: 12, weight: .semibold))
+                            Text("Retry connection")
+                                .font(.system(size: 13, weight: .semibold))
+                        }
+                        .foregroundStyle(t.dangerInk)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(t.dangerSoft)
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    }
+                    .buttonStyle(CairnPressStyle())
                 }
             }
             .padding(.horizontal, 16).padding(.bottom, 12)
