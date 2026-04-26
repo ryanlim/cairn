@@ -10,6 +10,22 @@ Conventions:
 
 ---
 
+## Cache coverage gap
+
+### Untracked assets — visible in PhotoKit but not in cache and not in deferred queue
+**Impact:** medium — silently ignored assets won't be candidates for trash even when the user deletes them. UX-confusing because the Status banner shows `indexed < total` without a clear explanation.
+**Cost:** low–medium — one new sweep at sync time.
+
+Empirical case (2026-04-26): user reports `7158 visible, 6713 indexed, 215 above cap, 0 queued`. That leaves `7158 - 6713 - 215 = 230` assets that are in PhotoKit but neither in `LocalHashStore` nor in `DeferredHashStore`. cairn has no record of them.
+
+Possible causes: a stale `CAIRN_ASSET_CAP` debug env var, an interrupted full enum that never reached the tail, race conditions where a PhotoKit insert event was dropped, or assets created via paths the change observer missed.
+
+The orphan sweep catches the inverse direction (cache id no longer in library). We need a sibling sweep for "library id not in cache and not in deferred-queue" that adds the unknowns to `DeferredHashStore` (or directly schedules them for hashing) so they enter the normal pipeline. File: `Sources/CairnIOSCore/PhotoKitPersistentChangeReconciler.swift` `reconcileCacheAgainstLibrary` already does the cache→library diff; mirror it for the library→cache direction.
+
+Status banner now distinguishes the three buckets (`queued / above cap / not yet processed`) so the user can at least *see* the gap, but auto-recovery is the proper fix.
+
+---
+
 ## Edit-retirement metadata coverage
 
 ### PhotoKit edited-resource filename consistency

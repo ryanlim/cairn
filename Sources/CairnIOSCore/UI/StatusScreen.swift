@@ -547,20 +547,33 @@ public struct StatusScreen: View {
     /// can leave orphan deferred rows on disk, and showing both the
     /// "Initial scan pending" banner AND a "queued for background
     /// hashing" banner reads as contradictory. Once the user runs
-    /// Body text for the `upToDate` toast. When `indexed == total`
-    /// there's no "rest to catch up" — drop that clause so the line
-    /// doesn't imply missing work. When some assets are still
-    /// deferred (indexed < total), keep the catch-up caveat so the
-    /// user isn't surprised by the queue sitting in Settings.
+    /// Body text for the `upToDate` toast. Differentiates the
+    /// `indexed < total` reasons so the user isn't told "the rest will
+    /// catch up" when some of "the rest" are permanently above the
+    /// size ceiling and won't catch up. Categories surfaced:
+    ///   - queued: in the deferred queue, under-ceiling → real
+    ///     background-hash backlog
+    ///   - above-cap: in the deferred queue, exceeds the user's iCloud
+    ///     download ceiling → permanent unless the cap is raised
+    ///   - untracked: visible in the library but neither indexed nor
+    ///     in the queue → coverage gap, can't say what'll happen
     private func upToDateSubline(indexed: Int, total: Int) -> Text {
         let count = Text("\(indexed) of \(total)").bold()
         if indexed >= total {
-            // Everything hashed. No caveat needed.
             return Text("Nothing new to trash. ") + count + Text(" assets indexed.")
-        } else {
-            return Text("Nothing new to trash. ") + count
-                + Text(" assets indexed — the rest will catch up in the background.")
         }
+        let gap = max(0, total - indexed)
+        let queued = deferredQueue.count
+        let aboveCap = deferredQueue.aboveCeiling
+        let untracked = max(0, gap - queued - aboveCap)
+
+        var clauses: [String] = []
+        if queued > 0 { clauses.append("\(queued) queued for background hashing") }
+        if aboveCap > 0 { clauses.append("\(aboveCap) above your size cap") }
+        if untracked > 0 { clauses.append("\(untracked) not yet processed") }
+
+        let suffix = clauses.isEmpty ? "." : " — " + clauses.joined(separator: ", ") + "."
+        return Text("Nothing new to trash. ") + count + Text(" assets indexed") + Text(suffix)
     }
 
     @ViewBuilder
