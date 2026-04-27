@@ -1,4 +1,7 @@
 import SwiftUI
+#if canImport(UIKit)
+import UIKit  // NSString text measurement for pre-sizing the journal-tail rows.
+#endif
 
 /// The default landing screen. Mirrors the prototype's `screens/status.jsx`.
 ///
@@ -1020,24 +1023,46 @@ public struct StatusScreen: View {
                     // Single 2D ScrollView so rows shift together on
                     // both axes — column alignment stays correct when
                     // panning horizontally to read tail content, and
-                    // vertical scroll inside the card keeps Status
-                    // from bloating when the user expands hundreds of
-                    // history rows. LazyVStack defers row construction
-                    // so 500-entry buffers don't allocate eagerly.
-                    // Fixed maxHeight only when expanded; collapsed
-                    // (8 rows) sizes naturally so a quiet Status
-                    // doesn't show a stub-height scrollbox.
+                    // vertical scroll keeps Status from bloating when
+                    // expanded.
+                    //
+                    // Why LazyVStack + an explicit `.frame(width:)`:
+                    // a horizontal ScrollView sizes contentSize to its
+                    // currently realized children. With Lazy* only the
+                    // visible-viewport rows are realized, so contentSize
+                    // capped at viewport width and horizontal panning
+                    // bounced elastically with nothing further to
+                    // reveal. An eager VStack would fix that but pays
+                    // 500-row construction cost on every body re-run.
+                    //
+                    // Instead we pre-measure the widest row off-tree
+                    // via UIKit `NSString.size(withAttributes:)` —
+                    // matches the monospaced SwiftUI font, costs
+                    // microseconds per string — and pin the LazyVStack
+                    // frame to that width. Lazy realization is
+                    // preserved AND contentSize reflects the true
+                    // widest line, so horizontal scroll extends fully.
+                    let measuredWidth = JournalRowMetrics.maxWidth(for: visible)
+                    // Spreadsheet-style banding: contiguous rows sharing a
+                    // runId form one visual group; the band toggles whenever
+                    // the runId changes. Empty-runId rows (e.g. routine
+                    // `sync` events) inherit the current band so a stray
+                    // singleton doesn't fragment the surrounding group.
+                    let bandTints = Self.journalBandTints(for: visible)
                     ScrollView([.horizontal, .vertical], showsIndicators: false) {
                         LazyVStack(alignment: .leading, spacing: 6) {
-                            ForEach(visible) { entry in
+                            ForEach(Array(visible.enumerated()), id: \.element.id) { index, entry in
                                 JournalTailRow(
                                     entry: entry,
                                     eventInk: eventColor(entry.event),
                                     isTappable: runIds.contains(entry.runId),
+                                    isBanded: bandTints[index],
+                                    rowWidth: measuredWidth,
                                     onTap: { onJournalRowTap(entry.runId) }
                                 )
                             }
                         }
+                        .frame(width: measuredWidth, alignment: .leading)
                         .padding(.trailing, 4)   // breathing room on the right edge
                     }
                     .frame(maxHeight: journalExpanded ? Self.expandedJournalCardMaxHeight : .infinity)
@@ -1130,6 +1155,29 @@ public struct StatusScreen: View {
     /// height — roughly a screen-page of activity at a glance.
     private static let expandedJournalCardMaxHeight: CGFloat = 360
 
+    /// Per-row band-tint flags. Walks `entries` and toggles a running
+    /// boolean each time a non-empty `runId` differs from the previous
+    /// non-empty `runId`. Empty-runId rows inherit the current band so
+    /// stray singletons (routine `sync` events with no run association)
+    /// don't visually break the surrounding group.
+    private static func journalBandTints(for entries: [CairnFixtures.JournalTailEntry]) -> [Bool] {
+        var bands: [Bool] = []
+        bands.reserveCapacity(entries.count)
+        var current = false
+        var prevRunId: String? = nil
+        for entry in entries {
+            let id = entry.runId
+            if !id.isEmpty, let prev = prevRunId, prev != id {
+                current.toggle()
+            }
+            bands.append(current)
+            if !id.isEmpty {
+                prevRunId = id
+            }
+        }
+        return bands
+    }
+
     /// Mapping pinned to the event-name strings `JournalTailEntry.from`
     /// actually emits. The previous version checked stale names
     /// (`safety.ok`, `tag.create`, `delete.batch`, `abort`) that the
@@ -1157,6 +1205,61 @@ public struct StatusScreen: View {
 
 // MARK: - Journal tail row
 
+/// Off-tree text measurement so the journal card can pin its
+/// `LazyVStack` to the widest realized row's actual content width.
+/// All constants here mirror `JournalTailRow.body` exactly — if you
+/// change a font, frame width, or HStack spacing in the row, update
+/// the matching constant here or horizontal scroll will be off.
+private enum JournalRowMetrics {
+    // Layout constants — every value here corresponds to a literal in
+    // JournalTailRow.body.
+    static let glyphFrameWidth: CGFloat = 14
+    static let timeFrameWidth: CGFloat = 80
+    static let suffixFrameWidth: CGFloat = 64
+    static let hStackSpacing: CGFloat = 8
+    static let suffixLeadingPad: CGFloat = 12
+
+    // UIKit and SwiftUI text-layout can disagree by a sub-pixel; the
+    // margin keeps rows from being clipped by ~1pt at the right edge.
+    static let safetyMargin: CGFloat = 4
+
+    #if canImport(UIKit)
+    // Font weights/sizes mirror the SwiftUI Text styles in JournalTailRow.
+    // `monospacedSystemFont` matches `.system(size:design:.monospaced)`.
+    static let eventFont = UIFont.monospacedSystemFont(ofSize: 11.5, weight: .medium)
+    static let messageFont = UIFont.monospacedSystemFont(ofSize: 11.5, weight: .regular)
+    #endif
+
+    /// Computes the widest row's intrinsic content width across the
+    /// given entries. O(n) over `entries`, ~microseconds per string;
+    /// fine to call inline from `body`. The macOS build of this module
+    /// never renders the journal card (iOS-only target shell), so the
+    /// non-UIKit path returns a generous fallback sufficient to compile.
+    static func maxWidth(for entries: [CairnFixtures.JournalTailEntry]) -> CGFloat {
+        #if canImport(UIKit)
+        let eventAttrs: [NSAttributedString.Key: Any] = [.font: eventFont]
+        let messageAttrs: [NSAttributedString.Key: Any] = [.font: messageFont]
+        var maxW: CGFloat = 0
+        for entry in entries {
+            let eventW = (entry.event as NSString).size(withAttributes: eventAttrs).width
+            let messageW = (entry.message as NSString).size(withAttributes: messageAttrs).width
+            // Row layout: glyph | spacing | time | spacing | event | spacing | message ( | spacing | leadingPad | suffix )
+            var width = glyphFrameWidth
+                + hStackSpacing + timeFrameWidth
+                + hStackSpacing + eventW
+                + hStackSpacing + messageW
+            if !entry.runIdSuffix.isEmpty {
+                width += hStackSpacing + suffixLeadingPad + suffixFrameWidth
+            }
+            if width > maxW { maxW = width }
+        }
+        return ceil(maxW + safetyMargin)
+        #else
+        return 800
+        #endif
+    }
+}
+
 /// One row inside the journal-tail card. Plain single-line layout;
 /// horizontal scrolling happens at the *card* level (all rows shift
 /// together) so column positions stay aligned. Fixed-width time and
@@ -1165,6 +1268,14 @@ private struct JournalTailRow: View {
     let entry: CairnFixtures.JournalTailEntry
     let eventInk: Color
     let isTappable: Bool
+    /// When true, paints a low-alpha `surfaceAlt` band behind the row.
+    /// Driven by `StatusScreen.journalBandTints` so contiguous same-runId
+    /// rows share a band — spreadsheet-style grouping by eye.
+    let isBanded: Bool
+    /// Width to paint the band (and stretch the row tap target) across.
+    /// Equals `JournalRowMetrics.maxWidth(for:)` from the parent so all
+    /// rows have edge-to-edge bands regardless of their intrinsic content.
+    let rowWidth: CGFloat
     let onTap: () -> Void
 
     @Environment(\.cairnTokens) private var t
@@ -1204,18 +1315,25 @@ private struct JournalTailRow: View {
                     .foregroundStyle(t.textMuted)
                     .lineLimit(1)
                     .fixedSize()
-                Spacer(minLength: 12)
-                // RunId suffix sits at the far right so users can
-                // correlate events to a run at a glance. Hint-tone
-                // monospace, fixed width to keep alignment with
-                // adjacent rows even when they share a runId.
+                // RunId suffix follows the message inline (no Spacer).
+                // A Spacer in a 2D-scrolling row stretches to the
+                // viewport's proposed width, capping the row's intrinsic
+                // width at the viewport — horizontal scroll then
+                // bounces elastically with nothing to reveal.
                 if !entry.runIdSuffix.isEmpty {
                     Text(entry.runIdSuffix)
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundStyle(t.textHint)
-                        .frame(width: 64, alignment: .trailing)
+                        .padding(.leading, 12)
+                        .fixedSize()
                 }
             }
+            // Stretch the row to `rowWidth` so the band background paints
+            // edge-to-edge across the LazyVStack's content width — a
+            // narrower intrinsic-sized row would yield ragged-width bands
+            // that read as visual noise rather than grouping.
+            .frame(width: rowWidth, alignment: .leading)
+            .background(isBanded ? t.surfaceAlt.opacity(0.6) : Color.clear)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
