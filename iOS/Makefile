@@ -9,10 +9,11 @@
 # Bundle identifier — must match PRODUCT_BUNDLE_IDENTIFIER in project.yml.
 BUNDLE_ID := app.cairn.ios
 
-# First connected device, or pass DEVICE=<name-or-UDID> to override.
-# Parses `xcrun devicectl list devices`, grabs the first line tagged
-# "connected" or "available (paired)", extracts the UDID.
-DEVICE ?= $(shell xcrun devicectl list devices 2>/dev/null | grep -E 'connected|available \(paired\)' | grep -oE '[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}' | head -1)
+# First connected iPhone/iPad, or pass DEVICE=<name-or-UDID> to override.
+# Parses `xcrun devicectl list devices`, restricted to iPhone/iPad rows
+# tagged "connected" or "available (paired)" so an Apple Watch / Apple TV
+# in the same list isn't picked first by lexical accident.
+DEVICE ?= $(shell xcrun devicectl list devices 2>/dev/null | grep -E '(iPhone|iPad)' | grep -E 'connected|available \(paired\)' | grep -oE '[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}' | head -1)
 
 # Apple Developer Team ID used for code signing. `project.yml` leaves this
 # blank so the YAML stays repo-portable; each developer supplies their own
@@ -36,6 +37,20 @@ DEVELOPMENT_TEAM := $(strip $(DEVELOPMENT_TEAM))
 # proceeds without seeding and the app shows onboarding as usual.
 DEV_SEED_URL := $(shell sed -n 's/^url=//p' .dev-secrets 2>/dev/null | head -1)
 DEV_SEED_KEY := $(shell sed -n 's/^key=//p' .dev-secrets 2>/dev/null | head -1)
+
+# When the target device runs a public/developer iOS beta, the matching
+# Developer Disk Image only ships with the corresponding Xcode beta —
+# the release Xcode's DDI rejects newer-OS installs with a misleading
+# "Developer Mode is disabled" error. Auto-pick the newest installed
+# `Xcode-*-beta*.app` so `device` / `device-run` use it; sim and CI
+# targets stay on the user's selected Xcode. Override with
+# DEVICE_XCODE=/Applications/Xcode.app to force the release toolchain.
+DEVICE_XCODE ?= $(lastword $(sort $(wildcard /Applications/Xcode-*-beta*.app)))
+ifneq ($(DEVICE_XCODE),)
+DEVICE_DEVELOPER_DIR := DEVELOPER_DIR=$(DEVICE_XCODE)/Contents/Developer
+else
+DEVICE_DEVELOPER_DIR :=
+endif
 
 help:           ## Show this help.
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-18s\033[0m %s\n", $$1, $$2}'
@@ -100,7 +115,8 @@ device: generate  ## Build + install + launch Debug build on a real device (DEVI
 		exit 1; \
 	fi
 	@echo "📱 Building for device $(DEVICE) with team $(DEVELOPMENT_TEAM)"
-	@xcodebuild -project Cairn.xcodeproj \
+	@if [ -n "$(DEVICE_XCODE)" ]; then echo "🧪 Using $(DEVICE_XCODE) for DDI compatibility (override with DEVICE_XCODE=...)."; fi
+	@$(DEVICE_DEVELOPER_DIR) xcodebuild -project Cairn.xcodeproj \
 		-scheme Cairn \
 		-configuration Debug \
 		-destination 'generic/platform=iOS' \
@@ -108,7 +124,7 @@ device: generate  ## Build + install + launch Debug build on a real device (DEVI
 		CODE_SIGN_STYLE=Automatic \
 		DEVELOPMENT_TEAM=$(DEVELOPMENT_TEAM) \
 		build
-	@xcrun devicectl device install app --device "$(DEVICE)" build/device/Build/Products/Debug-iphoneos/Cairn.app
+	@$(DEVICE_DEVELOPER_DIR) xcrun devicectl device install app --device "$(DEVICE)" build/device/Build/Products/Debug-iphoneos/Cairn.app
 	@# `DEVICECTL_CHILD_*` env vars are forwarded by devicectl to the
 	@# launched app as (unprefixed) env vars. We use this for two things:
 	@#   1. `CAIRN_ASSET_CAP` — cap first-sync hashing at N assets for
@@ -124,7 +140,7 @@ device: generate  ## Build + install + launch Debug build on a real device (DEVI
 		DEVICECTL_CHILD_CAIRN_DEV_SEED_URL="$(DEV_SEED_URL)" \
 		DEVICECTL_CHILD_CAIRN_DEV_SEED_KEY="$(DEV_SEED_KEY)" \
 		DEVICECTL_CHILD_CAIRN_RESET=$(RESET) \
-		xcrun devicectl device process launch --device "$(DEVICE)" $(BUNDLE_ID)
+		$(DEVICE_DEVELOPER_DIR) xcrun devicectl device process launch --device "$(DEVICE)" $(BUNDLE_ID)
 	@echo "✅ Launched on device. First install? Trust cert on device: Settings → General → VPN & Device Management."
 	@if [ -z "$(DEV_SEED_URL)" ] || [ -z "$(DEV_SEED_KEY)" ]; then \
 		echo "💡 Tip: create iOS/.dev-secrets with two lines (url=... / key=...) to skip onboarding on future installs."; \
@@ -141,7 +157,8 @@ device-run: generate  ## Like `make device` but attaches the app's stdout/stderr
 		echo "❌ DEVELOPMENT_TEAM not set. See 'make device' for setup."; exit 1; \
 	fi
 	@echo "📱 Building + deploying to $(DEVICE) with console attached"
-	@xcodebuild -project Cairn.xcodeproj \
+	@if [ -n "$(DEVICE_XCODE)" ]; then echo "🧪 Using $(DEVICE_XCODE) for DDI compatibility (override with DEVICE_XCODE=...)."; fi
+	@$(DEVICE_DEVELOPER_DIR) xcodebuild -project Cairn.xcodeproj \
 		-scheme Cairn \
 		-configuration Debug \
 		-destination 'generic/platform=iOS' \
@@ -149,7 +166,7 @@ device-run: generate  ## Like `make device` but attaches the app's stdout/stderr
 		CODE_SIGN_STYLE=Automatic \
 		DEVELOPMENT_TEAM=$(DEVELOPMENT_TEAM) \
 		build
-	@xcrun devicectl device install app --device "$(DEVICE)" build/device/Build/Products/Debug-iphoneos/Cairn.app
+	@$(DEVICE_DEVELOPER_DIR) xcrun devicectl device install app --device "$(DEVICE)" build/device/Build/Products/Debug-iphoneos/Cairn.app
 	@echo "ℹ️  Attaching — app stdout/stderr will stream below. Ctrl-C to detach."
 	@if [ "$(RESET)" = "1" ]; then \
 		echo "⚠️  RESET=1: hash cache, token, ever-seen, and confirmed-deleted state wiped on this launch."; \
@@ -158,7 +175,7 @@ device-run: generate  ## Like `make device` but attaches the app's stdout/stderr
 		DEVICECTL_CHILD_CAIRN_DEV_SEED_URL="$(DEV_SEED_URL)" \
 		DEVICECTL_CHILD_CAIRN_DEV_SEED_KEY="$(DEV_SEED_KEY)" \
 		DEVICECTL_CHILD_CAIRN_RESET=$(RESET) \
-		xcrun devicectl device process launch --console --device "$(DEVICE)" $(BUNDLE_ID)
+		$(DEVICE_DEVELOPER_DIR) xcrun devicectl device process launch --console --device "$(DEVICE)" $(BUNDLE_ID)
 
 device-logs:   ## Open macOS Console.app pre-positioned for device logs. `make device-run` is usually better for timing experiments.
 	@open -a Console
