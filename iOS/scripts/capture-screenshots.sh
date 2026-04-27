@@ -24,6 +24,16 @@ cd "$(dirname "$0")/.."   # land in iOS/
 
 # Devices to capture on. Comma-separated in DEVICES env var, or
 # positional args, or the default list below.
+#
+# Default: iPhone 17 Pro Max only — its 1320×2868 native resolution
+# matches Apple's required 6.9" iPhone screenshot tier (the only
+# iPhone size required for App Store submissions since April 2025).
+# App Store Connect auto-scales the 6.9" set for smaller iPhones, so
+# capturing additional sizes (iPhone 17, iPhone 17e) just doubles
+# capture time without contributing additional uploaded assets.
+# Override with DEVICES="iPhone 17 Pro Max,iPhone 17" or pass devices
+# as positional args if you want explicit smaller-tier shots for
+# review or marketing.
 if [[ -n "${DEVICES:-}" ]]; then
   IFS=',' read -ra DEVICE_LIST <<< "$DEVICES"
 elif [[ $# -gt 0 ]]; then
@@ -31,9 +41,14 @@ elif [[ $# -gt 0 ]]; then
 else
   DEVICE_LIST=(
     "iPhone 17 Pro Max"
-    "iPhone 17"
   )
 fi
+
+# Apple's required 6.9" iPhone screenshot tier. Used only by the
+# post-capture dimension check below — captures at any resolution
+# still complete, but a mismatch surfaces a warning.
+EXPECTED_WIDTH=1320
+EXPECTED_HEIGHT=2868
 
 SCHEME="Cairn"
 PROJECT="Cairn.xcodeproj"
@@ -139,3 +154,27 @@ done
 echo
 echo "Done. Screenshots in: $OUT_DIR"
 ls -la "$OUT_DIR" 2>&1 | grep -v '^total' | tail -n +2
+
+# Verify captured dimensions match the App Store Connect 6.9" iPhone
+# requirement. `sips` ships with macOS — no extra dependency. A
+# resolution mismatch is non-fatal (the file might still be useful)
+# but worth surfacing so a future Xcode/simulator change can't
+# silently degrade the screenshots beneath us.
+echo
+echo "→ Verifying screenshot dimensions match Apple 6.9\" iPhone tier (${EXPECTED_WIDTH}×${EXPECTED_HEIGHT})…"
+mismatch=0
+for IMG in "$OUT_DIR"/*.png; do
+  [[ -f "$IMG" ]] || continue
+  W=$(sips -g pixelWidth "$IMG" 2>/dev/null | awk '/pixelWidth/ {print $2}')
+  H=$(sips -g pixelHeight "$IMG" 2>/dev/null | awk '/pixelHeight/ {print $2}')
+  if [[ "$W" == "$EXPECTED_WIDTH" && "$H" == "$EXPECTED_HEIGHT" ]]; then
+    continue
+  fi
+  echo "  ⚠  $(basename "$IMG"): ${W}×${H} (expected ${EXPECTED_WIDTH}×${EXPECTED_HEIGHT})"
+  mismatch=$((mismatch + 1))
+done
+if [[ $mismatch -eq 0 ]]; then
+  echo "  ✓ All shots at ${EXPECTED_WIDTH}×${EXPECTED_HEIGHT}."
+else
+  echo "  $mismatch screenshot(s) outside the 6.9\" target — fine for review/marketing but App Store Connect prefers the canonical resolution."
+fi

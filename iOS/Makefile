@@ -93,7 +93,7 @@ setup-certs:   ## First-time match setup (creates certs in your match repo).
 sync-certs:    ## Sync certs from match repo (read-only — for CI / fresh machines).
 	bundle exec fastlane sync_certificates
 
-screenshots:   ## Capture App Store screenshots (uses CAIRN_SCREENSHOT_MODE fixtures, no Immich needed). Pass DEVICES="iPhone 17 Pro Max" for a one-off device.
+screenshots:   ## Capture App Store screenshots at 1320×2868 (Apple's 6.9" iPhone tier). Uses fixtures, no Immich needed. Pass DEVICES="iPhone 17 Pro Max,iPhone 17" to add smaller-iPhone tiers.
 	./scripts/capture-screenshots.sh
 
 export-wordmark: ## Render the hero "cairn" wordmark (mark + text) to docs/brand/cairn-wordmark.png at 3× retina.
