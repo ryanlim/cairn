@@ -383,64 +383,123 @@ public enum CairnFixtures {
     ]
 
     public struct JournalTailEntry: Sendable, Identifiable {
-        public var id: String { time + event }
+        public var id: String { time + event + runIdSuffix }
         public let time: String
         public let event: String
         public let message: String
+        /// SF Symbol name for the leading status glyph. Lives on the
+        /// fixture (rather than being mapped at render time from
+        /// `event`) so the choice sits next to the message
+        /// construction in `from(_:)` — adding a new event type
+        /// touches one place.
+        public let glyph: String
+        /// Last 8 chars of the entry's runId (typically the UUID
+        /// suffix portion of `<iso>-<uuid8>`). Right-aligned column
+        /// on the row so users can correlate events to a run at a
+        /// glance.
+        public let runIdSuffix: String
+        /// True only for `syncCompleted` events whose every signal
+        /// field is zero (no candidates, no pending, no deferred).
+        /// The Status filter chip elides these — they're noise in the
+        /// tail. Anything else (including a sync that found
+        /// candidates) stays visible.
+        public let isRoutineSync: Bool
+        /// The `runId` from the source `JournalEntry`. Used by the row
+        /// tap handler to look up a matching `RunFixture` and open the
+        /// run-detail sheet. Empty for fixture-only rows that didn't
+        /// come from a `JournalEntry`.
+        public let runId: String
 
-        public init(time: String, event: String, message: String) {
+        public init(
+            time: String,
+            event: String,
+            message: String,
+            glyph: String = "circle.fill",
+            runIdSuffix: String = "",
+            isRoutineSync: Bool = false,
+            runId: String = ""
+        ) {
             self.time = time
             self.event = event
             self.message = message
+            self.glyph = glyph
+            self.runIdSuffix = runIdSuffix
+            self.isRoutineSync = isRoutineSync
+            self.runId = runId
         }
 
         /// Format a `DeletionJournal.JournalEntry` into the Status-screen
         /// tail shape. Keeps every event-type's rendering together so
-        /// future event additions only touch this function. Time uses
-        /// millisecond precision to line up with the prototype's tail.
+        /// future event additions only touch this function. Time format
+        /// is relative-aware (today → `HH:mm`, otherwise `MMM d HH:mm`).
         public static func from(_ entry: JournalEntry) -> JournalTailEntry {
-            let time = Self.timeFormatter.string(from: entry.timestamp)
+            let time = formatTime(entry.timestamp)
             let eventName: String
             let message: String
+            let glyph: String
+            var routine = false
             switch entry.event {
             case .runStarted(let dryRun, let count, _):
                 eventName = "run.start"
+                glyph = "play.circle"
                 message = "\(dryRun ? "dry-run" : "live") · \(count) candidate\(count == 1 ? "" : "s")"
             case .planningTrash(let targets):
                 eventName = "plan.trash"
+                glyph = "list.bullet"
                 message = "\(targets.count) asset\(targets.count == 1 ? "" : "s")"
             case .tagApplied(_, let value, let ids):
                 eventName = "tag.apply"
-                message = "\(value) → \(ids.count) asset\(ids.count == 1 ? "" : "s")"
+                glyph = "tag"
+                // Tag values are `cairn/v1/run/<iso>-<uuid8>` — full
+                // path is too wide for the single-line row. Trim to
+                // the trailing 12 chars so the runId fragment stays
+                // correlatable to the suffix column.
+                let short = value.count > 12 ? "…" + String(value.suffix(12)) : value
+                message = "\(short) → \(ids.count) asset\(ids.count == 1 ? "" : "s")"
             case .trashSucceeded(let ids):
                 eventName = "trash.ok"
+                glyph = "checkmark"
                 message = "\(ids.count) asset\(ids.count == 1 ? "" : "s") moved to Immich's Trash"
             case .trashFailed(let ids, let msg):
                 eventName = "trash.fail"
+                glyph = "xmark.octagon"
                 message = "\(ids.count) asset\(ids.count == 1 ? "" : "s") — \(msg.prefix(60))"
             case .runCompleted(let n):
                 eventName = "run.complete"
+                glyph = "checkmark"
                 message = "trashed=\(n)"
             case .runAborted(let reason):
                 eventName = "run.abort"
-                message = String(reason.prefix(80))
+                glyph = "exclamationmark.triangle"
+                message = summarizeAbortReason(reason)
             case .restoreStarted(let runId, let ids):
                 eventName = "restore.start"
+                glyph = "arrow.uturn.backward"
                 message = "\(ids.count) asset\(ids.count == 1 ? "" : "s") from \(runId.suffix(8))"
             case .restoreSucceeded(_, let ids):
                 eventName = "restore.ok"
+                glyph = "checkmark"
                 message = "\(ids.count) asset\(ids.count == 1 ? "" : "s") restored"
             case .restoreFailed(_, let ids, let msg):
                 eventName = "restore.fail"
+                glyph = "xmark.octagon"
                 message = "\(ids.count) — \(msg.prefix(60))"
             case .assetsExcluded(let cks, _):
                 eventName = "exclude.add"
+                glyph = "shield.lefthalf.filled"
                 message = "\(cks.count) checksum\(cks.count == 1 ? "" : "s")"
             case .pendingReview(let ids, _):
                 eventName = "pending.hold"
+                glyph = "clock.arrow.circlepath"
                 message = "\(ids.count) asset\(ids.count == 1 ? "" : "s") awaiting review"
             case .syncCompleted(let indexed, let candidates, let pending, let large, let largeBytes, let timeout, let elapsedMs):
                 eventName = "sync"
+                glyph = "arrow.triangle.2.circlepath"
+                // The "no signal at all" pattern — every sync field is
+                // zero. Filter chip on Status hides these so the tail
+                // reflects real activity rather than every hourly
+                // background poke.
+                routine = (candidates == 0 && pending == 0 && large == 0 && timeout == 0)
                 var parts: [String] = [
                     "indexed=\(indexed)",
                     "cand=\(candidates)",
@@ -460,7 +519,15 @@ public enum CairnFixtures {
                 parts.append("dur=\(String(format: "%.2fs", Double(elapsedMs) / 1000))")
                 message = parts.joined(separator: " · ")
             }
-            return JournalTailEntry(time: time, event: eventName, message: message)
+            return JournalTailEntry(
+                time: time,
+                event: eventName,
+                message: message,
+                glyph: glyph,
+                runIdSuffix: String(entry.runId.suffix(8)),
+                isRoutineSync: routine,
+                runId: entry.runId
+            )
         }
 
         /// Thin delegate so the journal-tail format matches the
@@ -470,15 +537,106 @@ public enum CairnFixtures {
             CairnTimeHelpers.formatBytesCompact(bytes)
         }
 
-        /// `04/22 · 17:57:19.325` — zero-padded numeric month/day so
-        /// yesterday's events don't get confused with today's when
-        /// scrolling the expanded tail, and so the column width is
-        /// constant regardless of month name length. Ms precision
-        /// retained for ordering clarity. Locale pinned to
-        /// en_US_POSIX for predictable rendering across devices.
-        private static let timeFormatter: DateFormatter = {
+        /// Single-line summary of `SafetyRails.AbortReason.description`.
+        /// The full description carries the code-name and the long
+        /// human-readable clause; the journal-tail row only has room
+        /// for one line, so trim aggressively. Public so tests pin
+        /// the mapping case-by-case.
+        public static func summarizeAbortReason(_ reason: String) -> String {
+            // `thresholdExceeded — would delete 12 of 1024 in-purview assets (1.17%); limit is 1.00%`
+            // Numbers are load-bearing; pull them out via straight
+            // contains-checks on the leading code-name. No regex
+            // needed beyond simple split + scan.
+            if reason.hasPrefix("thresholdExceeded") {
+                // Best-effort extract: "would delete N of … (P%); limit is L%"
+                if let candidates = scanInt(after: "would delete ", in: reason),
+                   let percent = scanDouble(before: "%);", in: reason),
+                   let limit = scanDouble(after: "limit is ", trailing: "%", in: reason) {
+                    return String(
+                        format: "safety rail (%d / %.2f%% > %.2f%% cap)",
+                        candidates, percent, limit
+                    )
+                }
+                return "safety rail tripped"
+            }
+            if reason.hasPrefix("emptyServerResponse") {
+                return "server returned 0 assets"
+            }
+            if reason.hasPrefix("emptyLocalLibrary") {
+                return "local library empty (Photos permission?)"
+            }
+            if reason.hasPrefix("firstRunNotDryRun") {
+                return "first run must be dry-run"
+            }
+            return String(reason.prefix(60))
+        }
+
+        /// Scan an integer that begins immediately after `prefix`.
+        private static func scanInt(after prefix: String, in s: String) -> Int? {
+            guard let r = s.range(of: prefix) else { return nil }
+            let tail = s[r.upperBound...]
+            let digits = tail.prefix(while: { $0.isNumber })
+            return Int(digits)
+        }
+
+        /// Scan a double sitting between two delimiters: starts after
+        /// `after` (default "(") and ends at `trailing` (default "%").
+        /// Returns the parsed value or nil on first miss.
+        private static func scanDouble(after prefix: String = "(", trailing: String = "%", in s: String) -> Double? {
+            guard let r = s.range(of: prefix) else { return nil }
+            let tail = s[r.upperBound...]
+            let body = tail.prefix(while: { $0.isNumber || $0 == "." })
+            return Double(body)
+        }
+
+        /// Scan a double that ends just before a delimiter substring.
+        /// Used for the percent-before-`%);` case where a forward
+        /// scan would also match the `%` in `1.00%`.
+        private static func scanDouble(before suffix: String, in s: String) -> Double? {
+            guard let r = s.range(of: suffix) else { return nil }
+            // Walk backward from the suffix consuming digits/dot.
+            let end = r.lowerBound
+            var start = end
+            while start > s.startIndex {
+                let prev = s.index(before: start)
+                let ch = s[prev]
+                if ch.isNumber || ch == "." {
+                    start = prev
+                } else {
+                    break
+                }
+            }
+            return Double(s[start..<end])
+        }
+
+        /// Compact, relative-aware time. Today → `HH:mm` (no seconds,
+        /// no millis). Different day → `MMM d HH:mm`. Replaces the
+        /// previous always-on `MM/dd · HH:mm:ss.SSS` format — the
+        /// dropped column width frees room for the runId suffix.
+        public static func formatTime(_ date: Date, now: Date = Date()) -> String {
+            let cal = Calendar.current
+            if cal.isDate(date, inSameDayAs: now) {
+                return Self.todayFormatter.string(from: date)
+            }
+            return Self.otherDayFormatter.string(from: date)
+        }
+
+        /// `17:57` — same-day events. Dropped seconds + millis: a few
+        /// adjacent rows might share a clock minute, but the runId
+        /// suffix column already disambiguates, and the full-precision
+        /// timestamp is in the on-disk journal for forensic use.
+        private static let todayFormatter: DateFormatter = {
             let df = DateFormatter()
-            df.dateFormat = "MM/dd · HH:mm:ss.SSS"
+            df.dateFormat = "HH:mm"
+            df.locale = Locale(identifier: "en_US_POSIX")
+            return df
+        }()
+
+        /// `Apr 22 17:57` — past-day events. No middle-dot separator
+        /// and no seconds, so the column stays narrow.
+        private static let otherDayFormatter: DateFormatter = {
+            let df = DateFormatter()
+            df.dateFormat = "MMM d HH:mm"
             df.locale = Locale(identifier: "en_US_POSIX")
             return df
         }()
@@ -486,15 +644,23 @@ public enum CairnFixtures {
 
     /// Newest-first (matches how the runtime model populates
     /// `CairnAppModel.journalTail` from `DeletionJournal.lastEntries`).
+    /// Uses the post-Wave-4 event-name set (`run.complete`, `tag.apply`,
+    /// `trash.ok`, `run.start`) and the compact relative-aware time
+    /// format. Glyphs and runIdSuffix mirror what `from(_:)` would
+    /// emit for equivalent journal entries.
     public static let journalTail: [JournalTailEntry] = [
-        .init(time: "04/21 · 17:57:19.325", event: "run.complete", message: "trashed=14 failed=0 dur=4.21s"),
-        .init(time: "04/21 · 17:57:15.790", event: "delete.batch", message: "DELETE /api/assets · 14 ids · force=false"),
-        .init(time: "04/21 · 17:57:15.604", event: "tag.attach",   message: "attached 14 assets to breadcrumb tag"),
-        .init(time: "04/21 · 17:57:15.402", event: "tag.create",   message: "cairn/v1/run/…"),
-        .init(time: "04/21 · 17:57:15.318", event: "safety.ok",    message: "percent 0.66 ≤ 1.00 cap · floor 5 met"),
-        .init(time: "04/21 · 17:57:15.312", event: "reconcile",    message: "14 candidates · 0.66% of matched (4102)"),
-        .init(time: "04/21 · 17:57:15.240", event: "server.pull",  message: "fetched 1204 assets in 138ms"),
-        .init(time: "04/21 · 17:57:15.102", event: "run.start",    message: "run_id=2026-04-21T17:57:15Z-034389BC"),
+        .init(time: "17:57", event: "run.complete", message: "trashed=14",
+              glyph: "checkmark", runIdSuffix: "034389BC", runId: "2026-04-21T17:57:15Z-034389BC"),
+        .init(time: "17:57", event: "trash.ok",    message: "14 assets moved to Immich's Trash",
+              glyph: "checkmark", runIdSuffix: "034389BC", runId: "2026-04-21T17:57:15Z-034389BC"),
+        .init(time: "17:57", event: "tag.apply",   message: "…21Z-034389BC → 14 assets",
+              glyph: "tag", runIdSuffix: "034389BC", runId: "2026-04-21T17:57:15Z-034389BC"),
+        .init(time: "17:57", event: "plan.trash",  message: "14 assets",
+              glyph: "list.bullet", runIdSuffix: "034389BC", runId: "2026-04-21T17:57:15Z-034389BC"),
+        .init(time: "17:57", event: "run.start",   message: "live · 14 candidates",
+              glyph: "play.circle", runIdSuffix: "034389BC", runId: "2026-04-21T17:57:15Z-034389BC"),
+        .init(time: "17:55", event: "sync",        message: "indexed=4189 · cand=14 · dur=1.32s",
+              glyph: "arrow.triangle.2.circlepath", runIdSuffix: "sync5512", runId: "2026-04-21T17:55:00Z-sync5512"),
     ]
 
     private static func iso(_ s: String) -> Date {

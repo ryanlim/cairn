@@ -384,6 +384,15 @@ public struct CairnAppRoot: View {
                 onOpenRun: { run in
                     presentRunDetail(for: run)
                 },
+                onJournalRowTap: { runId in
+                    // Map the journal-row's runId back to the
+                    // matching RunFixture. Rows with no match are
+                    // already non-tappable upstream, but guard anyway
+                    // in case the runs list is mid-refresh.
+                    if let run = model.runs.first(where: { $0.id == runId }) {
+                        presentRunDetail(for: run)
+                    }
+                },
                 onSeeAllRuns: {
                     model.activeTab = .runs
                 },

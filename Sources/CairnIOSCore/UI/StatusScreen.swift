@@ -120,6 +120,12 @@ public struct StatusScreen: View {
     public let onStartSync: () -> Void
     public let onCancelSync: () -> Void
     public let onOpenRun: (CairnFixtures.RunFixture) -> Void
+    /// Tapping a journal-tail row whose `runId` matches a real run
+    /// opens the run-detail sheet. The host (CairnAppRoot) maps
+    /// `runId → RunFixture` and routes through `presentRunDetail`.
+    /// Rows with no matching run are rendered the same but
+    /// non-tappable.
+    public let onJournalRowTap: (String) -> Void
     public let onSeeAllRuns: () -> Void
     public let onOpenPendingReview: () -> Void
     /// Tapping the big "ready to trash" number opens a read-only view of
@@ -131,6 +137,11 @@ public struct StatusScreen: View {
     @Environment(\.cairnTokens) private var t
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var journalExpanded: Bool = false
+    /// Filter chip on the journal-tail card. ON by default — routine
+    /// no-op syncs are noise. `@AppStorage` so the user's choice
+    /// survives tab navigation and relaunch.
+    @AppStorage("cairn.status.hideRoutineSyncs")
+    private var hideRoutineSyncs: Bool = true
     /// Latches the count at which the user dismissed the banner so
     /// it doesn't re-show until the underlying state *changes* (more
     /// items accrue, or some get cleared). `@AppStorage` persists
@@ -172,6 +183,7 @@ public struct StatusScreen: View {
         onStartSync: @escaping () -> Void = {},
         onCancelSync: @escaping () -> Void = {},
         onOpenRun: @escaping (CairnFixtures.RunFixture) -> Void = { _ in },
+        onJournalRowTap: @escaping (String) -> Void = { _ in },
         onSeeAllRuns: @escaping () -> Void = {},
         onOpenPendingReview: @escaping () -> Void = {},
         onOpenDeleteQueue: @escaping () -> Void = {},
@@ -209,6 +221,7 @@ public struct StatusScreen: View {
         self.onStartSync = onStartSync
         self.onCancelSync = onCancelSync
         self.onOpenRun = onOpenRun
+        self.onJournalRowTap = onJournalRowTap
         self.onSeeAllRuns = onSeeAllRuns
         self.onOpenPendingReview = onOpenPendingReview
         self.onOpenDeleteQueue = onOpenDeleteQueue
@@ -981,13 +994,25 @@ public struct StatusScreen: View {
     /// tapping "Show more" grows to the full buffered tail so the
     /// user can audit further back without leaving Status.
     private var journalTailCard: some View {
+        // Routine-sync filter: drop no-op `sync` rows when the chip is
+        // ON. Filtered first, then capped to `collapsedJournalTailLimit`
+        // so the count badge ("Show N more") accounts for the visible
+        // post-filter set, not the raw buffer.
+        let filtered = hideRoutineSyncs
+            ? journalTail.filter { !$0.isRoutineSync }
+            : journalTail
+        let hiddenCount = journalTail.count - filtered.count
         let visible = journalExpanded
-            ? journalTail
-            : Array(journalTail.prefix(Self.collapsedJournalTailLimit))
+            ? filtered
+            : Array(filtered.prefix(Self.collapsedJournalTailLimit))
+        // Prebuilt runId set so the row's tappability check is O(1)
+        // — avoids a linear scan per row when the runs list is long.
+        let runIds = Set(runs.map(\.id))
         return CairnCard {
             VStack(alignment: .leading, spacing: 10) {
-                if journalTail.isEmpty {
-                    Text("No events yet. Events appear here after the first sync.")
+                journalFilterChip
+                if filtered.isEmpty {
+                    Text(journalEmptyMessage(hidden: hiddenCount))
                         .font(.system(size: 12))
                         .foregroundStyle(t.textMuted)
                         .padding(.vertical, 6)
@@ -1005,7 +1030,12 @@ public struct StatusScreen: View {
                     ScrollView([.horizontal, .vertical], showsIndicators: false) {
                         LazyVStack(alignment: .leading, spacing: 6) {
                             ForEach(visible) { entry in
-                                JournalTailRow(entry: entry, eventInk: eventColor(entry.event))
+                                JournalTailRow(
+                                    entry: entry,
+                                    eventInk: eventColor(entry.event),
+                                    isTappable: runIds.contains(entry.runId),
+                                    onTap: { onJournalRowTap(entry.runId) }
+                                )
                             }
                         }
                         .padding(.trailing, 4)   // breathing room on the right edge
@@ -1013,7 +1043,7 @@ public struct StatusScreen: View {
                     .frame(maxHeight: journalExpanded ? Self.expandedJournalCardMaxHeight : .infinity)
                     .scrollBounceBehavior(.basedOnSize)
 
-                    if journalTail.count > Self.collapsedJournalTailLimit {
+                    if filtered.count > Self.collapsedJournalTailLimit {
                         Button {
                             withAnimation(reduceMotion ? .none : .snappy(duration: 0.16)) {
                                 journalExpanded.toggle()
@@ -1024,7 +1054,7 @@ public struct StatusScreen: View {
                                     .font(.system(size: 11, weight: .semibold))
                                 Text(journalExpanded
                                      ? "Show fewer"
-                                     : "Show \(journalTail.count - Self.collapsedJournalTailLimit) more")
+                                     : "Show \(filtered.count - Self.collapsedJournalTailLimit) more")
                                     .font(.system(size: 12, weight: .medium))
                             }
                             .foregroundStyle(t.textMuted)
@@ -1033,11 +1063,61 @@ public struct StatusScreen: View {
                         }
                         .buttonStyle(.plain)
                     }
+
+                    if hideRoutineSyncs && hiddenCount > 0 {
+                        Text("\(hiddenCount) routine sync\(hiddenCount == 1 ? "" : "s") hidden")
+                            .font(.system(size: 11))
+                            .foregroundStyle(t.textHint)
+                            .padding(.top, 2)
+                    }
                 }
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 12)
         }
+    }
+
+    /// Tap-to-toggle filter chip pinned above the journal rows. Uses
+    /// the existing `Chip` view for visual consistency with the
+    /// status header. Animates on toggle so the row list reflows with
+    /// the rest of the banner-area motion.
+    private var journalFilterChip: some View {
+        Button {
+            withAnimation(reduceMotion ? .none : .snappy(duration: 0.16)) {
+                hideRoutineSyncs.toggle()
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: hideRoutineSyncs
+                                  ? "line.3.horizontal.decrease.circle.fill"
+                                  : "line.3.horizontal.decrease.circle")
+                    .font(.system(size: 11, weight: .semibold))
+                Text(hideRoutineSyncs ? "Hiding routine syncs" : "Showing all events")
+                    .font(.system(size: 11, weight: .semibold))
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .foregroundStyle(hideRoutineSyncs ? t.infoInk : t.textBody)
+            .background(hideRoutineSyncs ? t.infoSoft : t.surfaceAlt)
+            .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(hideRoutineSyncs
+            ? "Routine no-op syncs hidden. Tap to show."
+            : "All events shown. Tap to hide routine no-op syncs.")
+    }
+
+    /// Empty-state copy for the journal card. Distinguishes "no
+    /// events at all" from "everything got filtered out" so a user
+    /// who's confused why the card is empty has a path forward.
+    private func journalEmptyMessage(hidden: Int) -> String {
+        if journalTail.isEmpty {
+            return "No events yet. Events appear here after the first sync."
+        }
+        if hidden > 0 {
+            return "All \(hidden) recent event\(hidden == 1 ? "" : "s") \(hidden == 1 ? "is" : "are") routine syncs. Tap the chip to show them."
+        }
+        return "No events to show."
     }
 
     /// How many journal rows show in the collapsed state. Everything
@@ -1050,13 +1130,27 @@ public struct StatusScreen: View {
     /// height — roughly a screen-page of activity at a glance.
     private static let expandedJournalCardMaxHeight: CGFloat = 360
 
+    /// Mapping pinned to the event-name strings `JournalTailEntry.from`
+    /// actually emits. The previous version checked stale names
+    /// (`safety.ok`, `tag.create`, `delete.batch`, `abort`) that the
+    /// post-Wave-2 pipeline never writes — so every row rendered in
+    /// the default `textBody` color regardless of severity.
     private func eventColor(_ ev: String) -> Color {
         switch ev {
-        case "safety.ok":     return t.verifiedInk
-        case "tag.create", "tag.attach", "reconcile": return t.infoInk
-        case "delete.batch":  return t.pendingInk
-        case "abort":         return t.dangerInk
-        default:              return t.textBody
+        case "trash.ok", "run.complete", "restore.ok":
+            return t.verifiedInk
+        case "trash.fail", "restore.fail":
+            return t.dangerInk
+        case "run.abort":
+            return t.dangerInk
+        case "pending.hold":
+            return t.pendingInk
+        case "tag.apply", "restore.start", "run.start", "plan.trash", "exclude.add":
+            return t.infoInk
+        case "sync":
+            return t.textBody
+        default:
+            return t.textBody
         }
     }
 }
@@ -1070,36 +1164,64 @@ public struct StatusScreen: View {
 private struct JournalTailRow: View {
     let entry: CairnFixtures.JournalTailEntry
     let eventInk: Color
+    let isTappable: Bool
+    let onTap: () -> Void
 
     @Environment(\.cairnTokens) private var t
 
     var body: some View {
-        HStack(spacing: 8) {
-            // Time is the only column with a fixed width — so rows
-            // scan cleanly by time across the tail. The date-prefixed
-            // format ("Apr 22 · 17:57:19.325") needs more room than
-            // the time-only version the column was originally sized
-            // for.
-            Text(entry.time)
-                .font(.system(size: 11.5, design: .monospaced))
-                .foregroundStyle(t.textHint)
-                .frame(width: 160, alignment: .leading)
-            // Event hugs its content (no fixed column) — a short
-            // name like "sync" sits right next to its message
-            // rather than drifting out to the width of the longest
-            // possible event. Ragged message-start columns read a
-            // bit busier, but the cost of fixed-width dead space
-            // was worse.
-            Text(entry.event)
-                .font(.system(size: 11.5, weight: .medium, design: .monospaced))
-                .foregroundStyle(eventInk)
-                .fixedSize()
-            Text(entry.message)
-                .font(.system(size: 11.5, design: .monospaced))
-                .foregroundStyle(t.textMuted)
-                .lineLimit(1)
-                .fixedSize()
+        Button(action: onTap) {
+            HStack(spacing: 8) {
+                // Leading status glyph — at-a-glance signal that
+                // doesn't require parsing event-name strings. Tinted
+                // to match `eventInk` so red/green/yellow/blue
+                // semantics carry through whether the user reads the
+                // glyph or the event word.
+                Image(systemName: entry.glyph)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(eventInk)
+                    .frame(width: 14, alignment: .center)
+                // Time is fixed-width so rows scan cleanly by time
+                // across the tail. The new compact format
+                // (`HH:mm` today, `MMM d HH:mm` past) is
+                // ~80pt — half the previous column's width.
+                Text(entry.time)
+                    .font(.system(size: 11.5, design: .monospaced))
+                    .foregroundStyle(t.textHint)
+                    .frame(width: 80, alignment: .leading)
+                // Event hugs its content (no fixed column) — a short
+                // name like "sync" sits right next to its message
+                // rather than drifting out to the width of the longest
+                // possible event. Ragged message-start columns read a
+                // bit busier, but the cost of fixed-width dead space
+                // was worse.
+                Text(entry.event)
+                    .font(.system(size: 11.5, weight: .medium, design: .monospaced))
+                    .foregroundStyle(eventInk)
+                    .fixedSize()
+                Text(entry.message)
+                    .font(.system(size: 11.5, design: .monospaced))
+                    .foregroundStyle(t.textMuted)
+                    .lineLimit(1)
+                    .fixedSize()
+                Spacer(minLength: 12)
+                // RunId suffix sits at the far right so users can
+                // correlate events to a run at a glance. Hint-tone
+                // monospace, fixed width to keep alignment with
+                // adjacent rows even when they share a runId.
+                if !entry.runIdSuffix.isEmpty {
+                    Text(entry.runIdSuffix)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(t.textHint)
+                        .frame(width: 64, alignment: .trailing)
+                }
+            }
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        // Disabling the row both for hit-testing and for the wrapping
+        // button so untappable rows match the previous render exactly.
+        .allowsHitTesting(isTappable)
     }
 }
 
