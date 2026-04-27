@@ -51,6 +51,10 @@ final class ScreenshotsUITests: XCTestCase {
         capture(.onboarding, name: "05-Setup-Welcome-Light", darkMode: false)
     }
 
+    func testStatusJournalScreenshotLight() throws {
+        capture(.statusJournal, name: "06-StatusJournal-Light", darkMode: false)
+    }
+
     // MARK: - Dark mode
 
     func testStatusScreenshotDark() throws {
@@ -73,10 +77,14 @@ final class ScreenshotsUITests: XCTestCase {
         capture(.onboarding, name: "05-Setup-Welcome-Dark", darkMode: true)
     }
 
+    func testStatusJournalScreenshotDark() throws {
+        capture(.statusJournal, name: "06-StatusJournal-Dark", darkMode: true)
+    }
+
     // MARK: - State enum + dispatch
 
     private enum State {
-        case status, pendingReview, runs, settings, onboarding
+        case status, pendingReview, runs, settings, onboarding, statusJournal
     }
 
     private func capture(_ state: State, name: String, darkMode: Bool) {
@@ -106,6 +114,17 @@ final class ScreenshotsUITests: XCTestCase {
             waitForMainTabs(app)
             app.buttons["Settings"].tap()
             _ = app.staticTexts["Settings"].waitForExistence(timeout: 3)
+        case .statusJournal:
+            waitForMainTabs(app)
+            // Scroll the Status screen until the journal section
+            // header is in view. The card sits at the bottom of a
+            // long scroll (wordmark → banners → syncCard → Library →
+            // Recent runs → Latest journal), well below the 6.9"
+            // viewport, so the default Status snapshot misses it.
+            // This shot specifically frames the journal so the new
+            // banding/separators/hero work shows up in App Store
+            // marketing.
+            scrollUntilVisible(app, label: "Latest journal", maxSwipes: 6)
         }
         snapshot(name)
     }
@@ -139,5 +158,25 @@ final class ScreenshotsUITests: XCTestCase {
             app.buttons["Runs"].waitForExistence(timeout: 15),
             "Main tab bar failed to render within 15s"
         )
+    }
+
+    /// Swipe up the active scroll view until a static text matching
+    /// `label` becomes hittable. Used by the journal-focused Status
+    /// screenshot to bring the bottom-of-Status journal card into
+    /// the viewport. `maxSwipes` is a safety bound — typical Status
+    /// content reaches the journal in 2-3 swipes; six is generous.
+    private func scrollUntilVisible(
+        _ app: XCUIApplication,
+        label: String,
+        maxSwipes: Int = 6
+    ) {
+        let target = app.staticTexts[label]
+        for _ in 0..<maxSwipes {
+            if target.exists && target.isHittable { return }
+            app.swipeUp()
+        }
+        // Best-effort — if the label still isn't hittable we still
+        // snapshot whatever frame we ended on. Better than throwing
+        // and producing no shot at all.
     }
 }
