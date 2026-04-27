@@ -1110,9 +1110,28 @@ public struct StatusScreen: View {
                     // a neutral hint tone.
                     let runOutcomeMap: [String: CairnFixtures.RunFixture.Status] =
                         Dictionary(uniqueKeysWithValues: runs.map { ($0.id, $0.status) })
+                    let runById: [String: CairnFixtures.RunFixture] =
+                        Dictionary(uniqueKeysWithValues: runs.map { ($0.id, $0) })
+                    // First-in-group markers parallel to `bandTints`. A
+                    // group starts whenever the band-toggle logic flipped
+                    // (i.e. the runId changed to a different non-empty
+                    // value). The separator only renders when the row's
+                    // runId is non-empty — sync-only sections don't get a
+                    // header since they have no run to label.
+                    let isFirstInGroup: [Bool] = Self.firstInGroupFlags(bandTints: bandTints)
                     ScrollView([.horizontal, .vertical], showsIndicators: false) {
                         LazyVStack(alignment: .leading, spacing: 6) {
                             ForEach(Array(visible.enumerated()), id: \.element.id) { index, entry in
+                                if isFirstInGroup[index], !entry.runId.isEmpty {
+                                    JournalRunSeparator(
+                                        runId: entry.runId,
+                                        timeLabel: entry.time,
+                                        run: runById[entry.runId],
+                                        width: measuredWidth,
+                                        isTappable: runIds.contains(entry.runId),
+                                        onTap: { onJournalRowTap(entry.runId) }
+                                    )
+                                }
                                 JournalTailRow(
                                     entry: entry,
                                     eventInk: eventColor(entry.event),
@@ -1217,6 +1236,21 @@ public struct StatusScreen: View {
     /// rest of Status down. ≈12 rows visible at the current row
     /// height — roughly a screen-page of activity at a glance.
     private static let expandedJournalCardMaxHeight: CGFloat = 360
+
+    /// Boundary markers parallel to a band-tint array — `true` at index
+    /// `i` means "row `i` starts a new group" (band toggled vs. row
+    /// `i-1`, or `i == 0`). Used to insert run separators between
+    /// contiguous-runId groups in the journal card. Lifted out of the
+    /// view body to dodge SwiftUI's type-checker timeouts on closures
+    /// inside large view-builder expressions.
+    private static func firstInGroupFlags(bandTints: [Bool]) -> [Bool] {
+        var flags: [Bool] = []
+        flags.reserveCapacity(bandTints.count)
+        for i in 0..<bandTints.count {
+            flags.append(i == 0 ? true : bandTints[i] != bandTints[i - 1])
+        }
+        return flags
+    }
 
     /// Per-row band-tint flags. Walks `entries` and toggles a running
     /// boolean each time a non-empty `runId` differs from the previous
@@ -1323,6 +1357,92 @@ private struct JournalRawJSONSheet: View {
                 }
             }
             #endif
+        }
+    }
+}
+
+// MARK: - Journal run separator
+
+/// One-line divider row inserted at the start of each contiguous-runId
+/// group in the journal-tail card. Renders a thin hairline rule above
+/// run metadata ("11:42 · trashed 12 · run abc12345") so the user can
+/// see where one run ends and the next begins, plus tap the row to
+/// drill into run detail. Pairs with the band-tint logic — bands give
+/// at-a-glance grouping; the separator gives an explicit boundary +
+/// metadata.
+///
+/// Only emitted for groups whose entries have a non-empty `runId` —
+/// sync-only sections (no associated run) don't get a header.
+private struct JournalRunSeparator: View {
+    let runId: String
+    let timeLabel: String
+    /// Resolved RunFixture if the run has finished and rolled into
+    /// `runs[]`. Nil for in-flight runs whose `runStarted` event is on
+    /// disk but no terminal event yet.
+    let run: CairnFixtures.RunFixture?
+    let width: CGFloat
+    let isTappable: Bool
+    let onTap: () -> Void
+
+    @Environment(\.cairnTokens) private var t
+
+    var body: some View {
+        Button(action: onTap) {
+            VStack(alignment: .leading, spacing: 0) {
+                Rectangle()
+                    .fill(t.divider)
+                    .frame(height: 0.5)
+                HStack(spacing: 6) {
+                    Text(timeLabel)
+                        .font(.system(size: 10.5, weight: .medium, design: .monospaced))
+                        .foregroundStyle(t.textHint)
+                    Text("·")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(t.textHint)
+                    if let summary = runSummaryLabel {
+                        Text(summary)
+                            .font(.system(size: 10.5, weight: .medium))
+                            .foregroundStyle(summaryColor)
+                        Text("·")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(t.textHint)
+                    }
+                    Text("run \(runId.suffix(8))")
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .foregroundStyle(t.textHint)
+                }
+                .padding(.top, 4)
+                .padding(.bottom, 2)
+            }
+            .frame(width: width, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .allowsHitTesting(isTappable)
+    }
+
+    /// Outcome-aware short summary: "trashed 12", "aborted",
+    /// "restored". Nil for in-flight runs, which then collapse the
+    /// summary segment of the header to keep it tight.
+    private var runSummaryLabel: String? {
+        guard let run else { return nil }
+        switch run.status {
+        case .complete:
+            if run.dryRun { return "dry-run" }
+            if run.trashed > 0 { return "trashed \(run.trashed)" }
+            if run.restored > 0 { return "restored \(run.restored)" }
+            return "complete"
+        case .aborted:  return "aborted"
+        case .restored: return "restored \(run.restored)"
+        }
+    }
+
+    private var summaryColor: Color {
+        guard let run else { return t.textBody }
+        switch run.status {
+        case .complete:  return run.dryRun ? t.textBody : t.verifiedInk
+        case .aborted:   return t.dangerInk
+        case .restored:  return t.infoInk
         }
     }
 }
