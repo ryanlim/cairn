@@ -1112,36 +1112,40 @@ public struct StatusScreen: View {
                         Dictionary(uniqueKeysWithValues: runs.map { ($0.id, $0.status) })
                     let runById: [String: CairnFixtures.RunFixture] =
                         Dictionary(uniqueKeysWithValues: runs.map { ($0.id, $0) })
-                    // First-in-group markers parallel to `bandTints`. A
-                    // group starts whenever the band-toggle logic flipped
-                    // (i.e. the runId changed to a different non-empty
-                    // value). The separator only renders when the row's
-                    // runId is non-empty — sync-only sections don't get a
-                    // header since they have no run to label.
-                    let isFirstInGroup: [Bool] = Self.firstInGroupFlags(bandTints: bandTints)
+                    // Group rows by contiguous band value so the band
+                    // tint can paint once per group (one box per run)
+                    // rather than per row. Reduces visual noise and
+                    // makes each run's events feel like a unit.
+                    let groups = Self.groupJournalEntries(visible: visible, bandTints: bandTints)
                     ScrollView([.horizontal, .vertical], showsIndicators: false) {
-                        LazyVStack(alignment: .leading, spacing: 6) {
-                            ForEach(Array(visible.enumerated()), id: \.element.id) { index, entry in
-                                if isFirstInGroup[index], !entry.runId.isEmpty {
-                                    JournalRunSeparator(
-                                        runId: entry.runId,
-                                        timeLabel: entry.time,
-                                        run: runById[entry.runId],
-                                        width: measuredWidth,
-                                        isTappable: runIds.contains(entry.runId),
-                                        onTap: { onJournalRowTap(entry.runId) }
-                                    )
+                        LazyVStack(alignment: .leading, spacing: 4) {
+                            ForEach(groups) { group in
+                                VStack(alignment: .leading, spacing: 6) {
+                                    if let runId = group.runId {
+                                        JournalRunSeparator(
+                                            runId: runId,
+                                            timeLabel: group.entries.first?.time ?? "",
+                                            run: runById[runId],
+                                            width: measuredWidth,
+                                            isTappable: runIds.contains(runId),
+                                            onTap: { onJournalRowTap(runId) }
+                                        )
+                                    }
+                                    ForEach(group.entries) { entry in
+                                        JournalTailRow(
+                                            entry: entry,
+                                            eventInk: eventColor(entry.event),
+                                            isTappable: runIds.contains(entry.runId),
+                                            rowWidth: measuredWidth,
+                                            runIdSuffixColor: runIdSuffixColor(for: entry.runId, in: runOutcomeMap),
+                                            onTap: { onJournalRowTap(entry.runId) },
+                                            onLongPress: { journalRawJSONEntry = entry }
+                                        )
+                                    }
                                 }
-                                JournalTailRow(
-                                    entry: entry,
-                                    eventInk: eventColor(entry.event),
-                                    isTappable: runIds.contains(entry.runId),
-                                    isBanded: bandTints[index],
-                                    rowWidth: measuredWidth,
-                                    runIdSuffixColor: runIdSuffixColor(for: entry.runId, in: runOutcomeMap),
-                                    onTap: { onJournalRowTap(entry.runId) },
-                                    onLongPress: { journalRawJSONEntry = entry }
-                                )
+                                .padding(.vertical, 4)
+                                .frame(width: measuredWidth, alignment: .leading)
+                                .background(group.isBanded ? t.surfaceAlt.opacity(0.6) : Color.clear)
                             }
                         }
                         .frame(width: measuredWidth, alignment: .leading)
@@ -1237,19 +1241,61 @@ public struct StatusScreen: View {
     /// height — roughly a screen-page of activity at a glance.
     private static let expandedJournalCardMaxHeight: CGFloat = 360
 
-    /// Boundary markers parallel to a band-tint array — `true` at index
-    /// `i` means "row `i` starts a new group" (band toggled vs. row
-    /// `i-1`, or `i == 0`). Used to insert run separators between
-    /// contiguous-runId groups in the journal card. Lifted out of the
-    /// view body to dodge SwiftUI's type-checker timeouts on closures
-    /// inside large view-builder expressions.
-    private static func firstInGroupFlags(bandTints: [Bool]) -> [Bool] {
-        var flags: [Bool] = []
-        flags.reserveCapacity(bandTints.count)
-        for i in 0..<bandTints.count {
-            flags.append(i == 0 ? true : bandTints[i] != bandTints[i - 1])
+    /// One contiguous run of journal entries that share a band tint
+    /// value. The first non-empty `runId` inside the group is the
+    /// "owner" — the run separator and group-level box semantics use
+    /// it. Groups composed entirely of empty-runId rows (a stretch of
+    /// routine syncs between runs) have `runId == nil` and render
+    /// without a separator.
+    fileprivate struct JournalGroup: Identifiable {
+        let id: Int
+        let runId: String?
+        let entries: [CairnFixtures.JournalTailEntry]
+        let isBanded: Bool
+    }
+
+    /// Walk `visible` alongside the parallel `bandTints` array,
+    /// flushing a new group every time the band value flips. Each
+    /// group's owning runId is the first non-empty runId encountered
+    /// inside it. Lifted out of the view body to dodge SwiftUI's
+    /// type-checker timeouts on heavy view-builder expressions.
+    private static func groupJournalEntries(
+        visible: [CairnFixtures.JournalTailEntry],
+        bandTints: [Bool]
+    ) -> [JournalGroup] {
+        guard !visible.isEmpty else { return [] }
+        var groups: [JournalGroup] = []
+        var bucket: [CairnFixtures.JournalTailEntry] = []
+        var bucketRunId: String? = nil
+        var bucketBand: Bool = bandTints[0]
+        for i in 0..<visible.count {
+            let band = bandTints[i]
+            if band != bucketBand && !bucket.isEmpty {
+                groups.append(JournalGroup(
+                    id: groups.count,
+                    runId: bucketRunId,
+                    entries: bucket,
+                    isBanded: bucketBand
+                ))
+                bucket = []
+                bucketRunId = nil
+                bucketBand = band
+            }
+            let entry = visible[i]
+            if bucketRunId == nil && !entry.runId.isEmpty {
+                bucketRunId = entry.runId
+            }
+            bucket.append(entry)
         }
-        return flags
+        if !bucket.isEmpty {
+            groups.append(JournalGroup(
+                id: groups.count,
+                runId: bucketRunId,
+                entries: bucket,
+                isBanded: bucketBand
+            ))
+        }
+        return groups
     }
 
     /// Per-row band-tint flags. Walks `entries` and toggles a running
@@ -1388,32 +1434,26 @@ private struct JournalRunSeparator: View {
 
     var body: some View {
         Button(action: onTap) {
-            VStack(alignment: .leading, spacing: 0) {
-                Rectangle()
-                    .fill(t.divider)
-                    .frame(height: 0.5)
-                HStack(spacing: 6) {
-                    Text(timeLabel)
-                        .font(.system(size: 10.5, weight: .medium, design: .monospaced))
-                        .foregroundStyle(t.textHint)
+            HStack(spacing: 6) {
+                Text(timeLabel)
+                    .font(.system(size: 10.5, weight: .medium, design: .monospaced))
+                    .foregroundStyle(t.textHint)
+                Text("·")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(t.textHint)
+                if let summary = runSummaryLabel {
+                    Text(summary)
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundStyle(summaryColor)
                     Text("·")
                         .font(.system(size: 10.5))
                         .foregroundStyle(t.textHint)
-                    if let summary = runSummaryLabel {
-                        Text(summary)
-                            .font(.system(size: 10.5, weight: .medium))
-                            .foregroundStyle(summaryColor)
-                        Text("·")
-                            .font(.system(size: 10.5))
-                            .foregroundStyle(t.textHint)
-                    }
-                    Text("run \(runId.suffix(8))")
-                        .font(.system(size: 10.5, design: .monospaced))
-                        .foregroundStyle(t.textHint)
                 }
-                .padding(.top, 4)
-                .padding(.bottom, 2)
+                Text("run \(runId.suffix(8))")
+                    .font(.system(size: 10.5, design: .monospaced))
+                    .foregroundStyle(t.textHint)
             }
+            .padding(.bottom, 2)
             .frame(width: width, alignment: .leading)
             .contentShape(Rectangle())
         }
@@ -1514,13 +1554,11 @@ private struct JournalTailRow: View {
     let entry: CairnFixtures.JournalTailEntry
     let eventInk: Color
     let isTappable: Bool
-    /// When true, paints a low-alpha `surfaceAlt` band behind the row.
-    /// Driven by `StatusScreen.journalBandTints` so contiguous same-runId
-    /// rows share a band — spreadsheet-style grouping by eye.
-    let isBanded: Bool
-    /// Width to paint the band (and stretch the row tap target) across.
-    /// Equals `JournalRowMetrics.maxWidth(for:)` from the parent so all
-    /// rows have edge-to-edge bands regardless of their intrinsic content.
+    /// Width to stretch the row tap target across. Equals
+    /// `JournalRowMetrics.maxWidth(for:)` from the parent so all rows
+    /// have a uniform hit area regardless of intrinsic content. The
+    /// band tint moved to the enclosing group container — rows are
+    /// transparent so the group-level background shows through.
     let rowWidth: CGFloat
     /// Color for the trailing `runIdSuffix`. Driven by the lookup of
     /// `entry.runId` against the runs list — green for `.complete`,
@@ -1588,12 +1626,11 @@ private struct JournalTailRow: View {
                         .fixedSize()
                 }
             }
-            // Stretch the row to `rowWidth` so the band background paints
-            // edge-to-edge across the LazyVStack's content width — a
-            // narrower intrinsic-sized row would yield ragged-width bands
-            // that read as visual noise rather than grouping.
+            // Stretch the row to `rowWidth` so the tap target spans the
+            // full content width regardless of intrinsic-row width.
+            // Background painting moved to the enclosing JournalGroup
+            // container — rows are transparent.
             .frame(width: rowWidth, alignment: .leading)
-            .background(isBanded ? t.surfaceAlt.opacity(0.6) : Color.clear)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
