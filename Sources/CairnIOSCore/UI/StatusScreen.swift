@@ -735,7 +735,7 @@ public struct StatusScreen: View {
 
     private var syncCard: some View {
         CairnCard {
-            VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 10) {
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 6) {
                         Text("READY TO TRASH")
@@ -743,21 +743,45 @@ public struct StatusScreen: View {
                             .foregroundStyle(t.textMuted)
                         Button(action: { if library.candidates > 0 { onOpenDeleteQueue() } }) {
                             Text("\(library.candidates)")
-                                .font(.system(size: 52, weight: .semibold).monospacedDigit())
-                                .tracking(-2.0)
+                                .font(.system(size: 44, weight: .semibold).monospacedDigit())
+                                .tracking(-1.5)
                                 .foregroundStyle(readyToTrashColor)
                                 .lineLimit(1)
                         }
                         .buttonStyle(.plain)
                         .disabled(library.candidates == 0)
                         .accessibilityLabel("\(library.candidates) ready to trash. Tap to view.")
-                        (Text("would move to ") + Text("Immich's Trash").foregroundStyle(t.text) + Text(" on next run"))
-                            .font(.system(size: 13))
-                            .foregroundStyle(t.textMuted)
-                            .padding(.top, 2)
+                        if !isSyncing, let checked = lastCheckedAt {
+                            Text("Last checked \(Self.relativeTime(checked))")
+                                .font(.system(size: 11))
+                                .foregroundStyle(t.textHint)
+                        }
                     }
                     Spacer()
-                    VStack(alignment: .trailing, spacing: 4) {
+                    VStack(alignment: .trailing, spacing: 6) {
+                        // Circular icon-only sync action — replaces the
+                        // former full-width "Sync now" CTA. `variableColor`
+                        // animation cycles the SF Symbol's per-layer
+                        // tints while syncing so users see the action is
+                        // live without a separate spinner. Kept on
+                        // iOS 17 baseline — `.rotate` symbolEffect is
+                        // iOS 18+ and we'd lose the animation on
+                        // 17.x devices.
+                        Button(action: { if !syncBlocked && !isSyncing { onStartSync() } }) {
+                            ZStack {
+                                Circle()
+                                    .fill(syncBlocked ? t.surfaceAlt : t.primary.opacity(0.14))
+                                    .frame(width: 52, height: 52)
+                                Image(systemName: "arrow.triangle.2.circlepath")
+                                    .font(.system(size: 22, weight: .semibold))
+                                    .foregroundStyle(syncBlocked ? t.textMuted : t.primary)
+                                    .symbolEffect(.variableColor.iterative.reversing, options: .repeating, isActive: isSyncing)
+                            }
+                            .contentShape(Circle())
+                        }
+                        .buttonStyle(CairnPressStyle())
+                        .disabled(syncBlocked || isSyncing)
+                        .accessibilityLabel(isSyncing ? "Syncing" : (syncBlocked ? "Sync unavailable" : "Sync now"))
                         Chip(label: String(format: "%.2f%% of synced", pct),
                              tone: withinBudget ? .verified : .pending)
                         HStack(spacing: 0) {
@@ -778,12 +802,6 @@ public struct StatusScreen: View {
                             }
                         }
                     }
-                }
-
-                if !isSyncing, let checked = lastCheckedAt {
-                    Text("Last checked \(Self.relativeTime(checked))")
-                        .font(.system(size: 11))
-                        .foregroundStyle(t.textHint)
                 }
 
                 if quarantineCount > 0 {
@@ -816,35 +834,11 @@ public struct StatusScreen: View {
                     deferredQueueLine
                 }
 
-                Button(action: { if !syncBlocked && !isSyncing { onStartSync() } }) {
-                    HStack(spacing: 8) {
-                        if isSyncing {
-                            ProgressView()
-                                .progressViewStyle(.circular)
-                                .controlSize(.small)
-                                .tint(t.primaryInk)
-                        } else {
-                            Image(systemName: "arrow.triangle.2.circlepath")
-                                .font(.system(size: 14, weight: .semibold))
-                        }
-                        Text(syncCtaLabel)
-                            .font(.system(size: 16, weight: .semibold))
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 14)
-                    .foregroundStyle(syncBlocked ? t.textMuted : t.primaryInk)
-                    .background(syncBlocked ? t.surfaceAlt : t.primary)
-                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                }
-                .buttonStyle(CairnPressStyle())
-                .disabled(syncBlocked || isSyncing)
-                .opacity(syncBlocked ? 0.85 : 1)
-
-                // Cancel affordance during sync. Separate from the locked
-                // primary button so there's no ambiguity about what the
-                // tap does — the primary renders progress, this one
-                // interrupts. Kept subtle (text button, muted tone) so
-                // it doesn't steal attention from the progress itself.
+                // Cancel affordance during sync. Standalone since the
+                // primary sync action lives in the top-right circular
+                // button — when syncing, that button is disabled and
+                // visibly animated; this row offers an interrupt and
+                // surfaces the phase checklist.
                 if isSyncing {
                     Button(action: onCancelSync) {
                         Text("Cancel")
@@ -860,8 +854,20 @@ public struct StatusScreen: View {
 
                     SyncPhaseChecklist(phase: syncPhase)
                 }
+
+                // Surface the sync-blocked reason inline when applicable —
+                // previously communicated by the disabled CTA's label
+                // ("Server unreachable", "Limited Photo access", etc.).
+                // With the CTA gone, the same reason appears as a small
+                // muted line under the progress bar.
+                if syncBlocked && !isSyncing {
+                    Text(syncCtaLabel)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(t.textMuted)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                }
             }
-            .padding(18)
+            .padding(14)
         }
         .padding(.bottom, 14)
     }
