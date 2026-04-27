@@ -137,6 +137,29 @@ public final class PhotoKitPersistentChangeReconciler {
         /// scans see an empty diff once they're hashed (or deferred).
         public let untrackedDiscovered: Int
 
+        /// Count of `newlyConfirmedDeleted` checksums attributable to
+        /// the PhotoKit `deletedLocalIdentifiers` path (the primary
+        /// signal). Disjoint from `confirmedFromOrphanSweep`.
+        public let confirmedFromPhotoKit: Int
+        /// Count of `newlyConfirmedDeleted` checksums attributable to
+        /// the orphan-sweep safety net — local IDs that the persistent-
+        /// change log missed (back-channel deletions, prior-token gaps).
+        /// Distinguishing the two sources lets users see when the
+        /// safety net is actually catching things vs. just running
+        /// idle.
+        public let confirmedFromOrphanSweep: Int
+        /// `EditRetirementStore` first-observed anchors that activated
+        /// this pass — the user edited a photo, its previous SHA1 was
+        /// retired from the cache, and the retirement matched the
+        /// anchored "original content" set so it stayed protected on
+        /// Immich rather than entering quarantine.
+        public let editsProtected: Int
+        /// Intermediate edit SHA1s (retired but NOT firstObserved)
+        /// that entered quarantine this pass. These age out and trash
+        /// after the quarantine window — the canonical edit-cleanup
+        /// path.
+        public let editsQuarantined: Int
+
         public init(
             newlyConfirmedDeleted: Set<Checksum>,
             unconfirmedByRestoration: Set<Checksum>,
@@ -152,7 +175,11 @@ public final class PhotoKitPersistentChangeReconciler {
             drainedFromQueue: Int = 0,
             recentlyObservedChecksums: Set<Checksum> = [],
             sourceLocalIdentifierByChecksum: [Checksum: String] = [:],
-            untrackedDiscovered: Int = 0
+            untrackedDiscovered: Int = 0,
+            confirmedFromPhotoKit: Int = 0,
+            confirmedFromOrphanSweep: Int = 0,
+            editsProtected: Int = 0,
+            editsQuarantined: Int = 0
         ) {
             self.newlyConfirmedDeleted = newlyConfirmedDeleted
             self.unconfirmedByRestoration = unconfirmedByRestoration
@@ -169,6 +196,10 @@ public final class PhotoKitPersistentChangeReconciler {
             self.recentlyObservedChecksums = recentlyObservedChecksums
             self.sourceLocalIdentifierByChecksum = sourceLocalIdentifierByChecksum
             self.untrackedDiscovered = untrackedDiscovered
+            self.confirmedFromPhotoKit = confirmedFromPhotoKit
+            self.confirmedFromOrphanSweep = confirmedFromOrphanSweep
+            self.editsProtected = editsProtected
+            self.editsQuarantined = editsQuarantined
         }
     }
 
@@ -600,6 +631,9 @@ public final class PhotoKitPersistentChangeReconciler {
         // recovered. Without this, an asset deleted via the back-
         // channel path that PhotoKit's `deletedLocalIdentifiers`
         // missed would lose its original-content propagation.
+        // Snapshot pre-orphan so we can attribute confirmations
+        // back to the PhotoKit vs orphan-sweep paths after filtering.
+        let preOrphanRemoved = removedChecksums
         if let editRetirement, !orphanResult.orphanIds.isEmpty {
             for id in orphanResult.orphanIds {
                 let anchor = try await editRetirement.firstObserved(for: id)
@@ -617,6 +651,13 @@ public final class PhotoKitPersistentChangeReconciler {
         // sweep purge, and the insert/update writes above.
         let stillLocal = try await hashStore.allChecksums()
         let trulyAbsent = Self.confirmableDeletions(removed: removedChecksums, stillLocal: stillLocal)
+        // Per-source attribution within trulyAbsent. PhotoKit-confirmed
+        // are checksums already in `preOrphanRemoved` (came from the
+        // primary `deletedLocalIdentifiers` path); orphan-confirmed are
+        // the rest (only added via the orphan sweep loop above). The
+        // two sets are disjoint by construction.
+        let confirmedFromPhotoKitCount = trulyAbsent.intersection(preOrphanRemoved).count
+        let confirmedFromOrphanSweepCount = trulyAbsent.subtracting(preOrphanRemoved).count
         if !trulyAbsent.isEmpty {
             try await confirmedDeleted.union(trulyAbsent, at: now)
             // Persist the source-id mapping for the truly-absent
@@ -645,6 +686,12 @@ public final class PhotoKitPersistentChangeReconciler {
         // Filter against `stillLocal` first so a SHA1 still held under
         // another id (rare — duplicate import) doesn't get wrongly
         // stamped regardless of which bucket it would have landed in.
+        // Edit-related counts surfaced on Result for the journal-tail
+        // syncTransitions event. Initialized to zero so the Result
+        // construction below doesn't have to special-case the empty
+        // `retiredAbsent` path.
+        var editsProtectedCount = 0
+        var editsQuarantinedCount = 0
         let retiredAbsent = retiredByEdit.subtracting(stillLocal)
         if !retiredAbsent.isEmpty {
             // Build the union of firstObserved across every id whose
@@ -665,6 +712,8 @@ public final class PhotoKitPersistentChangeReconciler {
             if !parts.intermediate.isEmpty {
                 try await confirmedDeleted.union(parts.intermediate, at: now)
             }
+            editsProtectedCount = parts.protected.count
+            editsQuarantinedCount = parts.intermediate.count
             Self.reconLog.notice("[cairn.recon] intermediate edits retired \(parts.intermediate.count, privacy: .public) → quarantine; protected \(parts.protected.count, privacy: .public) firstObserved → kept on Immich")
         }
 
@@ -725,7 +774,11 @@ public final class PhotoKitPersistentChangeReconciler {
             drainedFromQueue: drained.successCount,
             recentlyObservedChecksums: allRecentlyObserved,
             sourceLocalIdentifierByChecksum: sourceLocalIdentifierByChecksum,
-            untrackedDiscovered: untrackedIds.count
+            untrackedDiscovered: untrackedIds.count,
+            confirmedFromPhotoKit: confirmedFromPhotoKitCount,
+            confirmedFromOrphanSweep: confirmedFromOrphanSweepCount,
+            editsProtected: editsProtectedCount,
+            editsQuarantined: editsQuarantinedCount
         )
     }
 

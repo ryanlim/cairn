@@ -185,6 +185,23 @@ public struct JournalEntry: Codable, Sendable, Equatable {
             deferredTimeout: Int,        // skipped because fetch took > per-asset timeout
             elapsedMs: Int               // wall-clock duration of the pass
         )
+        /// Per-sync summary of state-transition counts that aren't
+        /// covered by `syncCompleted`'s scalar totals — specifically the
+        /// edit-retirement partitioning and the per-source attribution
+        /// of newly-confirmed deletions. Emitted once per reconciliation
+        /// pass when any of the four counts is non-zero; absent
+        /// otherwise to keep journal volume modest. Read by display:
+        /// `editsProtected` / `editsQuarantined` reveal whether edits
+        /// in Photos.app are being handled correctly; `confirmedFrom*`
+        /// pair distinguishes Photos.app-deleted assets (the primary
+        /// signal) from back-channel deletions caught by the orphan
+        /// safety net (which would otherwise look identical in the log).
+        case syncTransitions(
+            editsProtected: Int,
+            editsQuarantined: Int,
+            confirmedFromPhotoKit: Int,
+            confirmedFromOrphanSweep: Int
+        )
     }
 
     /// One asset's worth of info captured at trash-plan time. Carried

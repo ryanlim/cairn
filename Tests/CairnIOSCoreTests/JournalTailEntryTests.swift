@@ -318,6 +318,46 @@ struct JournalTailEntryFromTests {
             Issue.record("decoded event was not trashSucceeded")
         }
     }
+
+    // MARK: - syncTransitions
+
+    @Test("syncTransitions renders only non-zero counts in the message")
+    func syncTransitionsCompactRender() {
+        let t = Tail.from(entry(.syncTransitions(
+            editsProtected: 2,
+            editsQuarantined: 0,
+            confirmedFromPhotoKit: 5,
+            confirmedFromOrphanSweep: 0
+        )))
+        #expect(t.event == "sync.trans")
+        #expect(t.message.contains("edit-prot=2"))
+        #expect(t.message.contains("conf-pk=5"))
+        #expect(!t.message.contains("edit-q="))
+        #expect(!t.message.contains("conf-orph="))
+    }
+
+    @Test("syncTransitions with orphan-sweep confirmations bumps severity to .warn")
+    func syncTransitionsOrphanSweepWarns() {
+        let withOrphan = Tail.from(entry(.syncTransitions(
+            editsProtected: 0, editsQuarantined: 0,
+            confirmedFromPhotoKit: 0, confirmedFromOrphanSweep: 3
+        )))
+        #expect(withOrphan.severity == .warn)
+        let withoutOrphan = Tail.from(entry(.syncTransitions(
+            editsProtected: 1, editsQuarantined: 1,
+            confirmedFromPhotoKit: 1, confirmedFromOrphanSweep: 0
+        )))
+        #expect(withoutOrphan.severity == .info)
+    }
+
+    @Test("syncTransitions with all zero counts renders as 'no transitions'")
+    func syncTransitionsAllZero() {
+        let t = Tail.from(entry(.syncTransitions(
+            editsProtected: 0, editsQuarantined: 0,
+            confirmedFromPhotoKit: 0, confirmedFromOrphanSweep: 0
+        )))
+        #expect(t.message == "no transitions")
+    }
 }
 
 /// Coverage for the new chronological batch builder. `from(entries:)`

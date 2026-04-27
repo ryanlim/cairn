@@ -229,11 +229,12 @@ public enum JournalReader {
                 }
             case .tagApplied, .assetsExcluded, .pendingReview:
                 break
-            case .syncCompleted:
-                // Reconciliation summary — not a trash run, not a
-                // restore. Doesn't affect any of the fields we compute
-                // for `RunSummary`; the Status-screen tail picks these
-                // up separately via `JournalTailEntry.from(_:)`.
+            case .syncCompleted, .syncTransitions:
+                // Reconciliation summary / per-source transition counts
+                // — not a trash run, not a restore. Doesn't affect any
+                // of the fields we compute for `RunSummary`; the Status
+                // tail picks these up separately via
+                // `JournalTailEntry.from(_:)`.
                 break
             }
         }

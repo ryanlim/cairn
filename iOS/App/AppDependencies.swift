@@ -956,6 +956,28 @@ final class AppDependencies {
                         elapsedMs: elapsedMs
                     )
                 ))
+                // Sync-transitions companion event: record edit-
+                // retirement partitioning and per-source attribution
+                // of confirmed deletions. Only fires when at least one
+                // count is non-zero so the journal isn't spammed with
+                // empty transition rows on quiet syncs. Same runId as
+                // the syncCompleted above so the journal-tail banding
+                // groups them visually.
+                let totalTransitions = scan.editsProtected
+                    + scan.editsQuarantined
+                    + scan.confirmedFromPhotoKit
+                    + scan.confirmedFromOrphanSweep
+                if totalTransitions > 0 {
+                    try? await journal.append(.init(
+                        runId: runId,
+                        event: .syncTransitions(
+                            editsProtected: scan.editsProtected,
+                            editsQuarantined: scan.editsQuarantined,
+                            confirmedFromPhotoKit: scan.confirmedFromPhotoKit,
+                            confirmedFromOrphanSweep: scan.confirmedFromOrphanSweep
+                        )
+                    ))
+                }
             } catch {
                 // The sync itself succeeded; only the forensic journal
                 // entry failed to write. Don't alert the user — that

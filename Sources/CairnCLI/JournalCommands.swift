@@ -185,6 +185,13 @@ struct JournalShow: AsyncParsableCommand {
             if timeout > 0 { parts.append("deferredTimeout=\(timeout)") }
             parts.append(String(format: "elapsed=%.2fs", Double(elapsedMs) / 1000))
             return ("syncCompleted", parts.joined(separator: " "))
+        case .syncTransitions(let editsP, let editsQ, let confPK, let confOrph):
+            var parts: [String] = []
+            if editsP > 0  { parts.append("editsProtected=\(editsP)") }
+            if editsQ > 0  { parts.append("editsQuarantined=\(editsQ)") }
+            if confPK > 0  { parts.append("confirmedFromPhotoKit=\(confPK)") }
+            if confOrph > 0 { parts.append("confirmedFromOrphanSweep=\(confOrph)") }
+            return ("syncTransitions", parts.isEmpty ? "(no transitions)" : parts.joined(separator: " "))
         }
     }
 }
