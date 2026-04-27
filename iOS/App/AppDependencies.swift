@@ -1521,6 +1521,23 @@ final class AppDependencies {
                     try await exclusions.insert(entries)
                     try await confirmed.remove(cks)
                     try? await self.deletionSourceStore?.remove(cks)
+                    // Audit symmetry with the regular `exclude` path —
+                    // the pending-review bulk-exclude was previously
+                    // silent in the journal, so excluded-via-review
+                    // items had no forensic trail. Use a synthetic
+                    // runId so the row groups with whatever previous
+                    // run flagged the items, but `fromRunId: nil`
+                    // matches the actual semantics (this isn't tied
+                    // to a specific run; the user picked them off
+                    // pending review).
+                    if let journal = await self.journal {
+                        let pendingExcludeRunId = "pending-review-\(ISO8601DateFormatter().string(from: now))"
+                        try? await journal.append(.init(
+                            timestamp: now,
+                            runId: pendingExcludeRunId,
+                            event: .assetsExcluded(checksums: checksums, fromRunId: nil)
+                        ))
+                    }
                     await MainActor.run {
                         guard let existing = self.model.reconciliation else { return }
                         let prunedOrphanMap = existing.inferredOrphanLocalIdentifiers.filter { !cks.contains($0.key) }
@@ -1539,6 +1556,7 @@ final class AppDependencies {
                         self.model.inferredOrphanCount = prunedOrphanMap.count
                     }
                     await self.persistSnapshotFromModel()
+                    await self.refreshJournalTail()
                 } catch {
                     await MainActor.run {
                         self.model.lastError = Self.describeSyncError(error)
