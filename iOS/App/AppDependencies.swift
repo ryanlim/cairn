@@ -428,9 +428,7 @@ final class AppDependencies {
         // same I/O as the full `readAll` we already run for runs.
         // Settings → Clear journal still exists for anyone who wants
         // the slate wiped.
-        if let journal, let recent = try? await journal.lastEntries(limit: 500) {
-            model.journalTail = Array(CairnFixtures.JournalTailEntry.from(entries: recent).reversed())
-        }
+        await refreshJournalTail()
 
         await refreshDeferredQueueSummary()
         await refreshRunsList()
@@ -973,9 +971,7 @@ final class AppDependencies {
         // same I/O as the full `readAll` we already run for runs.
         // Settings → Clear journal still exists for anyone who wants
         // the slate wiped.
-        if let journal, let recent = try? await journal.lastEntries(limit: 500) {
-            model.journalTail = Array(CairnFixtures.JournalTailEntry.from(entries: recent).reversed())
-        }
+        await refreshJournalTail()
 
         await refreshDeferredQueueSummary()
         await refreshRunsList()
@@ -996,6 +992,19 @@ final class AppDependencies {
                 try? await thumbStore.evictThumbnails(overCapBytes: thumbnailCap)
             }
         }
+    }
+
+    /// Repopulate `model.journalTail` from the on-disk journal. Called
+    /// inline at sync end and from every mutating action (trash, restore,
+    /// exclude) so the Status journal card reflects the new event
+    /// immediately rather than waiting for the next sync to roll
+    /// through. Silent-no-op when the journal isn't yet wired or the
+    /// read fails — preserves the previous tail rather than blanking it.
+    @MainActor
+    fileprivate func refreshJournalTail() async {
+        guard let journal else { return }
+        guard let recent = try? await journal.lastEntries(limit: 500) else { return }
+        model.journalTail = Array(CairnFixtures.JournalTailEntry.from(entries: recent).reversed())
     }
 
     @MainActor
@@ -1353,6 +1362,7 @@ final class AppDependencies {
                     }
                     await self.persistSnapshotFromModel()
                     await self.refreshRunsList()
+                    await self.refreshJournalTail()
                 } catch {
                     // Surface the error via model.lastError (the UI alert
                     // binding reads this). We deliberately don't re-throw:
@@ -1363,6 +1373,7 @@ final class AppDependencies {
                         self.model.lastError = Self.describeSyncError(error)
                     }
                     await self.refreshRunsList()
+                    await self.refreshJournalTail()
                 }
             },
             restore: { [weak self] assetIds, runId in
@@ -1374,6 +1385,7 @@ final class AppDependencies {
                 do {
                     _ = try await orch.restore(fromRunId: runId, assetIds: scope)
                     await self.refreshRunsList()
+                    await self.refreshJournalTail()
                 } catch {
                     // Surface the error via model.lastError (the UI alert
                     // binding reads this). We deliberately don't re-throw:
@@ -1384,6 +1396,7 @@ final class AppDependencies {
                         self.model.lastError = Self.describeSyncError(error)
                     }
                     await self.refreshRunsList()
+                    await self.refreshJournalTail()
                 }
             },
             exclude: { [weak self] checksums, filenames, runId in
@@ -1402,6 +1415,7 @@ final class AppDependencies {
                         event: .assetsExcluded(checksums: checksums, fromRunId: runId)
                     ))
                     await self.refreshExcludedChecksums()
+                    await self.refreshJournalTail()
                 } catch {
                     await MainActor.run {
                         self.model.lastError = Self.describeSyncError(error)
@@ -1479,6 +1493,7 @@ final class AppDependencies {
                     }
                     await self.persistSnapshotFromModel()
                     await self.refreshRunsList()
+                    await self.refreshJournalTail()
                 } catch {
                     // Surface the error via model.lastError (the UI alert
                     // binding reads this). We deliberately don't re-throw:
@@ -1489,6 +1504,7 @@ final class AppDependencies {
                         self.model.lastError = Self.describeSyncError(error)
                     }
                     await self.refreshRunsList()
+                    await self.refreshJournalTail()
                 }
             },
             excludePending: { [weak self] checksums in
@@ -1705,6 +1721,7 @@ final class AppDependencies {
 
                 await self.refreshExcludedChecksums()
                 await self.refreshRunsList()
+                await self.refreshJournalTail()
 
                 return CairnImportResult(
                     everSeenAdded: totalEverSeenAdded,
