@@ -16,8 +16,8 @@ struct RestoreOrchestratorTests {
         try await journal.append(.init(runId: runId, event: .planningTrash(targets: assetIds.map {
             JournalEntry.TrashTarget(assetId: $0, checksum: "ck-\($0)", livePhotoVideoId: nil)
         })))
-        try await journal.append(.init(runId: runId, event: .tagApplied(tagId: "t1", tagValue: "cairn/\(runId)", assetIds: assetIds)))
-        try await journal.append(.init(runId: runId, event: .trashSucceeded(assetIds: assetIds)))
+        try await journal.append(.init(runId: runId, event: .tagApplied(tagId: "t1", tagValue: "cairn/\(runId)", assetIds: assetIds, durationMs: nil)))
+        try await journal.append(.init(runId: runId, event: .trashSucceeded(assetIds: assetIds, durationMs: nil)))
         try await journal.append(.init(runId: runId, event: .runCompleted(deletedCount: assetIds.count)))
     }
 
@@ -123,7 +123,7 @@ struct RestoreOrchestratorTests {
         try await journal.append(.init(runId: "LIVE", event: .planningTrash(targets: [
             JournalEntry.TrashTarget(assetId: "still-1", checksum: "ck-still", livePhotoVideoId: "video-1")
         ])))
-        try await journal.append(.init(runId: "LIVE", event: .trashSucceeded(assetIds: ["still-1", "video-1"])))
+        try await journal.append(.init(runId: "LIVE", event: .trashSucceeded(assetIds: ["still-1", "video-1"], durationMs: nil)))
         try await journal.append(.init(runId: "LIVE", event: .runCompleted(deletedCount: 2)))
 
         let writer = FakeWriter()
@@ -141,7 +141,7 @@ struct RestoreOrchestratorTests {
         try await journal.append(.init(runId: "LIVE", event: .planningTrash(targets: [
             JournalEntry.TrashTarget(assetId: "still-1", checksum: "ck-still", livePhotoVideoId: "video-1")
         ])))
-        try await journal.append(.init(runId: "LIVE", event: .trashSucceeded(assetIds: ["still-1", "video-1"])))
+        try await journal.append(.init(runId: "LIVE", event: .trashSucceeded(assetIds: ["still-1", "video-1"], durationMs: nil)))
 
         let writer = FakeWriter()
         let orch = RestoreOrchestrator(writer: writer, journal: journal)
@@ -202,7 +202,7 @@ struct RestoreOrchestratorTests {
             JournalEntry.TrashTarget(assetId: "still-1", checksum: "ck-still", livePhotoVideoId: "video-1"),
             JournalEntry.TrashTarget(assetId: "solo-2", checksum: "ck-solo", livePhotoVideoId: nil),
         ])))
-        try await journal.append(.init(runId: "R", event: .trashSucceeded(assetIds: ["still-1", "video-1", "solo-2"])))
+        try await journal.append(.init(runId: "R", event: .trashSucceeded(assetIds: ["still-1", "video-1", "solo-2"], durationMs: nil)))
         try await journal.append(.init(runId: "R", event: .runCompleted(deletedCount: 3)))
 
         // Restore just the still. Expansion pulls in video-1 (paired);
@@ -271,7 +271,7 @@ struct RestoreOrchestratorTests {
 
         let entries = try await journal.readAll()
         let messages = entries.compactMap { entry -> String? in
-            if case .restoreFailed(_, _, let message) = entry.event { return message }
+            if case .restoreFailed(_, _, let message, _) = entry.event { return message }
             return nil
         }
         #expect(messages.count == 1)
@@ -297,7 +297,7 @@ struct RestoreOrchestratorTests {
 
         let entries = try await journal.readAll()
         let failedIds = entries.compactMap { entry -> [String]? in
-            if case .restoreFailed(_, let ids, _) = entry.event { return ids }
+            if case .restoreFailed(_, let ids, _, _) = entry.event { return ids }
             return nil
         }
         #expect(failedIds == [["a2", "a3"]])
@@ -318,7 +318,7 @@ struct RestoreOrchestratorTests {
         try await journal.append(.init(runId: "LIVE-FAIL", event: .planningTrash(targets: [
             JournalEntry.TrashTarget(assetId: "still-1", checksum: "ck-still", livePhotoVideoId: "video-1")
         ])))
-        try await journal.append(.init(runId: "LIVE-FAIL", event: .trashSucceeded(assetIds: ["still-1", "video-1"])))
+        try await journal.append(.init(runId: "LIVE-FAIL", event: .trashSucceeded(assetIds: ["still-1", "video-1"], durationMs: nil)))
         try await journal.append(.init(runId: "LIVE-FAIL", event: .runCompleted(deletedCount: 2)))
 
         let writer = FakeWriter()
@@ -329,7 +329,7 @@ struct RestoreOrchestratorTests {
 
         let entries = try await journal.readAll()
         let failedIds = entries.compactMap { entry -> [String]? in
-            if case .restoreFailed(_, let ids, _) = entry.event { return ids }
+            if case .restoreFailed(_, let ids, _, _) = entry.event { return ids }
             return nil
         }
         #expect(failedIds == [["still-1", "video-1"]])
@@ -370,8 +370,8 @@ struct RestoreOrchestratorTests {
             JournalEntry.TrashTarget(assetId: "a1", checksum: "ck1", livePhotoVideoId: nil),
             JournalEntry.TrashTarget(assetId: "a2", checksum: "ck2", livePhotoVideoId: nil),
         ])))
-        try await journal.append(.init(runId: "TRASH-FAILED", event: .tagApplied(tagId: "t1", tagValue: "cairn/v1/run/TRASH-FAILED", assetIds: ["a1", "a2"])))
-        try await journal.append(.init(runId: "TRASH-FAILED", event: .trashFailed(assetIds: ["a1", "a2"], message: "server-500")))
+        try await journal.append(.init(runId: "TRASH-FAILED", event: .tagApplied(tagId: "t1", tagValue: "cairn/v1/run/TRASH-FAILED", assetIds: ["a1", "a2"], durationMs: nil)))
+        try await journal.append(.init(runId: "TRASH-FAILED", event: .trashFailed(assetIds: ["a1", "a2"], message: "server-500", httpStatus: nil)))
 
         let writer = FakeWriter()
         let orch = RestoreOrchestrator(writer: writer, journal: journal)
@@ -453,11 +453,11 @@ struct RestoreOrchestratorTests {
 
         let entries = try await journal.readAll()
         let succeeded = entries.compactMap { entry -> [String]? in
-            if case .restoreSucceeded(_, let ids) = entry.event { return ids }
+            if case .restoreSucceeded(_, let ids, _) = entry.event { return ids }
             return nil
         }
         let failed = entries.compactMap { entry -> ([String], String)? in
-            if case .restoreFailed(_, let ids, let message) = entry.event { return (ids, message) }
+            if case .restoreFailed(_, let ids, let message, _) = entry.event { return (ids, message) }
             return nil
         }
         #expect(succeeded == [["a2"]])
@@ -488,7 +488,7 @@ struct RestoreOrchestratorTests {
 
         let entries = try await journal.readAll()
         let succeeded = entries.compactMap { entry -> [String]? in
-            if case .restoreSucceeded(_, let ids) = entry.event { return ids }
+            if case .restoreSucceeded(_, let ids, _) = entry.event { return ids }
             return nil
         }
         #expect(succeeded == [["a1", "a2"]])

@@ -549,7 +549,7 @@ struct Restore: AsyncParsableCommand {
         var trashedIds: [String] = []
         var planningTargets: [JournalEntry.TrashTarget] = []
         for entry in forRun {
-            if case .trashSucceeded(let ids) = entry.event { trashedIds = ids }
+            if case .trashSucceeded(let ids, _) = entry.event { trashedIds = ids }
             if case .planningTrash(let targets) = entry.event { planningTargets = targets }
         }
         if trashedIds.isEmpty {

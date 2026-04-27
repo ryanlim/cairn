@@ -69,7 +69,8 @@ struct JournalTailEntryFromTests {
         let t = Tail.from(entry(.tagApplied(
             tagId: "tid",
             tagValue: "cairn/v1/run/2026-04-21T17:57:15Z-034389BC",
-            assetIds: ["a", "b", "c"]
+            assetIds: ["a", "b", "c"],
+            durationMs: nil
         )))
         #expect(t.event == "tag.apply")
         #expect(t.glyph == "tag")
@@ -81,21 +82,45 @@ struct JournalTailEntryFromTests {
         #expect(t.message.hasSuffix("→ 3 assets"))
     }
 
+    @Test("tagApplied with durationMs renders the suffix")
+    func tagAppliedDuration() {
+        let t = Tail.from(entry(.tagApplied(
+            tagId: "tid",
+            tagValue: "cairn/v1/run/abc",
+            assetIds: ["a"],
+            durationMs: 432
+        )))
+        #expect(t.message.contains("· 432ms"))
+    }
+
     @Test("trashSucceeded → trash.ok, checkmark")
     func trashSucceeded() {
-        let t = Tail.from(entry(.trashSucceeded(assetIds: ["a"])))
+        let t = Tail.from(entry(.trashSucceeded(assetIds: ["a"], durationMs: nil)))
         #expect(t.event == "trash.ok")
         #expect(t.glyph == "checkmark")
         #expect(t.message.contains("1 asset"))
     }
 
+    @Test("trashSucceeded with durationMs >= 1s renders seconds form")
+    func trashSucceededDurationSeconds() {
+        let t = Tail.from(entry(.trashSucceeded(assetIds: ["a"], durationMs: 1_400)))
+        #expect(t.message.contains("· 1.4s"))
+    }
+
     @Test("trashFailed → trash.fail, xmark.octagon")
     func trashFailed() {
-        let t = Tail.from(entry(.trashFailed(assetIds: ["a", "b"], message: "HTTP 500")))
+        let t = Tail.from(entry(.trashFailed(assetIds: ["a", "b"], message: "HTTP 500", httpStatus: nil)))
         #expect(t.event == "trash.fail")
         #expect(t.glyph == "xmark.octagon")
         #expect(t.message.contains("2 assets"))
         #expect(t.message.contains("HTTP 500"))
+    }
+
+    @Test("trashFailed with httpStatus prepends the bracketed code")
+    func trashFailedHttpStatus() {
+        let t = Tail.from(entry(.trashFailed(assetIds: ["a"], message: "auth", httpStatus: 401)))
+        #expect(t.message.contains("[401]"))
+        #expect(t.message.contains("auth"))
     }
 
     @Test("runCompleted → run.complete, checkmark")
@@ -153,7 +178,7 @@ struct JournalTailEntryFromTests {
 
     @Test("restoreSucceeded → restore.ok, checkmark")
     func restoreSucceeded() {
-        let t = Tail.from(entry(.restoreSucceeded(fromRunId: runId, assetIds: ["a"])))
+        let t = Tail.from(entry(.restoreSucceeded(fromRunId: runId, assetIds: ["a"], durationMs: nil)))
         #expect(t.event == "restore.ok")
         #expect(t.glyph == "checkmark")
         #expect(t.message.contains("1 asset"))
@@ -161,7 +186,7 @@ struct JournalTailEntryFromTests {
 
     @Test("restoreFailed → restore.fail, xmark.octagon")
     func restoreFailed() {
-        let t = Tail.from(entry(.restoreFailed(fromRunId: runId, assetIds: ["a"], message: "boom")))
+        let t = Tail.from(entry(.restoreFailed(fromRunId: runId, assetIds: ["a"], message: "boom", httpStatus: nil)))
         #expect(t.event == "restore.fail")
         #expect(t.glyph == "xmark.octagon")
         #expect(t.message.contains("boom"))
@@ -245,7 +270,7 @@ struct JournalTailEntryFromTests {
             .runCompleted(deletedCount: 0),
             .runAborted(reason: "unknown"),
             .planningTrash(targets: []),
-            .trashSucceeded(assetIds: []),
+            .trashSucceeded(assetIds: [], durationMs: nil),
             .pendingReview(assetIds: [], checksums: []),
         ]
         for c in cases {
@@ -262,7 +287,7 @@ struct JournalTailEntryFromTests {
         let infoEvent = Tail.from(entry(.runStarted(dryRun: false, candidateCount: 1, assetsInPurview: 100)))
         #expect(infoEvent.severity == .info)
 
-        let okEvent = Tail.from(entry(.trashSucceeded(assetIds: ["a"])))
+        let okEvent = Tail.from(entry(.trashSucceeded(assetIds: ["a"], durationMs: nil)))
         #expect(okEvent.severity == .ok)
 
         let warnEvent = Tail.from(entry(.pendingReview(assetIds: ["a"], checksums: ["x"])))
@@ -271,7 +296,7 @@ struct JournalTailEntryFromTests {
         let errorEvent = Tail.from(entry(.runAborted(reason: "test")))
         #expect(errorEvent.severity == .error)
 
-        let trashFailEvent = Tail.from(entry(.trashFailed(assetIds: ["a"], message: "boom")))
+        let trashFailEvent = Tail.from(entry(.trashFailed(assetIds: ["a"], message: "boom", httpStatus: nil)))
         #expect(trashFailEvent.severity == .error)
     }
 
@@ -279,7 +304,7 @@ struct JournalTailEntryFromTests {
 
     @Test("rawJSON is populated and decodes back to the source event")
     func rawJSONRoundTrips() throws {
-        let source = entry(.trashSucceeded(assetIds: ["a", "b", "c"]))
+        let source = entry(.trashSucceeded(assetIds: ["a", "b", "c"], durationMs: nil))
         let tail = Tail.from(source)
         let json = try #require(tail.rawJSON)
         #expect(json.contains("trashSucceeded"))
@@ -287,7 +312,7 @@ struct JournalTailEntryFromTests {
         // worth the fragility — round-trip equality is the point.
         let decoded = try JSONDecoder.cairnIso8601.decode(JournalEntry.self, from: Data(json.utf8))
         #expect(decoded.runId == source.runId)
-        if case .trashSucceeded(let ids) = decoded.event {
+        if case .trashSucceeded(let ids, _) = decoded.event {
             #expect(ids == ["a", "b", "c"])
         } else {
             Issue.record("decoded event was not trashSucceeded")
@@ -346,7 +371,7 @@ struct JournalTailEntryBatchTests {
 
     @Test("non-sync events between syncs do not reset the delta baseline")
     func nonSyncDoesNotReset() {
-        let trashEvent = JournalEntry(timestamp: ts, runId: runId, event: .trashSucceeded(assetIds: ["a"]))
+        let trashEvent = JournalEntry(timestamp: ts, runId: runId, event: .trashSucceeded(assetIds: ["a"], durationMs: nil))
         let out = Tail.from(entries: [sync(indexed: 100), trashEvent, sync(indexed: 105)])
         // The sync at index 2 should still compute its delta against
         // the sync at index 0, not reset because of the trash event in between.

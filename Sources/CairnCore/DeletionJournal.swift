@@ -144,14 +144,25 @@ public struct JournalEntry: Codable, Sendable, Equatable {
     public enum Event: Codable, Sendable, Equatable {
         case runStarted(dryRun: Bool, candidateCount: Int, assetsInPurview: Int)
         case planningTrash(targets: [TrashTarget])
-        case tagApplied(tagId: String, tagValue: String, assetIds: [String])
-        case trashSucceeded(assetIds: [String])
-        case trashFailed(assetIds: [String], message: String)
+        // `durationMs` is the wall-clock time of just the underlying API
+        // call (tag-create-or-attach for `tagApplied`, the trash batch
+        // for `trashSucceeded`, the restore batch for `restoreSucceeded`).
+        // Optional so older journals — which predate the field — decode
+        // cleanly via Swift's `decodeIfPresent` for Optional associated
+        // values. Adding the field does NOT break wire compatibility.
+        case tagApplied(tagId: String, tagValue: String, assetIds: [String], durationMs: Int?)
+        case trashSucceeded(assetIds: [String], durationMs: Int?)
+        // `httpStatus` is the HTTP response code on failure (when the
+        // underlying error was `ImmichClientError.httpStatus(...)`); nil
+        // when the failure was a transport-level error (DNS, TLS, network
+        // unreachable) or a non-HTTP exception. Optional for the same
+        // wire-compat reason as the duration fields.
+        case trashFailed(assetIds: [String], message: String, httpStatus: Int?)
         case runCompleted(deletedCount: Int)
         case runAborted(reason: String)
         case restoreStarted(fromRunId: String, assetIds: [String])
-        case restoreSucceeded(fromRunId: String, assetIds: [String])
-        case restoreFailed(fromRunId: String, assetIds: [String], message: String)
+        case restoreSucceeded(fromRunId: String, assetIds: [String], durationMs: Int?)
+        case restoreFailed(fromRunId: String, assetIds: [String], message: String, httpStatus: Int?)
         /// User added these checksums to the exclusion list. `fromRunId` is set when
         /// the exclusion happened from a run-detail view; nil for ad-hoc additions.
         case assetsExcluded(checksums: [String], fromRunId: String?)

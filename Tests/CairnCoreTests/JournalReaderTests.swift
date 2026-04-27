@@ -17,7 +17,7 @@ struct JournalReaderTests {
     func trashedStatus() {
         let es = [
             entry("R1", "2026-04-21T00:00:00Z", .runStarted(dryRun: false, candidateCount: 2, assetsInPurview: 100)),
-            entry("R1", "2026-04-21T00:00:01Z", .trashSucceeded(assetIds: ["a", "b"])),
+            entry("R1", "2026-04-21T00:00:01Z", .trashSucceeded(assetIds: ["a", "b"], durationMs: nil)),
             entry("R1", "2026-04-21T00:00:02Z", .runCompleted(deletedCount: 2)),
         ]
         let summaries = JournalReader.summarize(es)
@@ -31,9 +31,9 @@ struct JournalReaderTests {
     func restoredStatus() {
         let es = [
             entry("R1", "2026-04-21T00:00:00Z", .runStarted(dryRun: false, candidateCount: 1, assetsInPurview: 100)),
-            entry("R1", "2026-04-21T00:00:01Z", .trashSucceeded(assetIds: ["a"])),
+            entry("R1", "2026-04-21T00:00:01Z", .trashSucceeded(assetIds: ["a"], durationMs: nil)),
             entry("R1", "2026-04-21T00:00:02Z", .runCompleted(deletedCount: 1)),
-            entry("R1", "2026-04-21T01:00:00Z", .restoreSucceeded(fromRunId: "R1", assetIds: ["a"])),
+            entry("R1", "2026-04-21T01:00:00Z", .restoreSucceeded(fromRunId: "R1", assetIds: ["a"], durationMs: nil)),
         ]
         let s = JournalReader.summarize(es)[0]
         #expect(s.status == .restored)
@@ -56,7 +56,7 @@ struct JournalReaderTests {
     func trashFailedStatus() {
         let es = [
             entry("F", "2026-04-21T00:00:00Z", .runStarted(dryRun: false, candidateCount: 1, assetsInPurview: 100)),
-            entry("F", "2026-04-21T00:00:01Z", .trashFailed(assetIds: ["x"], message: "server down")),
+            entry("F", "2026-04-21T00:00:01Z", .trashFailed(assetIds: ["x"], message: "server down", httpStatus: nil)),
         ]
         let s = JournalReader.summarize(es)[0]
         #expect(s.status == .trashFailed)
@@ -116,7 +116,7 @@ struct JournalReaderTests {
         let es = [
             entry("R1", "2026-04-21T00:00:00Z", .runStarted(dryRun: false, candidateCount: 1, assetsInPurview: 100)),
             entry("R1", "2026-04-21T00:00:01Z", .planningTrash(targets: [target])),
-            entry("R1", "2026-04-21T00:00:02Z", .trashSucceeded(assetIds: ["still-1", "video-1"])),
+            entry("R1", "2026-04-21T00:00:02Z", .trashSucceeded(assetIds: ["still-1", "video-1"], durationMs: nil)),
             entry("R1", "2026-04-21T00:00:03Z", .runCompleted(deletedCount: 2)),
         ]
         let s = JournalReader.summarize(es)[0]
@@ -129,9 +129,9 @@ struct JournalReaderTests {
     func restoredNoteShowsRestoredCount() {
         let es = [
             entry("R1", "2026-04-21T00:00:00Z", .runStarted(dryRun: false, candidateCount: 2, assetsInPurview: 100)),
-            entry("R1", "2026-04-21T00:00:01Z", .trashSucceeded(assetIds: ["a", "b"])),
+            entry("R1", "2026-04-21T00:00:01Z", .trashSucceeded(assetIds: ["a", "b"], durationMs: nil)),
             entry("R1", "2026-04-21T00:00:02Z", .runCompleted(deletedCount: 2)),
-            entry("R1", "2026-04-21T01:00:00Z", .restoreSucceeded(fromRunId: "R1", assetIds: ["a", "b"])),
+            entry("R1", "2026-04-21T01:00:00Z", .restoreSucceeded(fromRunId: "R1", assetIds: ["a", "b"], durationMs: nil)),
         ]
         let s = JournalReader.summarize(es)[0]
         #expect(s.status == .restored)
@@ -175,7 +175,7 @@ struct JournalReaderTests {
     func durationMsBasic() {
         let es = [
             entry("R1", "2026-04-21T00:00:00Z", .runStarted(dryRun: false, candidateCount: 1, assetsInPurview: 100)),
-            entry("R1", "2026-04-21T00:00:03Z", .trashSucceeded(assetIds: ["a"])),
+            entry("R1", "2026-04-21T00:00:03Z", .trashSucceeded(assetIds: ["a"], durationMs: nil)),
             entry("R1", "2026-04-21T00:00:05Z", .runCompleted(deletedCount: 1)),
         ]
         let s = JournalReader.summarize(es)[0]
@@ -202,7 +202,7 @@ struct JournalReaderTests {
         let es = [
             entry("R1", "2026-04-20T11:59:00Z", .runStarted(dryRun: false, candidateCount: 1, assetsInPurview: 100)),
             entry("R1", "2026-04-20T11:59:30Z", .planningTrash(targets: [target])),
-            JournalEntry(timestamp: trashedAt, runId: "R1", event: .trashSucceeded(assetIds: ["asset-1"])),
+            JournalEntry(timestamp: trashedAt, runId: "R1", event: .trashSucceeded(assetIds: ["asset-1"], durationMs: nil)),
             entry("R1", "2026-04-20T12:00:01Z", .runCompleted(deletedCount: 1)),
         ]
         let now = date("2026-04-25T00:00:00Z")
@@ -225,10 +225,10 @@ struct JournalReaderTests {
         let es = [
             entry("OLD", "2026-04-10T11:59:00Z", .runStarted(dryRun: false, candidateCount: 1, assetsInPurview: 100)),
             entry("OLD", "2026-04-10T11:59:30Z", .planningTrash(targets: [target])),
-            JournalEntry(timestamp: oldTrashedAt, runId: "OLD", event: .trashSucceeded(assetIds: ["asset-1"])),
+            JournalEntry(timestamp: oldTrashedAt, runId: "OLD", event: .trashSucceeded(assetIds: ["asset-1"], durationMs: nil)),
             entry("NEW", "2026-04-20T11:59:00Z", .runStarted(dryRun: false, candidateCount: 1, assetsInPurview: 100)),
             entry("NEW", "2026-04-20T11:59:30Z", .planningTrash(targets: [target])),
-            JournalEntry(timestamp: newTrashedAt, runId: "NEW", event: .trashSucceeded(assetIds: ["asset-1"])),
+            JournalEntry(timestamp: newTrashedAt, runId: "NEW", event: .trashSucceeded(assetIds: ["asset-1"], durationMs: nil)),
         ]
         let now = date("2026-04-25T00:00:00Z")
         let map = JournalReader.recentlyTrashedChecksums(in: es, withinDays: 30, now: now)
@@ -248,7 +248,7 @@ struct JournalReaderTests {
         let es = [
             entry("R1", "2026-03-10T11:59:00Z", .runStarted(dryRun: false, candidateCount: 1, assetsInPurview: 100)),
             entry("R1", "2026-03-10T11:59:30Z", .planningTrash(targets: [target])),
-            entry("R1", "2026-03-10T12:00:00Z", .trashSucceeded(assetIds: ["asset-1"])),
+            entry("R1", "2026-03-10T12:00:00Z", .trashSucceeded(assetIds: ["asset-1"], durationMs: nil)),
         ]
         let now = date("2026-04-25T00:00:00Z")
         let map = JournalReader.recentlyTrashedChecksums(in: es, withinDays: 30, now: now)
@@ -265,7 +265,7 @@ struct JournalReaderTests {
         let es = [
             entry("R1", "2026-04-20T11:59:00Z", .runStarted(dryRun: false, candidateCount: 1, assetsInPurview: 100)),
             entry("R1", "2026-04-20T11:59:30Z", .planningTrash(targets: [target])),
-            entry("R1", "2026-04-20T12:00:00Z", .trashFailed(assetIds: ["asset-1"], message: "server error")),
+            entry("R1", "2026-04-20T12:00:00Z", .trashFailed(assetIds: ["asset-1"], message: "server error", httpStatus: nil)),
         ]
         let now = date("2026-04-25T00:00:00Z")
         let map = JournalReader.recentlyTrashedChecksums(in: es, withinDays: 30, now: now)
@@ -289,7 +289,7 @@ struct JournalReaderTests {
         let es = [
             entry("R1", "2026-04-20T11:59:00Z", .runStarted(dryRun: false, candidateCount: 1, assetsInPurview: 100)),
             entry("R1", "2026-04-20T11:59:30Z", .planningTrash(targets: [target])),
-            JournalEntry(timestamp: trashedAt, runId: "R1", event: .trashSucceeded(assetIds: ["still-1", "video-1"])),
+            JournalEntry(timestamp: trashedAt, runId: "R1", event: .trashSucceeded(assetIds: ["still-1", "video-1"], durationMs: nil)),
         ]
         let now = date("2026-04-25T00:00:00Z")
         let map = JournalReader.recentlyTrashedChecksums(in: es, withinDays: 30, now: now)

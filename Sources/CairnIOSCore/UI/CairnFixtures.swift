@@ -516,7 +516,7 @@ public enum CairnFixtures {
                 glyph = "list.bullet"
                 severity = .info
                 message = "\(targets.count) asset\(targets.count == 1 ? "" : "s")"
-            case .tagApplied(_, let value, let ids):
+            case .tagApplied(_, let value, let ids, let durationMs):
                 eventName = "tag.apply"
                 glyph = "tag"
                 severity = .info
@@ -525,17 +525,24 @@ public enum CairnFixtures {
                 // the trailing 12 chars so the runId fragment stays
                 // correlatable to the suffix column.
                 let short = value.count > 12 ? "…" + String(value.suffix(12)) : value
-                message = "\(short) → \(ids.count) asset\(ids.count == 1 ? "" : "s")"
-            case .trashSucceeded(let ids):
+                let durSuffix = formatDurationSuffix(durationMs)
+                message = "\(short) → \(ids.count) asset\(ids.count == 1 ? "" : "s")\(durSuffix)"
+            case .trashSucceeded(let ids, let durationMs):
                 eventName = "trash.ok"
                 glyph = "checkmark"
                 severity = .ok
-                message = "\(ids.count) asset\(ids.count == 1 ? "" : "s") moved to Immich's Trash"
-            case .trashFailed(let ids, let msg):
+                let durSuffix = formatDurationSuffix(durationMs)
+                message = "\(ids.count) asset\(ids.count == 1 ? "" : "s") moved to Immich's Trash\(durSuffix)"
+            case .trashFailed(let ids, let msg, let httpStatus):
                 eventName = "trash.fail"
                 glyph = "xmark.octagon"
                 severity = .error
-                message = "\(ids.count) asset\(ids.count == 1 ? "" : "s") — \(msg.prefix(60))"
+                // HTTP status leads when known — `[401]` flags an auth
+                // problem at a glance, vs. a transport error which has
+                // no status. The full `msg` follows so the user still
+                // sees the underlying detail.
+                let httpPrefix = httpStatus.map { "[\($0)] " } ?? ""
+                message = "\(ids.count) asset\(ids.count == 1 ? "" : "s") — \(httpPrefix)\(msg.prefix(60))"
             case .runCompleted(let n):
                 eventName = "run.complete"
                 glyph = "checkmark"
@@ -551,16 +558,18 @@ public enum CairnFixtures {
                 glyph = "arrow.uturn.backward"
                 severity = .info
                 message = "\(ids.count) asset\(ids.count == 1 ? "" : "s") from \(runId.suffix(8))"
-            case .restoreSucceeded(_, let ids):
+            case .restoreSucceeded(_, let ids, let durationMs):
                 eventName = "restore.ok"
                 glyph = "checkmark"
                 severity = .ok
-                message = "\(ids.count) asset\(ids.count == 1 ? "" : "s") restored"
-            case .restoreFailed(_, let ids, let msg):
+                let durSuffix = formatDurationSuffix(durationMs)
+                message = "\(ids.count) asset\(ids.count == 1 ? "" : "s") restored\(durSuffix)"
+            case .restoreFailed(_, let ids, let msg, let httpStatus):
                 eventName = "restore.fail"
                 glyph = "xmark.octagon"
                 severity = .error
-                message = "\(ids.count) — \(msg.prefix(60))"
+                let httpPrefix = httpStatus.map { "[\($0)] " } ?? ""
+                message = "\(ids.count) — \(httpPrefix)\(msg.prefix(60))"
             case .assetsExcluded(let cks, _):
                 eventName = "exclude.add"
                 glyph = "shield.lefthalf.filled"
@@ -644,6 +653,19 @@ public enum CairnFixtures {
                 }
             }
             return out
+        }
+
+        /// `· 1.4s` / `· 320ms` clause appended to success-event
+        /// messages when the underlying journal row carries a
+        /// `durationMs`. Renders nothing for legacy rows where the
+        /// field is nil.
+        private static func formatDurationSuffix(_ durationMs: Int?) -> String {
+            guard let ms = durationMs else { return "" }
+            if ms < 1000 {
+                return " · \(ms)ms"
+            } else {
+                return " · \(String(format: "%.1fs", Double(ms) / 1000))"
+            }
         }
 
         /// Pretty-printed JSON for the long-press raw-event sheet.

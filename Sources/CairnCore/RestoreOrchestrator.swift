@@ -97,7 +97,7 @@ public struct RestoreOrchestrator: Sendable {
         var trashedIds: [String] = []
         var planningTargets: [JournalEntry.TrashTarget] = []
         for entry in forRun {
-            if case .trashSucceeded(let ids) = entry.event { trashedIds = ids }
+            if case .trashSucceeded(let ids, _) = entry.event { trashedIds = ids }
             if case .planningTrash(let targets) = entry.event { planningTargets = targets }
         }
         if trashedIds.isEmpty {
@@ -129,6 +129,7 @@ public struct RestoreOrchestrator: Sendable {
         // write because there's no recovery if that throws — we still
         // re-throw the original error up to the caller.
         var emittedTerminal = false
+        let restoreStart = Date()
         do {
             do {
                 try await writer.restoreAssets(ids: idsToRestore)
@@ -136,11 +137,17 @@ public struct RestoreOrchestrator: Sendable {
                 try? await journal.append(.init(
                     timestamp: now(),
                     runId: fromRunId,
-                    event: .restoreFailed(fromRunId: fromRunId, assetIds: idsToRestore, message: String(describing: error))
+                    event: .restoreFailed(
+                        fromRunId: fromRunId,
+                        assetIds: idsToRestore,
+                        message: String(describing: error),
+                        httpStatus: ImmichClientError.httpStatus(from: error)
+                    )
                 ))
                 emittedTerminal = true
                 throw error
             }
+            let restoreMs = Int(Date().timeIntervalSince(restoreStart) * 1000)
 
             // `restoreAssets` returned 204, but Immich's server responds
             // 204 even for IDs it didn't actually restore (already-out-
@@ -169,7 +176,7 @@ public struct RestoreOrchestrator: Sendable {
                 try await journal.append(.init(
                     timestamp: now(),
                     runId: fromRunId,
-                    event: .restoreSucceeded(fromRunId: fromRunId, assetIds: idsToRestore)
+                    event: .restoreSucceeded(fromRunId: fromRunId, assetIds: idsToRestore, durationMs: restoreMs)
                 ))
                 emittedTerminal = true
                 return RestoreRunSummary(fromRunId: fromRunId, restoredAssetIds: idsToRestore)
@@ -179,7 +186,7 @@ public struct RestoreOrchestrator: Sendable {
                 try await journal.append(.init(
                     timestamp: now(),
                     runId: fromRunId,
-                    event: .restoreSucceeded(fromRunId: fromRunId, assetIds: actuallyRestored)
+                    event: .restoreSucceeded(fromRunId: fromRunId, assetIds: actuallyRestored, durationMs: restoreMs)
                 ))
             }
             if !stillTrashed.isEmpty {
@@ -189,13 +196,16 @@ public struct RestoreOrchestrator: Sendable {
                 // deleted, or the API key lost `asset.delete` for
                 // them between trash and restore. Surface as a
                 // `restoreFailed` so the user can investigate.
+                // No `httpStatus` — the underlying call returned
+                // 204; the failure is post-call verification.
                 try await journal.append(.init(
                     timestamp: now(),
                     runId: fromRunId,
                     event: .restoreFailed(
                         fromRunId: fromRunId,
                         assetIds: stillTrashed,
-                        message: "server accepted the restore call but these assets remain in trash (already-restored, hard-deleted, or permissions-blocked)"
+                        message: "server accepted the restore call but these assets remain in trash (already-restored, hard-deleted, or permissions-blocked)",
+                        httpStatus: nil
                     )
                 ))
             }
@@ -215,7 +225,8 @@ public struct RestoreOrchestrator: Sendable {
                     event: .restoreFailed(
                         fromRunId: fromRunId,
                         assetIds: idsToRestore,
-                        message: "journal write failed after restore completed: \(error)"
+                        message: "journal write failed after restore completed: \(error)",
+                        httpStatus: ImmichClientError.httpStatus(from: error)
                     )
                 ))
             }

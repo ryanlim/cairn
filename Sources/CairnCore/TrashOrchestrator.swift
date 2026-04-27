@@ -172,6 +172,7 @@ public struct TrashOrchestrator: Sendable {
             }
 
             let tagValue = TagSchema.runTagValue(runId: runId)
+            let tagStart = Date()
             let tag = try await writer.upsertTag(value: tagValue)
             // `upsertTag` committed the tag on the server. If
             // `bulkTagAssets` now fails, the tag is left behind with
@@ -188,24 +189,31 @@ public struct TrashOrchestrator: Sendable {
                 try? await writer.deleteTag(id: tag.id)
                 throw error
             }
+            let tagMs = Int(Date().timeIntervalSince(tagStart) * 1000)
             try await journal.append(.init(
                 timestamp: now(),
                 runId: runId,
-                event: .tagApplied(tagId: tag.id, tagValue: tag.value, assetIds: allIds)
+                event: .tagApplied(tagId: tag.id, tagValue: tag.value, assetIds: allIds, durationMs: tagMs)
             ))
 
+            let trashStart = Date()
             do {
                 try await writer.trashAssets(ids: allIds)
+                let trashMs = Int(Date().timeIntervalSince(trashStart) * 1000)
                 try await journal.append(.init(
                     timestamp: now(),
                     runId: runId,
-                    event: .trashSucceeded(assetIds: allIds)
+                    event: .trashSucceeded(assetIds: allIds, durationMs: trashMs)
                 ))
             } catch {
                 try? await journal.append(.init(
                     timestamp: now(),
                     runId: runId,
-                    event: .trashFailed(assetIds: allIds, message: String(describing: error))
+                    event: .trashFailed(
+                        assetIds: allIds,
+                        message: String(describing: error),
+                        httpStatus: ImmichClientError.httpStatus(from: error)
+                    )
                 ))
                 emittedTerminal = true
                 throw error

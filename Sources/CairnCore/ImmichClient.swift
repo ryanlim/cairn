@@ -18,6 +18,23 @@ public enum ImmichClientError: Error, CustomStringConvertible {
             return "invalid URL"
         }
     }
+
+    /// HTTP status code if this is an `httpStatus` case; nil for
+    /// `unexpectedResponse` and `invalidURL`. Convenience accessor so
+    /// orchestrators can populate `trashFailed.httpStatus` /
+    /// `restoreFailed.httpStatus` without re-pattern-matching.
+    public var httpStatusCode: Int? {
+        if case .httpStatus(let code, _) = self { return code }
+        return nil
+    }
+
+    /// Lift an arbitrary `Error` into an HTTP status code when it
+    /// happens to be an `ImmichClientError.httpStatus`. Returns nil
+    /// for transport-level errors (DNS, TLS, network unreachable),
+    /// decoding errors, or any other non-Immich error type.
+    public static func httpStatus(from error: any Error) -> Int? {
+        (error as? ImmichClientError)?.httpStatusCode
+    }
 }
 
 /// Thin HTTP client over the subset of Immich's REST API that cairn's

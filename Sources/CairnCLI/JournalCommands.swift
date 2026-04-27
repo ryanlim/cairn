@@ -142,22 +142,27 @@ struct JournalShow: AsyncParsableCommand {
             let lines = targets.prefix(10).map { "\($0.assetId)  ck=\($0.checksum)\($0.livePhotoVideoId.map { "  live-video=\($0)" } ?? "")" }
             let extra = targets.count > 10 ? "\n… and \(targets.count - 10) more" : ""
             return ("planningTrash", "\(targets.count) target(s)\n\(lines.joined(separator: "\n"))\(extra)")
-        case .tagApplied(let tagId, let value, let ids):
-            return ("tagApplied", "\(value)\ntag=\(tagId)  \(ids.count) asset(s)")
-        case .trashSucceeded(let ids):
-            return ("trashSucceeded", "\(ids.count) asset(s)")
-        case .trashFailed(let ids, let msg):
-            return ("trashFailed", "\(ids.count) asset(s)\nerror: \(msg)")
+        case .tagApplied(let tagId, let value, let ids, let durationMs):
+            let dur = durationMs.map { "  dur=\($0)ms" } ?? ""
+            return ("tagApplied", "\(value)\ntag=\(tagId)  \(ids.count) asset(s)\(dur)")
+        case .trashSucceeded(let ids, let durationMs):
+            let dur = durationMs.map { "  dur=\($0)ms" } ?? ""
+            return ("trashSucceeded", "\(ids.count) asset(s)\(dur)")
+        case .trashFailed(let ids, let msg, let httpStatus):
+            let http = httpStatus.map { "  http=\($0)" } ?? ""
+            return ("trashFailed", "\(ids.count) asset(s)\(http)\nerror: \(msg)")
         case .runCompleted(let deleted):
             return ("runCompleted", "deletedCount=\(deleted)")
         case .runAborted(let reason):
             return ("runAborted", reason)
         case .restoreStarted(let from, let ids):
             return ("restoreStarted", "\(ids.count) asset(s)  fromRun=\(from)")
-        case .restoreSucceeded(let from, let ids):
-            return ("restoreSucceeded", "\(ids.count) asset(s)  fromRun=\(from)")
-        case .restoreFailed(let from, let ids, let msg):
-            return ("restoreFailed", "\(ids.count) asset(s)  fromRun=\(from)\nerror: \(msg)")
+        case .restoreSucceeded(let from, let ids, let durationMs):
+            let dur = durationMs.map { "  dur=\($0)ms" } ?? ""
+            return ("restoreSucceeded", "\(ids.count) asset(s)  fromRun=\(from)\(dur)")
+        case .restoreFailed(let from, let ids, let msg, let httpStatus):
+            let http = httpStatus.map { "  http=\($0)" } ?? ""
+            return ("restoreFailed", "\(ids.count) asset(s)  fromRun=\(from)\(http)\nerror: \(msg)")
         case .assetsExcluded(let cks, let from):
             let context = from.map { "  fromRun=\($0)" } ?? "  ad-hoc"
             return ("assetsExcluded", "\(cks.count) checksum(s)\(context)")

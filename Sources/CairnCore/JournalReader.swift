@@ -120,7 +120,7 @@ public enum JournalReader {
         let sorted = entries.sorted { $0.timestamp < $1.timestamp }
         var out: [Checksum: TrashedRecord] = [:]
         for entry in sorted {
-            guard case .trashSucceeded(let assetIds) = entry.event else { continue }
+            guard case .trashSucceeded(let assetIds, _) = entry.event else { continue }
             guard entry.timestamp >= cutoff else { continue }
             guard let plan = planByRun[entry.runId] else { continue }
             let record = TrashedRecord(runId: entry.runId, trashedAt: entry.timestamp)
@@ -201,11 +201,11 @@ public enum JournalReader {
                     firstAbortReason = reason
                 }
                 runAbortedAt = entry.timestamp
-            case .trashSucceeded(let ids):
+            case .trashSucceeded(let ids, _):
                 sawTrashSucceeded = true
                 trashedCount = ids.count
                 trashEndedAt = entry.timestamp
-            case .trashFailed(_, let message):
+            case .trashFailed(_, let message, _):
                 sawTrashFailed = true
                 if firstTrashFailedMessage == nil {
                     firstTrashFailedMessage = message
@@ -213,11 +213,11 @@ public enum JournalReader {
                 trashEndedAt = entry.timestamp
             case .restoreStarted:
                 if restoreStartedAt == nil { restoreStartedAt = entry.timestamp }
-            case .restoreSucceeded(_, let ids):
+            case .restoreSucceeded(_, let ids, _):
                 sawRestoreSucceeded = true
                 restoredCount = ids.count
                 restoreEndedAt = entry.timestamp
-            case .restoreFailed(_, _, let message):
+            case .restoreFailed(_, _, let message, _):
                 sawRestoreFailed = true
                 if firstRestoreFailedMessage == nil {
                     firstRestoreFailedMessage = message
