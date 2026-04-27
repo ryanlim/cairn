@@ -1112,10 +1112,14 @@ public struct StatusScreen: View {
                         Dictionary(uniqueKeysWithValues: runs.map { ($0.id, $0.status) })
                     let runById: [String: CairnFixtures.RunFixture] =
                         Dictionary(uniqueKeysWithValues: runs.map { ($0.id, $0) })
-                    // Group rows by contiguous band value so the band
-                    // tint can paint once per group (one box per run)
-                    // rather than per row. Reduces visual noise and
-                    // makes each run's events feel like a unit.
+                    // Group rows by contiguous-runId boundary so each
+                    // run's events render as a unit with a tinted
+                    // separator at the top. The bandTints array is
+                    // still used as the group-boundary signal — each
+                    // toggle means a new group starts — but the band
+                    // value itself no longer drives any tinting.
+                    // Visual segmentation comes solely from each
+                    // separator's own background tint.
                     let groups = Self.groupJournalEntries(visible: visible, bandTints: bandTints)
                     ScrollView([.horizontal, .vertical], showsIndicators: false) {
                         LazyVStack(alignment: .leading, spacing: 4) {
@@ -1145,7 +1149,6 @@ public struct StatusScreen: View {
                                 }
                                 .padding(.vertical, 4)
                                 .frame(width: measuredWidth, alignment: .leading)
-                                .background(group.isBanded ? t.surfaceAlt.opacity(0.6) : Color.clear)
                             }
                         }
                         .frame(width: measuredWidth, alignment: .leading)
@@ -1241,24 +1244,25 @@ public struct StatusScreen: View {
     /// height — roughly a screen-page of activity at a glance.
     private static let expandedJournalCardMaxHeight: CGFloat = 360
 
-    /// One contiguous run of journal entries that share a band tint
-    /// value. The first non-empty `runId` inside the group is the
-    /// "owner" — the run separator and group-level box semantics use
-    /// it. Groups composed entirely of empty-runId rows (a stretch of
-    /// routine syncs between runs) have `runId == nil` and render
-    /// without a separator.
+    /// One contiguous run of journal entries grouped for layout. The
+    /// first non-empty `runId` inside the group is the "owner" — the
+    /// run separator at the top of the group uses it. Groups composed
+    /// entirely of empty-runId rows (a stretch of routine syncs
+    /// between runs) have `runId == nil` and render without a separator.
     fileprivate struct JournalGroup: Identifiable {
         let id: Int
         let runId: String?
         let entries: [CairnFixtures.JournalTailEntry]
-        let isBanded: Bool
     }
 
     /// Walk `visible` alongside the parallel `bandTints` array,
-    /// flushing a new group every time the band value flips. Each
-    /// group's owning runId is the first non-empty runId encountered
-    /// inside it. Lifted out of the view body to dodge SwiftUI's
-    /// type-checker timeouts on heavy view-builder expressions.
+    /// flushing a new group every time the band value flips. The band
+    /// array is no longer used for tinting — only as a boundary
+    /// signal — but the toggle pattern (driven by runId changes,
+    /// with empty-runId rows inheriting) is exactly the grouping
+    /// behavior we want. Lifted out of the view body to dodge
+    /// SwiftUI's type-checker timeouts on heavy view-builder
+    /// expressions.
     private static func groupJournalEntries(
         visible: [CairnFixtures.JournalTailEntry],
         bandTints: [Bool]
@@ -1274,8 +1278,7 @@ public struct StatusScreen: View {
                 groups.append(JournalGroup(
                     id: groups.count,
                     runId: bucketRunId,
-                    entries: bucket,
-                    isBanded: bucketBand
+                    entries: bucket
                 ))
                 bucket = []
                 bucketRunId = nil
@@ -1291,8 +1294,7 @@ public struct StatusScreen: View {
             groups.append(JournalGroup(
                 id: groups.count,
                 runId: bucketRunId,
-                entries: bucket,
-                isBanded: bucketBand
+                entries: bucket
             ))
         }
         return groups
@@ -1453,8 +1455,10 @@ private struct JournalRunSeparator: View {
                     .font(.system(size: 10.5, design: .monospaced))
                     .foregroundStyle(t.textHint)
             }
-            .padding(.bottom, 2)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
             .frame(width: width, alignment: .leading)
+            .background(t.surfaceAlt.opacity(0.6))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
