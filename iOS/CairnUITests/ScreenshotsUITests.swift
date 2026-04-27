@@ -88,10 +88,14 @@ final class ScreenshotsUITests: XCTestCase {
             waitForMainTabs(app)
         case .pendingReview:
             waitForMainTabs(app)
-            let callout = app.buttons.matching(
-                NSPredicate(format: "label BEGINSWITH %@", "Pending review")
-            ).firstMatch
-            XCTAssertTrue(callout.waitForExistence(timeout: 3), "Pending-review callout not found")
+            // Target by accessibility identifier rather than display
+            // copy — the entry-point button has been renamed multiple
+            // times ("Pending review: N" → "N in quarantine") and the
+            // test was breaking on every rename. The identifier
+            // `status.openPendingReview` is set on the quarantine line
+            // in StatusScreen and is the contract this test relies on.
+            let callout = app.buttons["status.openPendingReview"]
+            XCTAssertTrue(callout.waitForExistence(timeout: 3), "Pending-review entry not found on Status")
             callout.tap()
             _ = app.staticTexts["Pending review"].waitForExistence(timeout: 3)
         case .runs:

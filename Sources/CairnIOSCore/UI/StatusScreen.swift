@@ -900,6 +900,11 @@ public struct StatusScreen: View {
         }
         .buttonStyle(CairnPressStyle())
         .accessibilityLabel("\(quarantineCount) items in quarantine. Tap to review.")
+        // Stable hook for the screenshots UI test — display copy
+        // on this button has changed across releases ("Pending
+        // review: N" → "N in quarantine") and may again, so the
+        // test should target an identifier rather than label text.
+        .accessibilityIdentifier("status.openPendingReview")
     }
 
     @ViewBuilder

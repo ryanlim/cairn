@@ -270,6 +270,12 @@ final class AppDependencies {
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("-CAIRN_SCREENSHOT_MODE") {
             AppDependencies.seedFromFixtures(into: model)
+            // Without this, CairnAppRoot's loading-screen gate stays on
+            // and the main tab bar never renders — every UI test that
+            // calls `waitForMainTabs` then times out at 15s and fails.
+            // The non-fixture branches below all clear the flag before
+            // returning; the fixture branch must too.
+            model.isBootstrapping = false
             return
         }
         #endif
