@@ -140,6 +140,10 @@ public struct StatusScreen: View {
     @Environment(\.cairnTokens) private var t
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var journalExpanded: Bool = false
+    /// Long-press on a journal row stashes its entry here; the sheet
+    /// is presented while the value is non-nil. Pretty-printed JSON
+    /// of the underlying `JournalEntry` is in `entry.rawJSON`.
+    @State private var journalRawJSONEntry: CairnFixtures.JournalTailEntry? = nil
     /// Filter chip on the journal-tail card. ON by default — routine
     /// no-op syncs are noise. `@AppStorage` so the user's choice
     /// survives tab navigation and relaunch.
@@ -264,6 +268,53 @@ public struct StatusScreen: View {
         ]
     }
 
+    /// One-line "what just happened" sentence above the journal card.
+    /// Picks the most recent `.ok` or `.error` row in `journalTail`
+    /// (so routine `sync`/`tag.apply` info events don't dominate) and
+    /// renders its event + message inline. Hidden when no qualifying
+    /// row exists in the buffer. Tappable to open run detail when the
+    /// row's runId resolves to a known run, mirroring journal-row taps.
+    private var journalHeroLine: some View {
+        // `journalTail` is newest-first (see AppDependencies builder).
+        // Finding `first(where:)` yields the most recent row of the
+        // requested severity.
+        let hero = journalTail.first { $0.severity == .ok || $0.severity == .error }
+        let runIds = Set(runs.map(\.id))
+        return Group {
+            if let hero {
+                Button {
+                    if runIds.contains(hero.runId) { onJournalRowTap(hero.runId) }
+                } label: {
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(hero.severity == .error ? t.dangerInk : t.verifiedInk)
+                            .frame(width: 6, height: 6)
+                        Text(hero.event)
+                            .font(.system(size: 12.5, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(eventColor(hero.event))
+                        Text("·")
+                            .font(.system(size: 12.5))
+                            .foregroundStyle(t.textHint)
+                        Text(hero.message)
+                            .font(.system(size: 12.5))
+                            .foregroundStyle(t.textBody)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                        Spacer(minLength: 8)
+                        Text(hero.time)
+                            .font(.system(size: 11.5, design: .monospaced))
+                            .foregroundStyle(t.textHint)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 6)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .allowsHitTesting(runIds.contains(hero.runId))
+            }
+        }
+    }
+
     public var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
@@ -282,6 +333,7 @@ public struct StatusScreen: View {
                 KeylineSection("Recent runs")
                 recentRuns
                 KeylineSection("Latest journal")
+                journalHeroLine
                 journalTailCard
                 Spacer(minLength: 24)
             }
@@ -294,6 +346,9 @@ public struct StatusScreen: View {
             .cairnBannerAnimation(value: bannerVisibilityKey)
         }
         .background(t.bg)
+        .sheet(item: $journalRawJSONEntry) { entry in
+            JournalRawJSONSheet(entry: entry)
+        }
     }
 
     // MARK: - Header
@@ -1049,6 +1104,12 @@ public struct StatusScreen: View {
                     // `sync` events) inherit the current band so a stray
                     // singleton doesn't fragment the surrounding group.
                     let bandTints = Self.journalBandTints(for: visible)
+                    // Per-runId outcome status, used to tint the trailing
+                    // suffix column. Only finished runs (`runs[]`) appear
+                    // here — in-flight or sync-only events fall back to
+                    // a neutral hint tone.
+                    let runOutcomeMap: [String: CairnFixtures.RunFixture.Status] =
+                        Dictionary(uniqueKeysWithValues: runs.map { ($0.id, $0.status) })
                     ScrollView([.horizontal, .vertical], showsIndicators: false) {
                         LazyVStack(alignment: .leading, spacing: 6) {
                             ForEach(Array(visible.enumerated()), id: \.element.id) { index, entry in
@@ -1058,7 +1119,9 @@ public struct StatusScreen: View {
                                     isTappable: runIds.contains(entry.runId),
                                     isBanded: bandTints[index],
                                     rowWidth: measuredWidth,
-                                    onTap: { onJournalRowTap(entry.runId) }
+                                    runIdSuffixColor: runIdSuffixColor(for: entry.runId, in: runOutcomeMap),
+                                    onTap: { onJournalRowTap(entry.runId) },
+                                    onLongPress: { journalRawJSONEntry = entry }
                                 )
                             }
                         }
@@ -1178,6 +1241,22 @@ public struct StatusScreen: View {
         return bands
     }
 
+    /// Color the trailing runId suffix by the run's outcome — green
+    /// for `.complete`, red for `.aborted`, info-tone for `.restored`.
+    /// Falls back to `t.textHint` for runIds with no resolved outcome
+    /// (in-flight, sync-only, or never-promoted-to-runs entries).
+    private func runIdSuffixColor(
+        for runId: String,
+        in map: [String: CairnFixtures.RunFixture.Status]
+    ) -> Color {
+        guard let status = map[runId] else { return t.textHint }
+        switch status {
+        case .complete:  return t.verifiedInk
+        case .aborted:   return t.dangerInk
+        case .restored:  return t.infoInk
+        }
+    }
+
     /// Mapping pinned to the event-name strings `JournalTailEntry.from`
     /// actually emits. The previous version checked stale names
     /// (`safety.ok`, `tag.create`, `delete.batch`, `abort`) that the
@@ -1203,6 +1282,51 @@ public struct StatusScreen: View {
     }
 }
 
+// MARK: - Raw-JSON sheet
+
+/// Diagnostic view shown when the user long-presses a journal row.
+/// Renders the row's underlying `JournalEntry` as pretty-printed JSON
+/// — useful for debugging on-device without a log-tail tool. Single
+/// scrolling monospace block plus a "Copy" affordance; nothing else.
+private struct JournalRawJSONSheet: View {
+    let entry: CairnFixtures.JournalTailEntry
+
+    @Environment(\.cairnTokens) private var t
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                Text(entry.rawJSON ?? "(no raw payload — fixture row)")
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(t.textBody)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+                    .padding(16)
+            }
+            .background(t.bg)
+            .navigationTitle("\(entry.event) · \(entry.time)")
+            #if canImport(UIKit)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Done") { dismiss() }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    if let json = entry.rawJSON {
+                        Button {
+                            UIPasteboard.general.string = json
+                        } label: {
+                            Label("Copy", systemImage: "doc.on.doc")
+                        }
+                    }
+                }
+            }
+            #endif
+        }
+    }
+}
+
 // MARK: - Journal tail row
 
 /// Off-tree text measurement so the journal card can pin its
@@ -1213,6 +1337,7 @@ public struct StatusScreen: View {
 private enum JournalRowMetrics {
     // Layout constants — every value here corresponds to a literal in
     // JournalTailRow.body.
+    static let severityDotFrameWidth: CGFloat = 8
     static let glyphFrameWidth: CGFloat = 14
     static let timeFrameWidth: CGFloat = 80
     static let suffixFrameWidth: CGFloat = 64
@@ -1243,8 +1368,9 @@ private enum JournalRowMetrics {
         for entry in entries {
             let eventW = (entry.event as NSString).size(withAttributes: eventAttrs).width
             let messageW = (entry.message as NSString).size(withAttributes: messageAttrs).width
-            // Row layout: glyph | spacing | time | spacing | event | spacing | message ( | spacing | leadingPad | suffix )
-            var width = glyphFrameWidth
+            // Row layout: severityDot | spacing | glyph | spacing | time | spacing | event | spacing | message ( | spacing | leadingPad | suffix )
+            var width = severityDotFrameWidth
+                + hStackSpacing + glyphFrameWidth
                 + hStackSpacing + timeFrameWidth
                 + hStackSpacing + eventW
                 + hStackSpacing + messageW
@@ -1276,13 +1402,27 @@ private struct JournalTailRow: View {
     /// Equals `JournalRowMetrics.maxWidth(for:)` from the parent so all
     /// rows have edge-to-edge bands regardless of their intrinsic content.
     let rowWidth: CGFloat
+    /// Color for the trailing `runIdSuffix`. Driven by the lookup of
+    /// `entry.runId` against the runs list — green for `.complete`,
+    /// red for `.aborted`, info-tone for `.restored`, hint-tone when
+    /// the runId doesn't match a known run (in-flight or sync-only).
+    let runIdSuffixColor: Color
     let onTap: () -> Void
+    let onLongPress: () -> Void
 
     @Environment(\.cairnTokens) private var t
 
     var body: some View {
         Button(action: onTap) {
             HStack(spacing: 8) {
+                // Severity dot — keyed off `entry.severity`, distinct
+                // from the event glyph so "did anything go wrong?" is
+                // answerable with one eye-flick. Tints from the token
+                // palette so light/dark stay coherent.
+                Circle()
+                    .fill(severityColor)
+                    .frame(width: 6, height: 6)
+                    .frame(width: 8, alignment: .center)
                 // Leading status glyph — at-a-glance signal that
                 // doesn't require parsing event-name strings. Tinted
                 // to match `eventInk` so red/green/yellow/blue
@@ -1323,7 +1463,7 @@ private struct JournalTailRow: View {
                 if !entry.runIdSuffix.isEmpty {
                     Text(entry.runIdSuffix)
                         .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(t.textHint)
+                        .foregroundStyle(runIdSuffixColor)
                         .padding(.leading, 12)
                         .fixedSize()
                 }
@@ -1337,9 +1477,32 @@ private struct JournalTailRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        // Tap = drill into run detail (when runId resolves);
+        // long-press = open the raw-JSON sheet for the underlying
+        // `JournalEntry`. Long-press is independent of `isTappable` so
+        // diagnostic inspection works on every row, including
+        // sync-only events that don't open run detail.
+        .simultaneousGesture(
+            LongPressGesture(minimumDuration: 0.45)
+                .onEnded { _ in onLongPress() }
+        )
         // Disabling the row both for hit-testing and for the wrapping
         // button so untappable rows match the previous render exactly.
+        // The long-press gesture above is attached via
+        // `.simultaneousGesture` so it survives the tap disable.
         .allowsHitTesting(isTappable)
+    }
+
+    /// Severity tier → token color. Mirrors the event-color mapping in
+    /// `eventColor` but reads off the pre-computed `Severity` enum so
+    /// the dot can stay consistent even if event names change.
+    private var severityColor: Color {
+        switch entry.severity {
+        case .info:  return t.textHint
+        case .ok:    return t.verifiedInk
+        case .warn:  return t.pendingInk
+        case .error: return t.dangerInk
+        }
     }
 }
 

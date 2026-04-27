@@ -429,7 +429,7 @@ final class AppDependencies {
         // Settings → Clear journal still exists for anyone who wants
         // the slate wiped.
         if let journal, let recent = try? await journal.lastEntries(limit: 500) {
-            model.journalTail = recent.reversed().map(CairnFixtures.JournalTailEntry.from)
+            model.journalTail = Array(CairnFixtures.JournalTailEntry.from(entries: recent).reversed())
         }
 
         await refreshDeferredQueueSummary()
@@ -974,7 +974,7 @@ final class AppDependencies {
         // Settings → Clear journal still exists for anyone who wants
         // the slate wiped.
         if let journal, let recent = try? await journal.lastEntries(limit: 500) {
-            model.journalTail = recent.reversed().map(CairnFixtures.JournalTailEntry.from)
+            model.journalTail = Array(CairnFixtures.JournalTailEntry.from(entries: recent).reversed())
         }
 
         await refreshDeferredQueueSummary()

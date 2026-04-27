@@ -383,7 +383,7 @@ public enum CairnFixtures {
     ]
 
     public struct JournalTailEntry: Sendable, Identifiable {
-        public var id: String { time + event + runIdSuffix }
+        public var id: String { time + event + runIdSuffix + message }
         public let time: String
         public let event: String
         public let message: String
@@ -409,6 +409,27 @@ public enum CairnFixtures {
         /// run-detail sheet. Empty for fixture-only rows that didn't
         /// come from a `JournalEntry`.
         public let runId: String
+        /// Severity tier for the leading dot, distinct from `glyph`
+        /// (which is event-keyed). Lets users scan for problems
+        /// without reading every event name.
+        public let severity: Severity
+        /// Pretty-printed JSON of the source `JournalEntry`. Surfaced
+        /// via long-press on a row → raw-event sheet. Optional because
+        /// fixture rows that didn't come from a real `JournalEntry`
+        /// have nothing to encode.
+        public let rawJSON: String?
+
+        public enum Severity: Sendable {
+            /// Routine activity: sync, plan, tag, run.start.
+            case info
+            /// Mutating action that succeeded: trash.ok, restore.ok,
+            /// run.complete, exclude.add.
+            case ok
+            /// Held / deferred / awaiting attention: pending.hold.
+            case warn
+            /// Failure or aborted: *.fail, run.abort.
+            case error
+        }
 
         public init(
             time: String,
@@ -417,7 +438,9 @@ public enum CairnFixtures {
             glyph: String = "circle.fill",
             runIdSuffix: String = "",
             isRoutineSync: Bool = false,
-            runId: String = ""
+            runId: String = "",
+            severity: Severity = .info,
+            rawJSON: String? = nil
         ) {
             self.time = time
             self.event = event
@@ -426,30 +449,77 @@ public enum CairnFixtures {
             self.runIdSuffix = runIdSuffix
             self.isRoutineSync = isRoutineSync
             self.runId = runId
+            self.severity = severity
+            self.rawJSON = rawJSON
+        }
+
+        /// Snapshot of the count fields a `syncCompleted` event carries
+        /// that are interesting to delta. Lets `from(entries:)` walk
+        /// chronologically and inject `(+5)` / `(−2)` clauses into the
+        /// next sync row's message. Excludes `deferred*` and `elapsedMs`
+        /// — those are per-pass measurements, not running totals where
+        /// a delta is meaningful.
+        public struct SyncCounts: Sendable, Equatable {
+            public let indexed: Int
+            public let candidates: Int
+            public let pending: Int
+            public init(indexed: Int, candidates: Int, pending: Int) {
+                self.indexed = indexed
+                self.candidates = candidates
+                self.pending = pending
+            }
         }
 
         /// Format a `DeletionJournal.JournalEntry` into the Status-screen
         /// tail shape. Keeps every event-type's rendering together so
         /// future event additions only touch this function. Time format
         /// is relative-aware (today → `HH:mm`, otherwise `MMM d HH:mm`).
-        public static func from(_ entry: JournalEntry) -> JournalTailEntry {
+        ///
+        /// `previousSyncCounts` enables delta annotation on
+        /// `syncCompleted` rows ("indexed=1010 (+10) cand=2 (−1)"). Pass
+        /// `nil` (default) when there's no chronological prior sync in
+        /// scope; `from(entries:)` populates it for batch construction.
+        public static func from(
+            _ entry: JournalEntry,
+            previousSyncCounts: SyncCounts? = nil
+        ) -> JournalTailEntry {
             let time = formatTime(entry.timestamp)
             let eventName: String
             let message: String
             let glyph: String
+            let severity: Severity
             var routine = false
             switch entry.event {
-            case .runStarted(let dryRun, let count, _):
+            case .runStarted(let dryRun, let count, let purview):
                 eventName = "run.start"
                 glyph = "play.circle"
-                message = "\(dryRun ? "dry-run" : "live") · \(count) candidate\(count == 1 ? "" : "s")"
+                severity = .info
+                // Surface the candidate-vs-purview ratio when both are
+                // known and meaningful. "12 of 4820 (0.25%)" reads more
+                // honestly than a bare "12 candidates" — gives the user
+                // a sense of how aggressive the run is relative to the
+                // library. Skip the ratio for purview ≤ 0 (legacy rows
+                // or genuine empty libraries).
+                let countStr = "\(count) candidate\(count == 1 ? "" : "s")"
+                let mode = dryRun ? "dry-run" : "live"
+                if purview > 0 {
+                    let pct = Double(count) / Double(purview) * 100
+                    let pctStr = pct < 0.01 && count > 0
+                        ? "<0.01%"
+                        : String(format: "%.2f%%", pct)
+                    message = "\(mode) · \(count) of \(purview) (\(pctStr))"
+                } else {
+                    message = "\(mode) · \(countStr)"
+                }
             case .planningTrash(let targets):
                 eventName = "plan.trash"
                 glyph = "list.bullet"
+                severity = .info
                 message = "\(targets.count) asset\(targets.count == 1 ? "" : "s")"
             case .tagApplied(_, let value, let ids):
                 eventName = "tag.apply"
                 glyph = "tag"
+                severity = .info
                 // Tag values are `cairn/v1/run/<iso>-<uuid8>` — full
                 // path is too wide for the single-line row. Trim to
                 // the trailing 12 chars so the runId fragment stays
@@ -459,52 +529,74 @@ public enum CairnFixtures {
             case .trashSucceeded(let ids):
                 eventName = "trash.ok"
                 glyph = "checkmark"
+                severity = .ok
                 message = "\(ids.count) asset\(ids.count == 1 ? "" : "s") moved to Immich's Trash"
             case .trashFailed(let ids, let msg):
                 eventName = "trash.fail"
                 glyph = "xmark.octagon"
+                severity = .error
                 message = "\(ids.count) asset\(ids.count == 1 ? "" : "s") — \(msg.prefix(60))"
             case .runCompleted(let n):
                 eventName = "run.complete"
                 glyph = "checkmark"
+                severity = .ok
                 message = "trashed=\(n)"
             case .runAborted(let reason):
                 eventName = "run.abort"
                 glyph = "exclamationmark.triangle"
+                severity = .error
                 message = summarizeAbortReason(reason)
             case .restoreStarted(let runId, let ids):
                 eventName = "restore.start"
                 glyph = "arrow.uturn.backward"
+                severity = .info
                 message = "\(ids.count) asset\(ids.count == 1 ? "" : "s") from \(runId.suffix(8))"
             case .restoreSucceeded(_, let ids):
                 eventName = "restore.ok"
                 glyph = "checkmark"
+                severity = .ok
                 message = "\(ids.count) asset\(ids.count == 1 ? "" : "s") restored"
             case .restoreFailed(_, let ids, let msg):
                 eventName = "restore.fail"
                 glyph = "xmark.octagon"
+                severity = .error
                 message = "\(ids.count) — \(msg.prefix(60))"
             case .assetsExcluded(let cks, _):
                 eventName = "exclude.add"
                 glyph = "shield.lefthalf.filled"
+                severity = .ok
                 message = "\(cks.count) checksum\(cks.count == 1 ? "" : "s")"
             case .pendingReview(let ids, _):
                 eventName = "pending.hold"
                 glyph = "clock.arrow.circlepath"
+                severity = .warn
                 message = "\(ids.count) asset\(ids.count == 1 ? "" : "s") awaiting review"
             case .syncCompleted(let indexed, let candidates, let pending, let large, let largeBytes, let timeout, let elapsedMs):
                 eventName = "sync"
                 glyph = "arrow.triangle.2.circlepath"
+                severity = .info
                 // The "no signal at all" pattern — every sync field is
                 // zero. Filter chip on Status hides these so the tail
                 // reflects real activity rather than every hourly
                 // background poke.
                 routine = (candidates == 0 && pending == 0 && large == 0 && timeout == 0)
+                // Inline deltas for the three running totals (indexed /
+                // candidates / pending) when a chronological prior sync
+                // is in scope. Skip on first-ever sync (prev=nil) and
+                // when the delta is zero — `(±0)` is noise.
+                func deltaSuffix(_ now: Int, _ prev: Int?) -> String {
+                    guard let prev, now != prev else { return "" }
+                    let d = now - prev
+                    return d > 0 ? " (+\(d))" : " (\(d))" // negatives already render with leading "-"
+                }
+                let dIdx = deltaSuffix(indexed, previousSyncCounts?.indexed)
+                let dCand = deltaSuffix(candidates, previousSyncCounts?.candidates)
+                let dPend = deltaSuffix(pending, previousSyncCounts?.pending)
                 var parts: [String] = [
-                    "indexed=\(indexed)",
-                    "cand=\(candidates)",
+                    "indexed=\(indexed)\(dIdx)",
+                    "cand=\(candidates)\(dCand)",
                 ]
-                if pending > 0 { parts.append("pending=\(pending)") }
+                if pending > 0 { parts.append("pending=\(pending)\(dPend)") }
                 if large > 0 {
                     // `12 (9.7GB)` when we know the bytes; bytes of
                     // zero means every deferred item had unknown size
@@ -526,8 +618,46 @@ public enum CairnFixtures {
                 glyph: glyph,
                 runIdSuffix: String(entry.runId.suffix(8)),
                 isRoutineSync: routine,
-                runId: entry.runId
+                runId: entry.runId,
+                severity: severity,
+                rawJSON: encodeRawJSON(entry)
             )
+        }
+
+        /// Batch builder: walks `entries` chronologically (oldest →
+        /// newest), wiring the previous `syncCompleted` counts forward
+        /// into the next sync row so deltas can render. Use this from
+        /// real-data call sites instead of `entries.map(.from)` —
+        /// otherwise sync rows can't show `(+5)`-style deltas because
+        /// `from(_:)` alone has no chronological context.
+        ///
+        /// Caller is responsible for any final ordering (e.g. reversing
+        /// for newest-first display); this preserves input order.
+        public static func from(entries: [JournalEntry]) -> [JournalTailEntry] {
+            var out: [JournalTailEntry] = []
+            out.reserveCapacity(entries.count)
+            var prevSync: SyncCounts? = nil
+            for entry in entries {
+                out.append(.from(entry, previousSyncCounts: prevSync))
+                if case .syncCompleted(let i, let c, let p, _, _, _, _) = entry.event {
+                    prevSync = SyncCounts(indexed: i, candidates: c, pending: p)
+                }
+            }
+            return out
+        }
+
+        /// Pretty-printed JSON for the long-press raw-event sheet.
+        /// Encoder errors collapse to `nil` (the row still renders; just
+        /// no JSON to inspect) — better than throwing from `from(_:)`.
+        private static func encodeRawJSON(_ entry: JournalEntry) -> String? {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            encoder.dateEncodingStrategy = .iso8601
+            guard let data = try? encoder.encode(entry),
+                  let str = String(data: data, encoding: .utf8) else {
+                return nil
+            }
+            return str
         }
 
         /// Thin delegate so the journal-tail format matches the

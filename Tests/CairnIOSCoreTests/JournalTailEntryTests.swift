@@ -35,15 +35,25 @@ struct JournalTailEntryFromTests {
         #expect(t.runIdSuffix == "034389BC")
         #expect(t.runId == runId)
         #expect(t.message.contains("live"))
-        #expect(t.message.contains("3 candidates"))
+        // Purview is set, so the message renders the ratio form
+        // ("3 of 100 (3.00%)") rather than the bare count form.
+        #expect(t.message.contains("3 of 100"))
+        #expect(t.message.contains("3.00%"))
     }
 
     @Test("runStarted dry-run shows dry-run label")
     func runStartedDryRun() {
         let t = Tail.from(entry(.runStarted(dryRun: true, candidateCount: 1, assetsInPurview: 100)))
         #expect(t.message.contains("dry-run"))
-        #expect(t.message.contains("1 candidate"))
-        #expect(!t.message.contains("candidates"))
+        #expect(t.message.contains("1 of 100"))
+        #expect(t.message.contains("1.00%"))
+    }
+
+    @Test("runStarted with no purview falls back to bare count")
+    func runStartedNoPurview() {
+        let t = Tail.from(entry(.runStarted(dryRun: false, candidateCount: 3, assetsInPurview: 0)))
+        #expect(t.message.contains("3 candidates"))
+        #expect(!t.message.contains("of 0"))
     }
 
     @Test("planningTrash → plan.trash, list.bullet")
@@ -241,6 +251,116 @@ struct JournalTailEntryFromTests {
         for c in cases {
             #expect(!Tail.from(entry(c)).isRoutineSync)
         }
+    }
+
+    // MARK: - Severity tier
+
+    @Test("severity tiers map per event type")
+    func severityTiers() {
+        // Spot-check one event per tier; full mapping is the switch
+        // statement in from(_:).
+        let infoEvent = Tail.from(entry(.runStarted(dryRun: false, candidateCount: 1, assetsInPurview: 100)))
+        #expect(infoEvent.severity == .info)
+
+        let okEvent = Tail.from(entry(.trashSucceeded(assetIds: ["a"])))
+        #expect(okEvent.severity == .ok)
+
+        let warnEvent = Tail.from(entry(.pendingReview(assetIds: ["a"], checksums: ["x"])))
+        #expect(warnEvent.severity == .warn)
+
+        let errorEvent = Tail.from(entry(.runAborted(reason: "test")))
+        #expect(errorEvent.severity == .error)
+
+        let trashFailEvent = Tail.from(entry(.trashFailed(assetIds: ["a"], message: "boom")))
+        #expect(trashFailEvent.severity == .error)
+    }
+
+    // MARK: - rawJSON encoding
+
+    @Test("rawJSON is populated and decodes back to the source event")
+    func rawJSONRoundTrips() throws {
+        let source = entry(.trashSucceeded(assetIds: ["a", "b", "c"]))
+        let tail = Tail.from(source)
+        let json = try #require(tail.rawJSON)
+        #expect(json.contains("trashSucceeded"))
+        // Round-trip back through JSONDecoder. Field-level match isn't
+        // worth the fragility — round-trip equality is the point.
+        let decoded = try JSONDecoder.cairnIso8601.decode(JournalEntry.self, from: Data(json.utf8))
+        #expect(decoded.runId == source.runId)
+        if case .trashSucceeded(let ids) = decoded.event {
+            #expect(ids == ["a", "b", "c"])
+        } else {
+            Issue.record("decoded event was not trashSucceeded")
+        }
+    }
+}
+
+/// Coverage for the new chronological batch builder. `from(entries:)`
+/// walks entries oldest→newest, threading prev `syncCompleted` counts
+/// forward so sync rows can render `(+N)` deltas. Each test pins one
+/// transition rule. Pure data — no UI involvement.
+@Suite("JournalTailEntry — from(entries:) sync deltas")
+struct JournalTailEntryBatchTests {
+    private typealias Tail = CairnFixtures.JournalTailEntry
+    private let runId = "2026-04-21T17:57:15Z-034389BC"
+    private let ts = Date(timeIntervalSince1970: 1_745_200_000)
+
+    private func sync(indexed: Int, candidates: Int = 0, pending: Int = 0) -> JournalEntry {
+        JournalEntry(timestamp: ts, runId: runId, event: .syncCompleted(
+            indexed: indexed, candidates: candidates, pendingReview: pending,
+            deferredLarge: 0, deferredLargeBytes: 0, deferredTimeout: 0, elapsedMs: 100
+        ))
+    }
+
+    @Test("first sync row has no delta clause")
+    func firstSyncNoDelta() {
+        let out = Tail.from(entries: [sync(indexed: 100)])
+        #expect(out.count == 1)
+        #expect(out[0].message.contains("indexed=100"))
+        #expect(!out[0].message.contains("(+"))
+        #expect(!out[0].message.contains("(-"))
+    }
+
+    @Test("subsequent sync renders positive delta vs previous")
+    func positiveDelta() {
+        let out = Tail.from(entries: [sync(indexed: 100), sync(indexed: 110, candidates: 2)])
+        // Second row's message must show indexed=110 (+10) and cand=2 (+2).
+        #expect(out[1].message.contains("indexed=110 (+10)"))
+        #expect(out[1].message.contains("cand=2 (+2)"))
+    }
+
+    @Test("subsequent sync renders negative delta vs previous")
+    func negativeDelta() {
+        let out = Tail.from(entries: [sync(indexed: 100), sync(indexed: 95)])
+        #expect(out[1].message.contains("indexed=95 (-5)"))
+    }
+
+    @Test("zero-delta sync omits the parenthetical")
+    func zeroDelta() {
+        let out = Tail.from(entries: [sync(indexed: 100), sync(indexed: 100)])
+        #expect(out[1].message.contains("indexed=100"))
+        // No (+0) / (-0) noise.
+        #expect(!out[1].message.contains("(+0)"))
+        #expect(!out[1].message.contains("(-0)"))
+    }
+
+    @Test("non-sync events between syncs do not reset the delta baseline")
+    func nonSyncDoesNotReset() {
+        let trashEvent = JournalEntry(timestamp: ts, runId: runId, event: .trashSucceeded(assetIds: ["a"]))
+        let out = Tail.from(entries: [sync(indexed: 100), trashEvent, sync(indexed: 105)])
+        // The sync at index 2 should still compute its delta against
+        // the sync at index 0, not reset because of the trash event in between.
+        #expect(out[2].message.contains("indexed=105 (+5)"))
+    }
+}
+
+private extension JSONDecoder {
+    /// ISO-8601 decoder matching the encoder used in
+    /// `JournalTailEntry.encodeRawJSON` so test round-trips pass.
+    static var cairnIso8601: JSONDecoder {
+        let d = JSONDecoder()
+        d.dateDecodingStrategy = .iso8601
+        return d
     }
 }
 
