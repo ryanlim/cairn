@@ -48,6 +48,7 @@ final class AppDependencies {
     private(set) var tokenStore: SwiftDataPersistentChangeTokenStore?
     private(set) var thumbnailStore: SwiftDataThumbnailStore?
     private(set) var editRetirementStore: SwiftDataEditRetirementStore?
+    private(set) var statusSnapshotStore: SwiftDataStatusSnapshotStore?
     private(set) var journal: DeletionJournal?
 
     var persistentChangeReconciler: PhotoKitPersistentChangeReconciler? {
@@ -246,6 +247,7 @@ final class AppDependencies {
         self.deletionSourceStore = SwiftDataDeletionSourceStore(container: container)
         self.tokenStore = SwiftDataPersistentChangeTokenStore(container: container)
         self.editRetirementStore = SwiftDataEditRetirementStore(container: container)
+        self.statusSnapshotStore = SwiftDataStatusSnapshotStore(container: container)
         let thumbStore = SwiftDataThumbnailStore(container: container)
         self.thumbnailStore = thumbStore
 
@@ -322,6 +324,7 @@ final class AppDependencies {
             let cd = self.confirmedDeletedStore
             let ds = self.deletionSourceStore
             let er = self.editRetirementStore
+            let ss = self.statusSnapshotStore
             var ops: [(label: String, body: @Sendable () async throws -> Void)] = [
                 ("local hash cache", { try await lh.clear() }),
             ]
@@ -330,6 +333,7 @@ final class AppDependencies {
             if let cd { ops.append(("confirmed-deleted store", { try await cd.clear() })) }
             if let ds { ops.append(("deletion-source store", { try await ds.clear() })) }
             if let er { ops.append(("edit-retirement store", { try await er.clear() })) }
+            if let ss { ops.append(("status snapshot store", { try await ss.clear() })) }
             let failures = await Self.aggregateClears(ops)
             if !failures.isEmpty {
                 let detail = failures.map { "\($0.label): \(Self.describeSyncError($0.error))" }.joined(separator: "; ")
@@ -379,6 +383,38 @@ final class AppDependencies {
         model.hasCompletedInitialScan = tokenExists
 
         await refreshLibrarySizeStats()
+
+        // Restore last-known status counts so Status doesn't render
+        // blank until the next sync completes. Cosmetic only — a load
+        // failure leaves the model at defaults rather than aborting
+        // bootstrap. The next `performLiveReconciliation` will overwrite
+        // these with fresh values.
+        //
+        // `try? await store?.load()` flattens both error and store-nil
+        // into a single `StatusSnapshot??`; collapse to `StatusSnapshot?`
+        // before the conditional bind.
+        let restoredSnapshot: StatusSnapshot? = await {
+            guard let store = statusSnapshotStore else { return nil }
+            return try? await store.load()
+        }()
+        if let snapshot = restoredSnapshot {
+            let current = model.library
+            model.library = current.with(
+                matched: snapshot.matchedCount,
+                candidates: snapshot.deleteCandidatesCount
+            )
+            model.inferredOrphanCount = snapshot.inferredOrphanCount
+            model.lastCheckedAt = snapshot.computedAt
+            // `pendingReviewCount` lives on `model.reconciliation` so we
+            // can't surface the saved count without fabricating a fake
+            // `LiveReconciliation`. The Status pending-review badge
+            // already falls back to `model.quarantineCount` (restored
+            // separately from `ConfirmedDeletedStore`) so it's not
+            // blank in practice — the saved count is recorded for
+            // forensic completeness and used when the model gets
+            // re-saved after user actions.
+            _ = snapshot.pendingReviewCount
+        }
 
         if let cap = Self.resolveTestingAssetCap() {
             syncLog.info("[cairn.boot] testing asset cap in effect: \(cap)")
@@ -869,6 +905,8 @@ final class AppDependencies {
         model.inferredOrphanCount = inferredOrphanLocalIds.count
         model.lastScanWasTokenExpiryFullEnum = wasTokenExpiry
         model.hasCompletedInitialScan = true
+        model.lastCheckedAt = model.reconciliation?.computedAt
+        await persistSnapshotFromModel()
 
         // Detect "user restored locally what cairn already trashed on
         // Immich." Intersect this scan's freshly-observed checksums
@@ -985,6 +1023,26 @@ final class AppDependencies {
         }
         let indexed = (try? await self.localHashStore.indexedCount()) ?? 0
         model.library = model.library.with(local: totalVisible, indexed: indexed)
+    }
+
+    /// Capture the current status counts to disk so the next cold launch
+    /// can render them before sync runs. Best-effort cosmetic — failures
+    /// log and bail; nothing user-visible depends on this succeeding.
+    @MainActor
+    fileprivate func persistSnapshotFromModel() async {
+        guard let store = statusSnapshotStore else { return }
+        let snapshot = StatusSnapshot(
+            deleteCandidatesCount: model.library.candidates,
+            matchedCount: model.library.matched,
+            pendingReviewCount: model.reconciliation?.pendingReviewCandidates.count ?? 0,
+            inferredOrphanCount: model.inferredOrphanCount,
+            computedAt: model.reconciliation?.computedAt ?? model.lastCheckedAt ?? Date()
+        )
+        do {
+            try await store.save(snapshot)
+        } catch {
+            syncLog.error("[cairn.snapshot] save failed: \(Self.describeSyncError(error), privacy: .public)")
+        }
     }
 
     @MainActor
@@ -1281,6 +1339,7 @@ final class AppDependencies {
                             )
                         }
                     }
+                    await self.persistSnapshotFromModel()
                     await self.refreshRunsList()
                 } catch {
                     // Surface the error via model.lastError (the UI alert
@@ -1406,6 +1465,7 @@ final class AppDependencies {
                             self.model.library = current.with(server: max(0, current.server - trashedCount))
                         }
                     }
+                    await self.persistSnapshotFromModel()
                     await self.refreshRunsList()
                 } catch {
                     // Surface the error via model.lastError (the UI alert
@@ -1450,6 +1510,7 @@ final class AppDependencies {
                         )
                         self.model.inferredOrphanCount = prunedOrphanMap.count
                     }
+                    await self.persistSnapshotFromModel()
                 } catch {
                     await MainActor.run {
                         self.model.lastError = Self.describeSyncError(error)
@@ -1483,6 +1544,7 @@ final class AppDependencies {
                         self.model.inferredOrphanCount = prunedOrphanMap.count
                     }
                     await self.refreshQuarantineCount()
+                    await self.persistSnapshotFromModel()
                 } catch {
                     await MainActor.run {
                         self.model.lastError = Self.describeSyncError(error)
@@ -1677,6 +1739,7 @@ final class AppDependencies {
                         self.model.lastScanWasTokenExpiryFullEnum = false
                         self.model.restoredAfterCairnTrash = [:]
                     }
+                    await self.persistSnapshotFromModel()
                 } catch {
                     await MainActor.run {
                         self.model.lastError = Self.describeSyncError(error)
@@ -1742,8 +1805,8 @@ final class AppDependencies {
             },
             resetIndex: { [weak self] in
                 guard let self else { return }
-                let (lh, dh, eh, cd, tk, er, ds, mdStore) = await MainActor.run {
-                    (self.localHashStore, self.deferredHashStore, self.everSeenStore, self.confirmedDeletedStore, self.tokenStore, self.editRetirementStore, self.deletionSourceStore, self.localAssetMetadataStore)
+                let (lh, dh, eh, cd, tk, er, ds, mdStore, ss) = await MainActor.run {
+                    (self.localHashStore, self.deferredHashStore, self.everSeenStore, self.confirmedDeletedStore, self.tokenStore, self.editRetirementStore, self.deletionSourceStore, self.localAssetMetadataStore, self.statusSnapshotStore)
                 }
                 // Aggregate failures so a single store's hiccup
                 // doesn't leave the user with partial-but-silent
@@ -1760,6 +1823,7 @@ final class AppDependencies {
                 if let tk { ops.append(("change-token store", { try await tk.clear() })) }
                 if let er { ops.append(("edit-retirement store", { try await er.clear() })) }
                 if let ds { ops.append(("deletion-source store", { try await ds.clear() })) }
+                if let ss { ops.append(("status snapshot store", { try await ss.clear() })) }
                 let failures = await Self.aggregateClears(ops)
                 if !failures.isEmpty {
                     let detail = failures.map { "\($0.label): \(Self.describeSyncError($0.error))" }.joined(separator: "; ")
@@ -1779,6 +1843,7 @@ final class AppDependencies {
                     self.model.journalTail = []
                     self.model.runs = []
                     self.model.runAssets = [:]
+                    self.model.lastCheckedAt = nil
                     if failures.isEmpty {
                         self.showStatusToast(.indexReset)
                     } else {
@@ -1839,6 +1904,7 @@ final class AppDependencies {
                     self.deletionSourceStore = nil
                     self.tokenStore = nil
                     self.editRetirementStore = nil
+                    self.statusSnapshotStore = nil
                     self.thumbnailStore = nil
                     self.journal = nil
                     self.serverChecksumSet = nil
@@ -1859,6 +1925,7 @@ final class AppDependencies {
                     self.model.restoredAfterCairnTrash = [:]
                     self.model.hasCompletedInitialScan = false
                     self.model.excludedChecksums = []
+                    self.model.lastCheckedAt = nil
                     if let keychainError {
                         // Sign-out cleared in-memory state successfully,
                         // but the credential delete from Keychain failed.
@@ -1914,8 +1981,8 @@ final class AppDependencies {
             },
             startOverInitialScan: { [weak self] in
                 guard let self else { return }
-                let (lh, dh, tk, eh, cd, er, ds, mdStore) = await MainActor.run {
-                    (self.localHashStore, self.deferredHashStore, self.tokenStore, self.everSeenStore, self.confirmedDeletedStore, self.editRetirementStore, self.deletionSourceStore, self.localAssetMetadataStore)
+                let (lh, dh, tk, eh, cd, er, ds, mdStore, ss) = await MainActor.run {
+                    (self.localHashStore, self.deferredHashStore, self.tokenStore, self.everSeenStore, self.confirmedDeletedStore, self.editRetirementStore, self.deletionSourceStore, self.localAssetMetadataStore, self.statusSnapshotStore)
                 }
                 var ops: [(label: String, body: @Sendable () async throws -> Void)] = [
                     ("local hash cache", { try await lh.clear() }),
@@ -1927,6 +1994,7 @@ final class AppDependencies {
                 if let cd { ops.append(("confirmed-deleted store", { try await cd.clear() })) }
                 if let er { ops.append(("edit-retirement store", { try await er.clear() })) }
                 if let ds { ops.append(("deletion-source store", { try await ds.clear() })) }
+                if let ss { ops.append(("status snapshot store", { try await ss.clear() })) }
                 let failures = await Self.aggregateClears(ops)
                 if !failures.isEmpty {
                     let detail = failures.map { "\($0.label): \(Self.describeSyncError($0.error))" }.joined(separator: "; ")
@@ -1943,6 +2011,7 @@ final class AppDependencies {
                     self.model.pausedSyncElapsedSeconds = nil
                     self.model.syncStartedAt = nil
                     self.model.hasCompletedInitialScan = false
+                    self.model.lastCheckedAt = nil
                     if !failures.isEmpty {
                         self.model.lastError = Self.summarizeClearFailures(action: "Start-over reset", failures)
                     }

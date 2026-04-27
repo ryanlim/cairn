@@ -1004,3 +1004,89 @@ struct SwiftDataDeletionSourceStoreTests {
         #expect(snap[ck("X")] == "id-X")
     }
 }
+
+// MARK: - SwiftDataStatusSnapshotStore
+
+@Suite("SwiftDataStatusSnapshotStore")
+struct SwiftDataStatusSnapshotStoreTests {
+
+    private func sample(_ computedAt: Date = Date(timeIntervalSince1970: 1_700_000_000)) -> StatusSnapshot {
+        StatusSnapshot(
+            deleteCandidatesCount: 14,
+            matchedCount: 4_102,
+            pendingReviewCount: 3,
+            inferredOrphanCount: 1,
+            computedAt: computedAt
+        )
+    }
+
+    @Test("empty container loads as nil")
+    func emptyLoadsNil() async throws {
+        let container = try makeContainer()
+        let store = SwiftDataStatusSnapshotStore(container: container)
+        #expect(try await store.load() == nil)
+    }
+
+    @Test("save + load round-trips every field")
+    func saveLoadRoundTrip() async throws {
+        let container = try makeContainer()
+        let store = SwiftDataStatusSnapshotStore(container: container)
+        let snap = sample()
+        try await store.save(snap)
+
+        let loaded = try await store.load()
+        #expect(loaded?.deleteCandidatesCount == 14)
+        #expect(loaded?.matchedCount == 4_102)
+        #expect(loaded?.pendingReviewCount == 3)
+        #expect(loaded?.inferredOrphanCount == 1)
+        #expect(loaded?.computedAt == snap.computedAt)
+    }
+
+    @Test("save is upsert — second save overwrites the first")
+    func saveUpserts() async throws {
+        let container = try makeContainer()
+        let store = SwiftDataStatusSnapshotStore(container: container)
+
+        try await store.save(sample())
+        let updated = StatusSnapshot(
+            deleteCandidatesCount: 99,
+            matchedCount: 9_999,
+            pendingReviewCount: 0,
+            inferredOrphanCount: 0,
+            computedAt: Date(timeIntervalSince1970: 1_800_000_000)
+        )
+        try await store.save(updated)
+
+        let loaded = try await store.load()
+        #expect(loaded?.deleteCandidatesCount == 99)
+        #expect(loaded?.matchedCount == 9_999)
+    }
+
+    @Test("clear wipes the row — subsequent load is nil")
+    func clearWipes() async throws {
+        let container = try makeContainer()
+        let store = SwiftDataStatusSnapshotStore(container: container)
+        try await store.save(sample())
+        try await store.clear()
+        #expect(try await store.load() == nil)
+    }
+
+    @Test("clear on empty container is a no-op (no throw)")
+    func clearNoOpOnEmpty() async throws {
+        let container = try makeContainer()
+        let store = SwiftDataStatusSnapshotStore(container: container)
+        try await store.clear()
+        #expect(try await store.load() == nil)
+    }
+
+    @Test("two stores sharing one container see each other's writes")
+    func sharedContainerCrossVisibility() async throws {
+        let container = try makeContainer()
+        let writer = SwiftDataStatusSnapshotStore(container: container)
+        let reader = SwiftDataStatusSnapshotStore(container: container)
+
+        try await writer.save(sample())
+        let loaded = try await reader.load()
+        #expect(loaded?.deleteCandidatesCount == 14)
+    }
+}

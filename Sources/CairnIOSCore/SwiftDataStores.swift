@@ -199,6 +199,35 @@ final class StoredEditRetirementEntry {
     }
 }
 
+/// Status-snapshot row. Singleton — there's only ever one snapshot
+/// per server, keyed off a fixed sentinel id (`"current"`). Save is an
+/// upsert; load returns `nil` when no row exists yet. See
+/// `CairnCore/StatusSnapshotStore.swift` for the cosmetic-only contract.
+@Model
+final class StoredStatusSnapshot {
+    @Attribute(.unique) var singletonId: String
+    var deleteCandidatesCount: Int
+    var matchedCount: Int
+    var pendingReviewCount: Int
+    var inferredOrphanCount: Int
+    var computedAt: Date
+
+    init(
+        deleteCandidatesCount: Int,
+        matchedCount: Int,
+        pendingReviewCount: Int,
+        inferredOrphanCount: Int,
+        computedAt: Date
+    ) {
+        self.singletonId = "current"
+        self.deleteCandidatesCount = deleteCandidatesCount
+        self.matchedCount = matchedCount
+        self.pendingReviewCount = pendingReviewCount
+        self.inferredOrphanCount = inferredOrphanCount
+        self.computedAt = computedAt
+    }
+}
+
 @Model
 final class StoredThumbnail {
     @Attribute(.unique) var assetId: String
@@ -234,7 +263,7 @@ public enum CairnSwiftDataContainer {
 
     /// Build a `ModelContainer` for per-server state (ever-seen,
     /// exclusions, confirmed-deleted, persistent-change token,
-    /// edit-retirement anchors).
+    /// edit-retirement anchors, cosmetic status snapshot).
     public static func makePerServer(url: URL, inMemory: Bool = false) throws -> ModelContainer {
         let schema = Schema([
             StoredEverSeenChecksum.self,
@@ -244,6 +273,7 @@ public enum CairnSwiftDataContainer {
             StoredThumbnail.self,
             StoredEditRetirementEntry.self,
             StoredDeletionSourceEntry.self,
+            StoredStatusSnapshot.self,
         ])
         return try container(schema: schema, url: inMemory ? nil : url, inMemory: inMemory)
     }
@@ -262,6 +292,7 @@ public enum CairnSwiftDataContainer {
             StoredLocalAssetMetadata.self,
             StoredEditRetirementEntry.self,
             StoredDeletionSourceEntry.self,
+            StoredStatusSnapshot.self,
         ])
         return try container(schema: schema, url: url, inMemory: inMemory)
     }
@@ -1073,6 +1104,68 @@ public actor SwiftDataPersistentChangeTokenStore: PersistentChangeTokenStore {
             context.delete(row)
         }
         try context.save()
+    }
+}
+
+// MARK: - SwiftDataStatusSnapshotStore
+
+/// SwiftData-backed `StatusSnapshotStore`. Singleton row keyed off a
+/// fixed sentinel id; save upserts and load returns `nil` when no row
+/// exists yet. Same plain-actor-with-private-context pattern as the
+/// other stores.
+public actor SwiftDataStatusSnapshotStore: StatusSnapshotStore {
+    private let context: ModelContext
+
+    public init(container: ModelContainer) {
+        self.context = ModelContext(container)
+    }
+
+    public func load() async throws -> StatusSnapshot? {
+        var descriptor = FetchDescriptor<StoredStatusSnapshot>()
+        descriptor.fetchLimit = 1
+        guard let row = try context.fetch(descriptor).first else { return nil }
+        return StatusSnapshot(
+            deleteCandidatesCount: row.deleteCandidatesCount,
+            matchedCount: row.matchedCount,
+            pendingReviewCount: row.pendingReviewCount,
+            inferredOrphanCount: row.inferredOrphanCount,
+            computedAt: row.computedAt
+        )
+    }
+
+    public func save(_ snapshot: StatusSnapshot) async throws {
+        // Singleton upsert — at most one row should ever exist. Clean
+        // up any rogue extras in case a prior bug or schema migration
+        // left more than one behind.
+        let existing = try context.fetch(FetchDescriptor<StoredStatusSnapshot>())
+        if let row = existing.first {
+            row.deleteCandidatesCount = snapshot.deleteCandidatesCount
+            row.matchedCount = snapshot.matchedCount
+            row.pendingReviewCount = snapshot.pendingReviewCount
+            row.inferredOrphanCount = snapshot.inferredOrphanCount
+            row.computedAt = snapshot.computedAt
+            for extra in existing.dropFirst() {
+                context.delete(extra)
+            }
+        } else {
+            context.insert(StoredStatusSnapshot(
+                deleteCandidatesCount: snapshot.deleteCandidatesCount,
+                matchedCount: snapshot.matchedCount,
+                pendingReviewCount: snapshot.pendingReviewCount,
+                inferredOrphanCount: snapshot.inferredOrphanCount,
+                computedAt: snapshot.computedAt
+            ))
+        }
+        try context.save()
+    }
+
+    public func clear() async throws {
+        var changed = false
+        for row in try context.fetch(FetchDescriptor<StoredStatusSnapshot>()) {
+            context.delete(row)
+            changed = true
+        }
+        if changed { try context.save() }
     }
 }
 

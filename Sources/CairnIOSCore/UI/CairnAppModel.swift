@@ -172,6 +172,13 @@ public final class CairnAppModel {
     /// them by metadata. Drives a warn-tone banner on Status.
     public var inferredOrphanCount: Int = 0
 
+    /// Timestamp of the most recent reconciliation, used by the
+    /// "Last checked" line on Status. Restored at bootstrap from the
+    /// persisted `StatusSnapshotStore` so the line shows a real time
+    /// before the next sync runs; refreshed on each successful sync.
+    /// Falls back to `reconciliation?.computedAt` when present.
+    public var lastCheckedAt: Date?
+
     /// Threshold above which `lastScanBurstCount` triggers the mass-offload
     /// banner. Hard-coded for now; a settings-driven tuning knob could
     /// replace this if field data suggests 50 is wrong.
