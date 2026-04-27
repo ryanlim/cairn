@@ -992,18 +992,25 @@ public struct StatusScreen: View {
                         .foregroundStyle(t.textMuted)
                         .padding(.vertical, 6)
                 } else {
-                    // Single outer ScrollView: every row shifts
-                    // together when the user swipes horizontally.
-                    // `.scrollBounceBehavior(.basedOnSize)` suppresses
-                    // the bounce when content already fits.
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        VStack(alignment: .leading, spacing: 6) {
+                    // Single 2D ScrollView so rows shift together on
+                    // both axes — column alignment stays correct when
+                    // panning horizontally to read tail content, and
+                    // vertical scroll inside the card keeps Status
+                    // from bloating when the user expands hundreds of
+                    // history rows. LazyVStack defers row construction
+                    // so 500-entry buffers don't allocate eagerly.
+                    // Fixed maxHeight only when expanded; collapsed
+                    // (8 rows) sizes naturally so a quiet Status
+                    // doesn't show a stub-height scrollbox.
+                    ScrollView([.horizontal, .vertical], showsIndicators: false) {
+                        LazyVStack(alignment: .leading, spacing: 6) {
                             ForEach(visible) { entry in
                                 JournalTailRow(entry: entry, eventInk: eventColor(entry.event))
                             }
                         }
                         .padding(.trailing, 4)   // breathing room on the right edge
                     }
+                    .frame(maxHeight: journalExpanded ? Self.expandedJournalCardMaxHeight : .infinity)
                     .scrollBounceBehavior(.basedOnSize)
 
                     if journalTail.count > Self.collapsedJournalTailLimit {
@@ -1036,6 +1043,12 @@ public struct StatusScreen: View {
     /// How many journal rows show in the collapsed state. Everything
     /// beyond this hides behind the "Show more" toggle.
     private static let collapsedJournalTailLimit: Int = 8
+
+    /// Cap for the expanded journal card's vertical extent. Beyond
+    /// this, content scrolls within the card rather than pushing the
+    /// rest of Status down. ≈12 rows visible at the current row
+    /// height — roughly a screen-page of activity at a glance.
+    private static let expandedJournalCardMaxHeight: CGFloat = 360
 
     private func eventColor(_ ev: String) -> Color {
         switch ev {

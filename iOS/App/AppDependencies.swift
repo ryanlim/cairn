@@ -422,7 +422,13 @@ final class AppDependencies {
             syncLog.info("[cairn.boot] no asset cap — full library will be hashed")
         }
 
-        if let journal, let recent = try? await journal.lastEntries(limit: 40) {
+        // Buffer enough history for the user to scroll back through
+        // recent activity on Status without leaving the screen. 500
+        // rows ≈ months of normal use; reading them once costs the
+        // same I/O as the full `readAll` we already run for runs.
+        // Settings → Clear journal still exists for anyone who wants
+        // the slate wiped.
+        if let journal, let recent = try? await journal.lastEntries(limit: 500) {
             model.journalTail = recent.reversed().map(CairnFixtures.JournalTailEntry.from)
         }
 
@@ -961,7 +967,13 @@ final class AppDependencies {
             }
         }
 
-        if let journal, let recent = try? await journal.lastEntries(limit: 40) {
+        // Buffer enough history for the user to scroll back through
+        // recent activity on Status without leaving the screen. 500
+        // rows ≈ months of normal use; reading them once costs the
+        // same I/O as the full `readAll` we already run for runs.
+        // Settings → Clear journal still exists for anyone who wants
+        // the slate wiped.
+        if let journal, let recent = try? await journal.lastEntries(limit: 500) {
             model.journalTail = recent.reversed().map(CairnFixtures.JournalTailEntry.from)
         }
 
