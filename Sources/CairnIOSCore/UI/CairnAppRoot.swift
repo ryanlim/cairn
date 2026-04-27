@@ -29,13 +29,9 @@ public struct CairnAppRoot: View {
     /// inline, so the next sync resumes rather than restarts. `nil` when
     /// no sync is running.
     @State private var activeSyncTask: Task<Void, Never>?
-    @State private var tabSwipeDirection: SwipeDirection = .leading
-    @State private var tabSwitchWasSwipe = false
     @State private var exportedFileURL: URL?
     @State private var importResult: CairnImportResult?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    private enum SwipeDirection { case leading, trailing }
 
     #if canImport(UIKit)
     private struct ShareSheet: UIViewControllerRepresentable {
@@ -263,47 +259,42 @@ public struct CairnAppRoot: View {
 
     // MARK: - Main tabs
 
+    /// Native page-style TabView wrapping each tab as a page. Picks up
+    /// horizontal swipe-to-paginate at the system level (UIPageViewController
+    /// under the hood), which means inner horizontal scrollables — runs
+    /// row, journal strip — keep their own pan gesture and only hand off
+    /// to the page-flip when they hit their edge. The previous DragGesture
+    /// overlay on the tab bar was undiscoverable; this matches Photos.app's
+    /// timeline ↔ detail viewer convention.
+    @ViewBuilder
+    private var paginatedTabView: some View {
+        // `.page` style is iOS-only (UIPageViewController-backed). On
+        // macOS the same TabView falls back to the default segmented
+        // chrome — fine for previews; the live macOS path is unused.
+        let tabs = TabView(selection: Binding(
+            get: { model.activeTab },
+            set: { model.activeTab = $0 }
+        )) {
+            ForEach(CairnTab.all, id: \.self) { tab in
+                pageContent(for: tab).tag(tab)
+            }
+        }
+        #if canImport(UIKit)
+        tabs.tabViewStyle(.page(indexDisplayMode: .never))
+        #else
+        tabs
+        #endif
+    }
+
     private var mainTabs: some View {
         VStack(spacing: 0) {
-            currentTab
-                .id(model.activeTab.id)
-                .transition(
-                    tabSwitchWasSwipe && !reduceMotion
-                        ? .asymmetric(
-                            insertion: .move(edge: tabSwipeDirection == .leading ? .trailing : .leading),
-                            removal: .move(edge: tabSwipeDirection == .leading ? .leading : .trailing)
-                          )
-                        : .identity
-                )
+            paginatedTabView
+                .ignoresSafeArea(.keyboard, edges: .bottom)
+
             CairnTabBar(active: Binding(
                 get: { model.activeTab },
-                set: { newTab in
-                    tabSwitchWasSwipe = false
-                    model.activeTab = newTab
-                }
+                set: { model.activeTab = $0 }
             ))
-                .contentShape(Rectangle())
-                .gesture(
-                    DragGesture(minimumDistance: 20, coordinateSpace: .local)
-                        .onEnded { value in
-                            let horizontal = value.translation.width
-                            guard abs(horizontal) > 20 else { return }
-                            let tabs = CairnTab.all
-                            guard let idx = tabs.firstIndex(of: model.activeTab) else { return }
-                            tabSwitchWasSwipe = true
-                            if horizontal < 0, idx + 1 < tabs.count {
-                                tabSwipeDirection = .leading
-                                withAnimation(.cairnSpringTab) {
-                                    model.activeTab = tabs[idx + 1]
-                                }
-                            } else if horizontal > 0, idx > 0 {
-                                tabSwipeDirection = .trailing
-                                withAnimation(.cairnSpringTab) {
-                                    model.activeTab = tabs[idx - 1]
-                                }
-                            }
-                        }
-                )
                 .ignoresSafeArea(.keyboard, edges: .bottom)
         }
         .task {
@@ -343,8 +334,8 @@ public struct CairnAppRoot: View {
     }
 
     @ViewBuilder
-    private var currentTab: some View {
-        switch model.activeTab.id {
+    private func pageContent(for tab: CairnTab) -> some View {
+        switch tab.id {
         case "status":
             StatusScreen(
                 appState: model.appState,
