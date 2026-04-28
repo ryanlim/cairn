@@ -152,6 +152,15 @@ public struct StatusScreen: View {
     /// waiting for `isSyncing` to flip false. Reset back to false
     /// on the next isSyncing transition (in either direction).
     @State private var cancelRequested: Bool = false
+    /// Lagging mirror of `isSyncing` used to fade the
+    /// SyncPhaseChecklist content in *after* the syncCard's layout
+    /// has finished growing to accommodate it. Mounting the
+    /// checklist with opacity = 0 from the moment isSyncing flips
+    /// reserves its layout space immediately (so the card grows in
+    /// one cairnSpring beat), and the content then crossfades in
+    /// without competing for frames against the layout pass —
+    /// previously they ran simultaneously and the user saw stutter.
+    @State private var checklistVisible: Bool = false
     /// Filter chip on the journal-tail card. ON by default — routine
     /// no-op syncs are noise. `@AppStorage` so the user's choice
     /// survives tab navigation and relaunch.
@@ -364,12 +373,28 @@ public struct StatusScreen: View {
         .sheet(item: $journalRawJSONEntry) { entry in
             JournalRawJSONSheet(entry: entry)
         }
-        .onChange(of: isSyncing) { _, _ in
+        .onChange(of: isSyncing) { _, syncing in
             // Reset the "Cancelling…" affordance whenever sync state
             // flips — true → false means cancellation completed, and
             // false → true means a new sync started. Either way the
             // local UI state should reset to idle.
             cancelRequested = false
+
+            // Stage the checklist content visibility relative to the
+            // layout shift. On appear: card grows first (cairnSpring,
+            // ~500ms); checklist content fades in after a short delay
+            // so the two phases don't compete for the same frames.
+            // On collapse: content fades immediately, layout shrinks
+            // afterward (the if-isSyncing guard removes the checklist
+            // from the layout once it's gone).
+            if syncing {
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(280))
+                    if isSyncing { checklistVisible = true }
+                }
+            } else {
+                checklistVisible = false
+            }
         }
     }
 
@@ -841,18 +866,25 @@ public struct StatusScreen: View {
                 }
 
                 // Sync-phase checklist appears as its own row below
-                // the top HStack while syncing. Earlier inline-with-
-                // hero placement caused the "READY TO TRASH" text to
-                // wrap onto two lines because the checklist's
-                // intrinsic width competed with the hero column for
-                // horizontal space. Putting it in a separate row
-                // means the card just grows vertically during sync —
-                // no horizontal rearrangement of any element above
-                // or below.
+                // the top HStack while syncing. Mounted (taking
+                // layout space) the moment isSyncing flips true, but
+                // its content opacity is gated on `checklistVisible`,
+                // a state that lags isSyncing by ~280ms when sync
+                // starts. Two-stage sequence:
+                //   1. isSyncing → true: checklist mounts at opacity 0;
+                //      card grows via the parent's cairnSpring layout
+                //      animation. No content rendering competes with
+                //      the layout pass.
+                //   2. ~280ms later (after layout settles):
+                //      checklistVisible → true; content crossfades in
+                //      via easeInOut over 200ms.
+                // On collapse the gate flips immediately (content
+                // fades fast, then card shrinks).
                 if isSyncing {
                     SyncPhaseChecklist(phase: syncPhase)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .transition(.opacity)
+                        .opacity(checklistVisible ? 1 : 0)
+                        .animation(reduceMotion ? .none : .easeInOut(duration: 0.2), value: checklistVisible)
                 }
                 if quarantineCount > 0 {
                     quarantineLine
