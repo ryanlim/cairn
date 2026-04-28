@@ -508,12 +508,19 @@ public struct StatusScreen: View {
                 #if DEBUG
                 StatusBodyDiagnostic.noteSyncStarted()
                 #endif
-                // withAnimation at the mutation site — propagates
-                // the animation context UP through the layout
-                // cascade so the parent VStack interpolates its
-                // child positions smoothly, not just the
-                // SyncPhaseChecklist's own size.
-                withAnimation(reduceMotion ? .none : .smooth(duration: 0.35)) {
+                // cairnSpring (elastic, slight overshoot) matches the
+                // contraction feel — during sync end, the syncToast
+                // appears and triggers cairnBannerAnimation, which
+                // applies cairnSpring across the entire VStack
+                // including the syncCard's collapse. Using the same
+                // spring on expansion gives symmetric "elastic"
+                // motion. Now safe to use even though it has
+                // overshoot, because withAnimation is mutation-
+                // anchored and not re-targeted by body re-evals
+                // (which is what produced the stutter when this
+                // spring was applied via `.animation(_:value:)` at
+                // body level).
+                withAnimation(reduceMotion ? .none : .cairnSpring) {
                     checklistFrameHeight = Self.checklistHeight
                 }
                 #if DEBUG
@@ -534,7 +541,11 @@ public struct StatusScreen: View {
                 withAnimation(reduceMotion ? .none : .easeInOut(duration: 0.2)) {
                     checklistVisible = false
                 }
-                withAnimation(reduceMotion ? .none : .smooth(duration: 0.35)) {
+                // cairnSpring on collapse so the symmetric pair of
+                // expand/collapse motions both feel elastic — even
+                // when the syncToast doesn't appear at sync end (so
+                // cairnBannerAnimation wouldn't fire on its own).
+                withAnimation(reduceMotion ? .none : .cairnSpring) {
                     checklistFrameHeight = 0
                 }
             }
