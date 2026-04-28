@@ -17,7 +17,7 @@ import UIKit  // NSString text measurement for pre-sizing the journal-tail rows.
 /// 1–3 evals across ~280ms; double-digit counts inside 100ms means
 /// something is causing render thrash.
 private enum StatusBodyDiagnostic {
-    static let enabled = false
+    static let enabled = true
     @MainActor static var lastSyncStart: Date? = nil
     @MainActor static var evalsSinceStart: [Date] = []
     @MainActor static let log = Logger(subsystem: "app.cairn.ios.diag", category: "stutter")
@@ -896,7 +896,24 @@ public struct StatusScreen: View {
                                     .fill(syncBlocked ? t.surfaceAlt : t.infoSoft)
                                     .frame(width: 52, height: 52)
                                 PlayfulSyncIcon(
-                                    isAnimating: isSyncing,
+                                    // Gated on checklistVisible (NOT
+                                    // isSyncing) so the icon stays static
+                                    // during the ~280ms layout-grow
+                                    // window after sync starts. The
+                                    // diagnostic showed 3-4 StatusScreen
+                                    // body re-evaluations during that
+                                    // window (upstream model changes:
+                                    // syncPhase, syncProgress, etc.); each
+                                    // re-render triggers a layout pass,
+                                    // and the rotating icon's 30fps
+                                    // TimelineView was firing
+                                    // concurrently — competing for render
+                                    // slots and producing visible stutter
+                                    // on the separator line below the
+                                    // card. Once layout has settled (at
+                                    // checklistVisible flip time), the
+                                    // icon starts spinning normally.
+                                    isAnimating: checklistVisible,
                                     color: syncBlocked ? t.textMuted : t.infoInk
                                 )
                             }
