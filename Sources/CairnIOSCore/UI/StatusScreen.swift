@@ -887,7 +887,15 @@ public struct StatusScreen: View {
                 }
             }
             .padding(14)
-            .animation(reduceMotion ? .none : .cairnSpring, value: isSyncing)
+            // Snappier spring for the checklist appear/disappear. The
+            // longer cairnSpring (response 0.5, slight overshoot) made
+            // the card height oscillate visibly while settling — the
+            // user reported it as stuttery rearrangement. cairnSpringSnappy
+            // (response 0.28) lands the new layout in ~280ms with less
+            // oscillation; the PlayfulSyncIcon opts out of inherited
+            // animations via .transaction so its rotation isn't dragged
+            // into this spring's interpolation either.
+            .animation(reduceMotion ? .none : .cairnSpringSnappy, value: isSyncing)
         }
         .padding(.bottom, 14)
     }
@@ -1435,6 +1443,15 @@ private struct PlayfulSyncIcon: View {
                 .foregroundStyle(color)
                 .rotationEffect(.degrees(rotation))
         }
+        // Opt out of inherited animation contexts. Without this, an
+        // ancestor `.animation(.spring, value:)` (e.g. the syncCard's
+        // checklist-appear spring) wraps every frame of TimelineView's
+        // rotation updates — each per-frame angle change gets pulled
+        // through the spring's interpolation, fighting with the next
+        // frame's update and producing visible stutter. `disablesAnimations`
+        // tells SwiftUI: ignore the surrounding animation context;
+        // apply rotation values directly.
+        .transaction { $0.disablesAnimations = true }
     }
 
     /// Flywheel rotation curve. See struct doc for the segment table.
