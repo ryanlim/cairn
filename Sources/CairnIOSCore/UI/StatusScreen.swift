@@ -1426,32 +1426,60 @@ private struct PlayfulSyncIcon: View {
     /// the CSS `l5` reference (.5turn per 1s).
     var period: Double = 2.0
 
+    /// Absolute Date at which the coast-to-zero phase finishes. nil
+    /// when the icon is either actively spinning (isAnimating == true)
+    /// or fully stopped at 0° (idle). When isAnimating flips from
+    /// true to false, this is set to the next cycle-wrap moment so
+    /// the icon completes its current revolution before pausing —
+    /// guaranteeing a clean 0° landing instead of stopping at a
+    /// random offset that the next sync-start would have to jump
+    /// from.
+    @State private var coastEnd: Date? = nil
+
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0/30.0, paused: !isAnimating)) { context in
-            // Always compute rotation from elapsed — no `isAnimating ?
-            // rotation : 0` snap-to-zero. When the TimelineView is
-            // paused, `context.date` freezes at the pause moment, so
-            // this expression freezes at the last frame's angle. The
-            // icon visually freezes at whatever rotation it had when
-            // the sync ended, instead of snapping back to 0° (which
-            // looked like a sudden backwards rotation, confusing the
-            // user).
-            //
-            // 30fps update rate (was 60fps): at 180°/sec the icon
-            // moves 6°/frame instead of 3°/frame — still visually
-            // smooth for a slow continuous rotation, but halves
-            // contention with the parent's layout passes when
-            // `syncPhase` changes mid-sync (which would otherwise
-            // produce visible stutter on the checklist update).
+        // TimelineView runs continuously (no `paused:`) so the body
+        // re-evaluates each frame and can detect when the coast
+        // phase ends. CPU cost is negligible — when fully stopped,
+        // the rotation value is constant and SwiftUI's render diff
+        // skips the actual draw.
+        TimelineView(.animation(minimumInterval: 1.0/30.0)) { context in
             let elapsed = context.date.timeIntervalSinceReferenceDate
                 .truncatingRemainder(dividingBy: period)
-            let rotation = (elapsed / period) * 360
+            let inCycleRotation = (elapsed / period) * 360
+            let rotation: Double = {
+                if isAnimating {
+                    return inCycleRotation
+                } else if let stop = coastEnd, context.date < stop {
+                    // Coasting — keep spinning until the cycle wraps
+                    // to 0° at the scheduled stop moment.
+                    return inCycleRotation
+                } else {
+                    return 0
+                }
+            }()
             Image(systemName: "arrow.triangle.2.circlepath")
                 .font(.system(size: size, weight: .semibold))
                 .foregroundStyle(color)
                 .rotationEffect(.degrees(rotation))
         }
         .transaction { $0.disablesAnimations = true }
+        .onChange(of: isAnimating) { _, newValue in
+            if newValue {
+                // Resuming (or never paused): clear any pending coast.
+                coastEnd = nil
+            } else {
+                // Schedule the coast end at the next natural cycle-
+                // wrap moment so the icon parks at exactly 0°
+                // (visually identical to 360° = end of cycle). The
+                // calculation finds how much of the current cycle
+                // remains, then adds that to `now`.
+                let now = Date()
+                let elapsedInCycle = now.timeIntervalSinceReferenceDate
+                    .truncatingRemainder(dividingBy: period)
+                let timeToWrap = period - elapsedInCycle
+                coastEnd = now.addingTimeInterval(timeToWrap)
+            }
+        }
     }
 }
 
