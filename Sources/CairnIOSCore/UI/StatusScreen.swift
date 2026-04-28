@@ -310,6 +310,18 @@ public struct StatusScreen: View {
     @State private var checklistAnimationStart: Date? = nil
     @State private var checklistAnimationFrom: CGFloat = 0
     @State private var checklistAnimationTo: CGFloat = 0
+    /// Accumulated animation time, advanced by each TimelineView
+    /// frame's delta but CAPPED per-frame to dodge main-thread
+    /// freezes. The orchestrator's `syncPhase = .hashing` transition
+    /// blocks the main thread for ~130ms during sync start (file
+    /// system + SwiftData work); without capping, the TimelineView
+    /// would resume after the freeze and snap the spring from
+    /// "where it was 130ms ago" to "where it should be now," which
+    /// reads as a visible jerk. With the cap, the spring continues
+    /// smoothly from where it left off — total animation time
+    /// stretches by however long the freeze was, which is fine.
+    @State private var checklistElapsed: TimeInterval = 0
+    @State private var checklistLastFrameDate: Date? = nil
     /// Filter chip on the journal-tail card. ON by default — routine
     /// no-op syncs are noise. `@AppStorage` so the user's choice
     /// survives tab navigation and relaunch.
@@ -565,12 +577,15 @@ public struct StatusScreen: View {
                 StatusBodyDiagnostic.noteReduceMotion(reduceMotion)
                 #endif
                 // Kick off the TimelineView-driven spring animation:
-                // capture from/to, mark start time, set the settled
-                // target. The TimelineView un-pauses (its `paused:`
-                // condition becomes false) and starts firing 60fps.
+                // capture from/to, reset the elapsed-time
+                // accumulator, mark start time. The TimelineView
+                // un-pauses (its `paused:` condition becomes false)
+                // and starts firing 60fps.
                 checklistAnimationFrom = checklistFrameHeight
                 checklistAnimationTo = Self.checklistHeight
                 checklistFrameHeight = Self.checklistHeight
+                checklistElapsed = 0
+                checklistLastFrameDate = nil
                 checklistAnimationStart = reduceMotion ? nil : Date()
                 #if DEBUG
                 StatusBodyDiagnostic.noteHeightTarget(checklistFrameHeight)
@@ -602,6 +617,8 @@ public struct StatusScreen: View {
                 checklistAnimationFrom = checklistFrameHeight
                 checklistAnimationTo = 0
                 checklistFrameHeight = 0
+                checklistElapsed = 0
+                checklistLastFrameDate = nil
                 checklistAnimationStart = reduceMotion ? nil : Date()
                 Task { @MainActor in
                     try? await Task.sleep(for: .seconds(Self.checklistAnimationDuration))
@@ -1612,24 +1629,47 @@ public struct StatusScreen: View {
     private static let checklistAnimationDuration: TimeInterval = 0.5
 
     /// Damped-spring height curve. Returns the interpolated height
-    /// at the given moment. Once `checklistAnimationDuration` has
-    /// elapsed since the animation start, returns the final value
-    /// directly. Spring physics: lightly underdamped → ~5% overshoot,
-    /// single visible elastic peak, settle by end of duration.
+    /// at the given moment. Once accumulated elapsed time hits
+    /// `checklistAnimationDuration`, returns the final value
+    /// directly.
+    ///
+    /// Important: uses a CAPPED elapsed-time accumulator instead of
+    /// raw `now - animationStart`. Per-frame deltas are clamped at
+    /// 1/15s, so a main-thread freeze (e.g., the 130ms one observed
+    /// at sync start when the orchestrator transitions syncPhase to
+    /// .hashing) doesn't cause the spring to "skip ahead." The
+    /// animation continues smoothly from where the freeze caught it.
+    /// Total animation time stretches by however long the freezes
+    /// summed to — a perceptual win.
+    ///
+    /// Spring physics tuned for `decay=8, omega=9.5`: first peak at
+    /// t≈0.33 with ~7% overshoot. Less wobble than the previous
+    /// decay=6 (which produced a visible undershoot after the peak).
     @MainActor
     private func currentChecklistHeight(at now: Date) -> CGFloat {
-        guard let start = checklistAnimationStart else {
+        guard checklistAnimationStart != nil else {
             return checklistFrameHeight
         }
-        let elapsed = now.timeIntervalSince(start)
+        // Advance the accumulator by this frame's clamped delta.
+        // Mutating @State from inside a body computation is
+        // unusual, but the @State backing here is for animation
+        // bookkeeping rather than view-derived state, so it
+        // doesn't trigger view diffs (the values aren't read
+        // anywhere except this function and the TimelineView's
+        // `paused:` predicate, which uses checklistAnimationStart
+        // not the elapsed/lastFrame state).
+        if let last = checklistLastFrameDate {
+            let raw = now.timeIntervalSince(last)
+            checklistElapsed += min(raw, 1.0 / 15.0)
+        }
+        checklistLastFrameDate = now
+
+        let elapsed = checklistElapsed
         if elapsed >= Self.checklistAnimationDuration {
             return checklistAnimationTo
         }
         let t = elapsed / Self.checklistAnimationDuration
-        // Damped spring: 1 - exp(-decay*t) * cos(omega*t).
-        // decay 6, omega 9.5 → first peak at t≈0.33 with ~6% overshoot,
-        // fully settled by t=1.
-        let decay: Double = 6.0
+        let decay: Double = 8.0
         let omega: Double = 9.5
         let progress = 1 - exp(-decay * t) * cos(omega * t)
         return checklistAnimationFrom + (checklistAnimationTo - checklistAnimationFrom) * progress
