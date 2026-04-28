@@ -1723,6 +1723,55 @@ public struct StatusScreen: View {
 ///
 /// All the animation @State (start, from, to, elapsed, lastFrame,
 /// frameHeight) lives here so it persists with the view's identity.
+/// Mutable animation state held in a class so the elapsed-time
+/// accumulator can be safely advanced from inside the View's body
+/// closure. SwiftUI's @State property wrapper is for value types and
+/// shouldn't be mutated from inside body computations; for reference
+/// types stored via @State, the reference itself isn't tracked for
+/// changes, so mutating the referenced object doesn't trigger
+/// re-renders or warnings.
+@MainActor
+private final class SyncChecklistAnimState {
+    var animationStart: Date? = nil
+    var animationFrom: CGFloat = 0
+    var animationTo: CGFloat = 0
+    var elapsed: TimeInterval = 0
+    var lastFrameDate: Date? = nil
+    var settledHeight: CGFloat = 0
+
+    /// Advance the elapsed-time accumulator by this frame's clamped
+    /// delta and return the spring-eased height. Capping at 1/15s
+    /// per frame means a main-thread freeze (e.g., 130ms during
+    /// syncPhase=hashing) only advances the spring by ~67ms — the
+    /// animation continues smoothly from where it left off rather
+    /// than jumping forward to where it would be by wall-clock time.
+    /// Total animation time stretches by however long freezes
+    /// summed to.
+    func tick(now: Date, duration: TimeInterval) -> CGFloat {
+        guard animationStart != nil else { return settledHeight }
+        if let last = lastFrameDate {
+            let raw = now.timeIntervalSince(last)
+            elapsed += min(raw, 1.0 / 15.0)
+        }
+        lastFrameDate = now
+        if elapsed >= duration { return animationTo }
+        let t = elapsed / duration
+        let decay: Double = 8.0
+        let omega: Double = 9.5
+        let progress = 1 - exp(-decay * t) * cos(omega * t)
+        return animationFrom + (animationTo - animationFrom) * progress
+    }
+
+    func startAnimation(to target: CGFloat) {
+        animationFrom = settledHeight
+        animationTo = target
+        settledHeight = target
+        elapsed = 0
+        lastFrameDate = nil
+        animationStart = Date()
+    }
+}
+
 private struct SyncChecklistAnimator: View {
     let isAnimating: Bool
     let isContentVisible: Bool
@@ -1731,20 +1780,11 @@ private struct SyncChecklistAnimator: View {
     let duration: TimeInterval
     let reduceMotion: Bool
 
-    @State private var animationStart: Date? = nil
-    @State private var animationFrom: CGFloat = 0
-    @State private var animationTo: CGFloat = 0
-    @State private var settledHeight: CGFloat = 0
+    @State private var anim = SyncChecklistAnimState()
 
     var body: some View {
-        // No `paused:` — TimelineView runs continuously. CPU cost is
-        // low because most frames render the static settled value
-        // (cheap path) and SwiftUI's diff skips unchanged outputs.
-        // Keeping the timeline always running avoids edge cases
-        // where the pause→unpause transition didn't fire enough
-        // intermediate frames during the actual animation window.
         TimelineView(.animation(minimumInterval: 1.0/120.0)) { context in
-            let h = currentHeight(at: context.date)
+            let h = reduceMotion ? anim.settledHeight : anim.tick(now: context.date, duration: duration)
             SyncPhaseChecklist(phase: phase)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .frame(height: h, alignment: .top)
@@ -1758,43 +1798,16 @@ private struct SyncChecklistAnimator: View {
                 #endif
         }
         .onChange(of: isAnimating) { _, syncing in
-            // Capture from/to. Settled tracks the most-recent
-            // animation target so a flip-flop interrupts the prior
-            // animation cleanly.
-            animationFrom = settledHeight
-            animationTo = syncing ? expandedHeight : 0
-            settledHeight = animationTo
-            animationStart = reduceMotion ? nil : Date()
+            if reduceMotion {
+                anim.settledHeight = syncing ? expandedHeight : 0
+                anim.animationStart = nil
+            } else {
+                anim.startAnimation(to: syncing ? expandedHeight : 0)
+            }
             #if DEBUG
-            StatusBodyDiagnostic.noteHeightTarget(settledHeight)
+            StatusBodyDiagnostic.noteHeightTarget(anim.settledHeight)
             #endif
-            // Note: no Task here to clear animationStart. The spring
-            // math returns animationTo directly once elapsed >=
-            // duration, so the height stays correctly settled.
-            // Eliminating the clear-Task removes a class of race:
-            // a stale Task from a previous animation could fire
-            // mid-new-animation and reset the start time.
         }
-    }
-
-    /// Damped-spring height at the given moment. Uses raw
-    /// `now - animationStart` for elapsed time (no per-frame cap).
-    /// Trade-off: a main-thread freeze causes the spring to "skip
-    /// forward" to where it should be by wall-clock time when the
-    /// thread resumes — small visual jump, but the animation
-    /// actually runs. Previous capped-accumulator approach didn't
-    /// fire intermediate frames at all, which was strictly worse.
-    private func currentHeight(at now: Date) -> CGFloat {
-        guard let start = animationStart, !reduceMotion else {
-            return settledHeight
-        }
-        let elapsed = now.timeIntervalSince(start)
-        if elapsed >= duration { return animationTo }
-        let t = elapsed / duration
-        let decay: Double = 8.0
-        let omega: Double = 9.5
-        let progress = 1 - exp(-decay * t) * cos(omega * t)
-        return animationFrom + (animationTo - animationFrom) * progress
     }
 }
 
