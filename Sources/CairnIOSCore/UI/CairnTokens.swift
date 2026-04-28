@@ -73,6 +73,15 @@ public struct CairnTokens: Sendable {
     public let accentSoft: Color
     public let accentInk: Color
 
+    /// Quiet blue-gray tone for ambient/networked/background info.
+    /// Distinct from `textHint` (a neutral warm gray): use this for
+    /// elements that are deliberately quiet AND have a semantic
+    /// affinity to "remote" / "networked" / "secondary detail" —
+    /// server hostnames, "last checked" timestamps, run-id suffixes
+    /// in audit lists. Drawn from the palette's `quiet` (Air Force
+    /// Blue).
+    public let quiet: Color
+
     // MARK: - Construction
 
     /// Build tokens from a palette + a color scheme. Soft variants are
@@ -117,6 +126,8 @@ public struct CairnTokens: Sendable {
             accent       = p.accent.tinted(0.05)
             accentSoft   = p.accent.mix(with: p.graphite, amount: 0.78)
             accentInk    = p.accent.tinted(0.18)
+
+            quiet        = p.quiet.tinted(0.10)
         } else {
             bg          = p.paper
             surface     = p.bone
@@ -148,6 +159,8 @@ public struct CairnTokens: Sendable {
             accent       = p.accent
             accentSoft   = p.accent.mix(with: p.bone, amount: 0.85)
             accentInk    = p.accent.shaded(0.18)
+
+            quiet        = p.quiet.shaded(0.05)
         }
     }
 }

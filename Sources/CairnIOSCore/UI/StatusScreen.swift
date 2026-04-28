@@ -399,7 +399,11 @@ public struct StatusScreen: View {
         var middle = AttributedString(" against ")
         middle.foregroundColor = t.textMuted
         var host = AttributedString(serverHost)
-        host.foregroundColor = t.textHint
+        // `quiet` (Air Force Blue) instead of `textHint` — the
+        // server hostname is the one element in the subhead that's
+        // semantically "remote/networked", and the cool blue-gray
+        // makes it visually distinct from the local-device prose.
+        host.foregroundColor = t.quiet
         host.font = .system(size: 12, design: .monospaced)
         return s + device + middle + host
     }
@@ -781,7 +785,11 @@ public struct StatusScreen: View {
                         if let checked = lastCheckedAt {
                             Text("Last checked \(Self.relativeTime(checked))")
                                 .font(.system(size: 11))
-                                .foregroundStyle(t.textHint)
+                                // Ambient timestamp — quiet blue-gray
+                                // reads as "background / when this last
+                                // happened" without competing with the
+                                // hero count above it.
+                                .foregroundStyle(t.quiet)
                         }
                     }
                     Spacer()
