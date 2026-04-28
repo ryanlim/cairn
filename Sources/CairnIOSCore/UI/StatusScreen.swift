@@ -1413,23 +1413,15 @@ public struct StatusScreen: View {
 
 // MARK: - Playful sync icon
 
-/// Flywheel-style sync glyph driven by a damped-harmonic-oscillator
-/// curve. A single closed-form expression fills the entire cycle —
-/// no piecewise segments, no rest phase, no segment-boundary
-/// derivative jumps.
+/// Constant-speed sync glyph — linear rotation at a steady angular
+/// velocity, no kick, no settle, no rest. Adapted from the
+/// user-provided CSS reference `@keyframes l5` which animates
+/// `transform: rotate(.5turn)` over 1s with default linear easing.
 ///
-///   rotation(t) = 360 × (1 − exp(−decay·t) · cos(ω·t))
-///
-/// At t=0 this is 0° with a sharp positive angular velocity (the
-/// "kick"). The exponential envelope decays to ~0 well before the
-/// cycle ends, so by the time the loop wraps, rotation has settled
-/// at 360° and angular velocity has decayed to ≈0 — meaning the
-/// only velocity discontinuity in the whole motion is the kick at
-/// each cycle start, which is the deliberate flywheel beat.
-///
-/// Constants tuned for one visible overshoot of ~9° at t≈0.45s and
-/// near-complete settling by t≈1.0s; the remaining ~0.2s of the
-/// cycle is the icon resting at 360° before the next kick.
+/// One full revolution per cycle (360° / period seconds), so the
+/// loop wrap is seamless: at cycle end rotation is at 360°, which
+/// is visually identical to 0° at the next cycle's start. No
+/// velocity discontinuity, no piecewise segments.
 ///
 /// `TimelineView(.animation, paused:)` drives the cycle and pauses
 /// cleanly when not syncing. `.transaction` opts the icon out of
@@ -1440,7 +1432,9 @@ private struct PlayfulSyncIcon: View {
     let isAnimating: Bool
     let color: Color
     var size: CGFloat = 22
-    var period: Double = 1.2
+    /// Seconds per full 360° revolution. 2.0s = 180°/sec, matching
+    /// the CSS `l5` reference (.5turn per 1s).
+    var period: Double = 2.0
 
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0/60.0, paused: !isAnimating)) { context in
@@ -1449,28 +1443,13 @@ private struct PlayfulSyncIcon: View {
                 return context.date.timeIntervalSinceReferenceDate
                     .truncatingRemainder(dividingBy: period)
             }()
-            let rotation = Self.rotation(elapsed: elapsed, isAnimating: isAnimating)
+            let rotation = isAnimating ? (elapsed / period) * 360 : 0
             Image(systemName: "arrow.triangle.2.circlepath")
                 .font(.system(size: size, weight: .semibold))
                 .foregroundStyle(color)
                 .rotationEffect(.degrees(rotation))
         }
         .transaction { $0.disablesAnimations = true }
-    }
-
-    /// Damped-harmonic-oscillator rotation toward 360° as the cycle
-    /// elapses. Tuned for ~9° overshoot at the first peak and full
-    /// settle inside the 1.2s cycle.
-    private static func rotation(elapsed: Double, isAnimating: Bool) -> Double {
-        guard isAnimating else { return 0 }
-        // decay = 8, omega = 7 — see struct doc for tuning rationale.
-        // - First peak at t = π/ω ≈ 0.449s, rotation ≈ 369°
-        //   (overshoot = 360 · exp(−decay·π/ω) ≈ 360 · 0.027 ≈ 9.7°)
-        // - exp(−decay·t) at t=1.0 ≈ 0.000335, so rotation has
-        //   settled to ~360° well within the cycle.
-        let decay: Double = 8
-        let omega: Double = 7
-        return 360 * (1 - exp(-decay * elapsed) * cos(omega * elapsed))
     }
 }
 
