@@ -144,6 +144,14 @@ public struct StatusScreen: View {
     /// is presented while the value is non-nil. Pretty-printed JSON
     /// of the underlying `JournalEntry` is in `entry.rawJSON`.
     @State private var journalRawJSONEntry: CairnFixtures.JournalTailEntry? = nil
+    /// Set true the moment the user taps Cancel during sync. The
+    /// underlying cancellation can take a moment (orchestrators
+    /// finish the current step before honoring it), so the UI
+    /// immediately switches to a "Cancelling…" affordance with a
+    /// spinner — the user sees their tap registered without
+    /// waiting for `isSyncing` to flip false. Reset back to false
+    /// on the next isSyncing transition (in either direction).
+    @State private var cancelRequested: Bool = false
     /// Filter chip on the journal-tail card. ON by default — routine
     /// no-op syncs are noise. `@AppStorage` so the user's choice
     /// survives tab navigation and relaunch.
@@ -355,6 +363,13 @@ public struct StatusScreen: View {
         .background(t.bg)
         .sheet(item: $journalRawJSONEntry) { entry in
             JournalRawJSONSheet(entry: entry)
+        }
+        .onChange(of: isSyncing) { _, _ in
+            // Reset the "Cancelling…" affordance whenever sync state
+            // flips — true → false means cancellation completed, and
+            // false → true means a new sync started. Either way the
+            // local UI state should reset to idle.
+            cancelRequested = false
         }
     }
 
@@ -864,21 +879,36 @@ public struct StatusScreen: View {
                 // Cancel affordance during sync. Standalone since the
                 // primary sync action lives in the top-right circular
                 // button — when syncing, that button is disabled and
-                // visibly animated; this row interrupts. The phase
-                // checklist moved to the top-left of the card during
-                // sync, so no checklist below.
+                // visibly animated; this row interrupts. Once tapped,
+                // the button switches to a disabled "Cancelling…"
+                // state with a small spinner so the user gets
+                // immediate visual confirmation that the tap
+                // registered, even though the actual cancellation
+                // takes a moment to propagate through the orchestrator
+                // pipeline. State resets when isSyncing flips.
                 if isSyncing {
-                    Button(action: onCancelSync) {
-                        Text("Cancel")
-                            .font(.system(size: 13, weight: .semibold))
-                            .tracking(0.66)
-                            .foregroundStyle(t.dangerInk)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 8)
-                            .contentShape(Rectangle())
+                    Button(action: {
+                        cancelRequested = true
+                        onCancelSync()
+                    }) {
+                        HStack(spacing: 8) {
+                            if cancelRequested {
+                                ProgressView()
+                                    .controlSize(.mini)
+                                    .tint(t.textMuted)
+                            }
+                            Text(cancelRequested ? "Cancelling…" : "Cancel")
+                                .font(.system(size: 13, weight: .semibold))
+                                .tracking(0.66)
+                                .foregroundStyle(cancelRequested ? t.textMuted : t.dangerInk)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 8)
+                        .contentShape(Rectangle())
                     }
                     .buttonStyle(CairnPressStyle())
-                    .accessibilityLabel("Cancel sync")
+                    .disabled(cancelRequested)
+                    .accessibilityLabel(cancelRequested ? "Cancelling sync" : "Cancel sync")
                 }
 
                 // Surface the sync-blocked reason inline when applicable —
