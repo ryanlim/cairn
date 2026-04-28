@@ -1724,30 +1724,26 @@ public struct StatusScreen: View {
 /// All the animation @State (start, from, to, elapsed, lastFrame,
 /// frameHeight) lives here so it persists with the view's identity.
 private struct SyncChecklistAnimator: View {
-    /// True when sync is in progress. Triggers the expand animation
-    /// on rising edge, collapse on falling edge.
     let isAnimating: Bool
-    /// True when the content (icons + text) should be visible. Lags
-    /// `isAnimating` by the staging delay; the parent owns the
-    /// scheduling.
     let isContentVisible: Bool
     let phase: CairnAppModel.SyncPhase
-    /// Settled height when expanded. Hardcoded by the parent.
     let expandedHeight: CGFloat
-    /// Spring duration in seconds.
     let duration: TimeInterval
-    /// Whether to honor reduce-motion accessibility setting.
     let reduceMotion: Bool
 
     @State private var animationStart: Date? = nil
     @State private var animationFrom: CGFloat = 0
     @State private var animationTo: CGFloat = 0
-    @State private var elapsed: TimeInterval = 0
-    @State private var lastFrameDate: Date? = nil
     @State private var settledHeight: CGFloat = 0
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0/120.0, paused: animationStart == nil)) { context in
+        // No `paused:` — TimelineView runs continuously. CPU cost is
+        // low because most frames render the static settled value
+        // (cheap path) and SwiftUI's diff skips unchanged outputs.
+        // Keeping the timeline always running avoids edge cases
+        // where the pause→unpause transition didn't fire enough
+        // intermediate frames during the actual animation window.
+        TimelineView(.animation(minimumInterval: 1.0/120.0)) { context in
             let h = currentHeight(at: context.date)
             SyncPhaseChecklist(phase: phase)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -1761,59 +1757,38 @@ private struct SyncChecklistAnimator: View {
                 }
                 #endif
         }
-        // `initial: false` (the default) — don't fire on view
-        // appearance. Earlier `initial: true` ran the closure once
-        // with isAnimating=false at appear, which started a
-        // collapse-animation Task with a 0.5s sleep. If the user
-        // tapped Sync within that 0.5s window, the new expand
-        // started but the old collapse-Task was still pending; it
-        // fired mid-animation and cleared animationStart, pausing
-        // the TimelineView before the spring finished. Trace
-        // confirmed: only one RENDERED-HEIGHT event (the final
-        // post-pause sample at 64).
         .onChange(of: isAnimating) { _, syncing in
-            if syncing {
-                animationFrom = settledHeight
-                animationTo = expandedHeight
-                settledHeight = expandedHeight
-                elapsed = 0
-                lastFrameDate = nil
-                animationStart = reduceMotion ? nil : Date()
-                #if DEBUG
-                StatusBodyDiagnostic.noteHeightTarget(settledHeight)
-                #endif
-                Task { @MainActor in
-                    try? await Task.sleep(for: .seconds(duration))
-                    animationStart = nil
-                }
-            } else {
-                animationFrom = settledHeight
-                animationTo = 0
-                settledHeight = 0
-                elapsed = 0
-                lastFrameDate = nil
-                animationStart = reduceMotion ? nil : Date()
-                Task { @MainActor in
-                    try? await Task.sleep(for: .seconds(duration))
-                    animationStart = nil
-                }
-            }
+            // Capture from/to. Settled tracks the most-recent
+            // animation target so a flip-flop interrupts the prior
+            // animation cleanly.
+            animationFrom = settledHeight
+            animationTo = syncing ? expandedHeight : 0
+            settledHeight = animationTo
+            animationStart = reduceMotion ? nil : Date()
+            #if DEBUG
+            StatusBodyDiagnostic.noteHeightTarget(settledHeight)
+            #endif
+            // Note: no Task here to clear animationStart. The spring
+            // math returns animationTo directly once elapsed >=
+            // duration, so the height stays correctly settled.
+            // Eliminating the clear-Task removes a class of race:
+            // a stale Task from a previous animation could fire
+            // mid-new-animation and reset the start time.
         }
     }
 
-    /// Damped-spring height at the given moment, with capped per-frame
-    /// elapsed-time advance to survive main-thread freezes (the
-    /// orchestrator's `syncPhase = .hashing` transition can block the
-    /// main thread for ~130ms; without the cap, the spring "jumps"
-    /// to where it should be by wall-clock time, producing a visible
-    /// skip).
+    /// Damped-spring height at the given moment. Uses raw
+    /// `now - animationStart` for elapsed time (no per-frame cap).
+    /// Trade-off: a main-thread freeze causes the spring to "skip
+    /// forward" to where it should be by wall-clock time when the
+    /// thread resumes — small visual jump, but the animation
+    /// actually runs. Previous capped-accumulator approach didn't
+    /// fire intermediate frames at all, which was strictly worse.
     private func currentHeight(at now: Date) -> CGFloat {
-        guard animationStart != nil else { return settledHeight }
-        if let last = lastFrameDate {
-            let raw = now.timeIntervalSince(last)
-            elapsed += min(raw, 1.0 / 15.0)
+        guard let start = animationStart, !reduceMotion else {
+            return settledHeight
         }
-        lastFrameDate = now
+        let elapsed = now.timeIntervalSince(start)
         if elapsed >= duration { return animationTo }
         let t = elapsed / duration
         let decay: Double = 8.0
