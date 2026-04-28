@@ -668,6 +668,12 @@ public struct Callout<Content: View>: View {
                 .font(.system(size: 13))
                 .foregroundStyle(inkColor)
         }
+        // Fill the available horizontal width so callouts span the
+        // same width as siblings like CairnCard. Without this, an
+        // HStack containing only intrinsic-sized children (icon +
+        // short Text) sizes to that intrinsic content and the
+        // banner reads as visibly narrower than adjacent cards.
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
         .background(softColor)
