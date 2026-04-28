@@ -508,22 +508,35 @@ public struct StatusScreen: View {
                 #if DEBUG
                 StatusBodyDiagnostic.noteSyncStarted()
                 #endif
-                checklistFrameHeight = Self.checklistHeight
+                // withAnimation at the mutation site — propagates
+                // the animation context UP through the layout
+                // cascade so the parent VStack interpolates its
+                // child positions smoothly, not just the
+                // SyncPhaseChecklist's own size.
+                withAnimation(reduceMotion ? .none : .smooth(duration: 0.35)) {
+                    checklistFrameHeight = Self.checklistHeight
+                }
                 #if DEBUG
                 StatusBodyDiagnostic.noteHeightTarget(checklistFrameHeight)
                 #endif
                 Task { @MainActor in
                     try? await Task.sleep(for: .milliseconds(280))
                     if isSyncing {
-                        checklistVisible = true
+                        withAnimation(reduceMotion ? .none : .easeInOut(duration: 0.2)) {
+                            checklistVisible = true
+                        }
                         #if DEBUG
                         StatusBodyDiagnostic.noteVisibilityFlip()
                         #endif
                     }
                 }
             } else {
-                checklistVisible = false
-                checklistFrameHeight = 0
+                withAnimation(reduceMotion ? .none : .easeInOut(duration: 0.2)) {
+                    checklistVisible = false
+                }
+                withAnimation(reduceMotion ? .none : .smooth(duration: 0.35)) {
+                    checklistFrameHeight = 0
+                }
             }
         }
     }
@@ -1034,8 +1047,13 @@ public struct StatusScreen: View {
                     .frame(height: checklistFrameHeight, alignment: .top)
                     .clipped()
                     .opacity(checklistVisible ? 1 : 0)
-                    .animation(reduceMotion ? .none : .smooth(duration: 0.35), value: checklistFrameHeight)
-                    .animation(reduceMotion ? .none : .easeInOut(duration: 0.2), value: checklistVisible)
+                    // No `.animation(_:value:)` here — that modifier
+                    // scopes the animation to the SyncPhaseChecklist's
+                    // own size interpolation but doesn't propagate up
+                    // to the parent VStack's layout cascade, so the
+                    // parent snaps. Animations applied at mutation
+                    // sites via `withAnimation` (in onChange below)
+                    // propagate through the entire layout pass.
                 if quarantineCount > 0 {
                     quarantineLine
                 }
