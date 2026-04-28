@@ -737,34 +737,40 @@ public struct StatusScreen: View {
         CairnCard {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(alignment: .top) {
-                    // During sync, the hero count is irrelevant (it's
-                    // about to update); the sync-phase checklist takes
-                    // its place so the user sees what's actually
-                    // happening. When idle, the hero count returns and
-                    // the checklist is hidden.
+                    // Hero column is ALWAYS visible — never replaced.
+                    // The sync-phase checklist slides in alongside it
+                    // during sync (below) so the user retains the
+                    // ready-to-trash count + last-checked context
+                    // continuously, with no transient UI disappearing.
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("READY TO TRASH")
+                            .font(.system(size: 11, weight: .semibold)).tracking(0.9)
+                            .foregroundStyle(t.textMuted)
+                        Button(action: { if library.candidates > 0 { onOpenDeleteQueue() } }) {
+                            Text("\(library.candidates)")
+                                .font(.system(size: 44, weight: .semibold).monospacedDigit())
+                                .tracking(-1.5)
+                                .foregroundStyle(readyToTrashColor)
+                                .lineLimit(1)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(library.candidates == 0)
+                        .accessibilityLabel("\(library.candidates) ready to trash. Tap to view.")
+                        if let checked = lastCheckedAt {
+                            Text("Last checked \(Self.relativeTime(checked))")
+                                .font(.system(size: 11))
+                                .foregroundStyle(t.textHint)
+                        }
+                    }
+                    // Three-step sync checklist appears to the right of
+                    // the hero column while a sync is running. Doesn't
+                    // displace any other content — the right column
+                    // (icon + chip + safety-rail) stays in place; the
+                    // Spacer absorbs the layout difference.
                     if isSyncing {
                         SyncPhaseChecklist(phase: syncPhase)
-                    } else {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("READY TO TRASH")
-                                .font(.system(size: 11, weight: .semibold)).tracking(0.9)
-                                .foregroundStyle(t.textMuted)
-                            Button(action: { if library.candidates > 0 { onOpenDeleteQueue() } }) {
-                                Text("\(library.candidates)")
-                                    .font(.system(size: 44, weight: .semibold).monospacedDigit())
-                                    .tracking(-1.5)
-                                    .foregroundStyle(readyToTrashColor)
-                                    .lineLimit(1)
-                            }
-                            .buttonStyle(.plain)
-                            .disabled(library.candidates == 0)
-                            .accessibilityLabel("\(library.candidates) ready to trash. Tap to view.")
-                            if let checked = lastCheckedAt {
-                                Text("Last checked \(Self.relativeTime(checked))")
-                                    .font(.system(size: 11))
-                                    .foregroundStyle(t.textHint)
-                            }
-                        }
+                            .padding(.leading, 12)
+                            .transition(.opacity)
                     }
                     Spacer()
                     VStack(alignment: .trailing, spacing: 6) {
@@ -780,11 +786,11 @@ public struct StatusScreen: View {
                         Button(action: { if !syncBlocked && !isSyncing { onStartSync() } }) {
                             ZStack {
                                 Circle()
-                                    .fill(syncBlocked ? t.surfaceAlt : t.primary.opacity(0.14))
+                                    .fill(syncBlocked ? t.surfaceAlt : t.infoSoft)
                                     .frame(width: 52, height: 52)
                                 PlayfulSyncIcon(
                                     isAnimating: isSyncing,
-                                    color: syncBlocked ? t.textMuted : t.primary
+                                    color: syncBlocked ? t.textMuted : t.infoInk
                                 )
                             }
                             .contentShape(Circle())
@@ -814,6 +820,9 @@ public struct StatusScreen: View {
                     }
                 }
 
+                // (above HStack ends here — checklist transitions
+                //  in/out via .transition(.opacity); animation
+                //  bound to isSyncing so the slide is smooth.)
                 if quarantineCount > 0 {
                     quarantineLine
                 }
@@ -877,6 +886,7 @@ public struct StatusScreen: View {
                 }
             }
             .padding(14)
+            .animation(reduceMotion ? .none : .cairnSpring, value: isSyncing)
         }
         .padding(.bottom, 14)
     }
@@ -1386,17 +1396,22 @@ public struct StatusScreen: View {
 
 // MARK: - Playful sync icon
 
-/// Three-phase springy sync glyph used as the syncCard's primary
+/// Four-phase springy sync glyph used as the syncCard's primary
 /// action. Adapted from the user-provided CSS keyframe animation
-/// `@keyframes l18` (cubic-bezier(0.3, 1, 0, 1) at 1.5s per cycle).
-/// The CSS variant ran four corner "petals" expanding-then-rotating;
-/// here the same rhythm is applied to a single SF Symbol so the
-/// existing arrow.triangle.2.circlepath is the visual anchor:
+/// `@keyframes l18` (cubic-bezier(0.3, 1, 0, 1) at 1.5s per cycle),
+/// extended with a ball-morph phase so the icon visibly compresses
+/// into a solid disk and then blooms back to the arrow each cycle:
 ///
-///   0     →  0.33: scale 1.0 → 1.25 (expand outward, no rotation)
-///   0.33  →  0.66: hold at 1.25, rotate 0° → 360°
-///   0.66  →  1.0 : scale 1.25 → 1.0 (contract back, rotation
-///                   already at 360° = visually 0°, no jump)
+///   0.00 → 0.30: arrow scales 1.0 → 1.25 (expand outward)
+///   0.30 → 0.60: hold at 1.25, rotate 0° → 360°
+///   0.60 → 0.85: arrow contracts to 1.0 AND morphs into solid ball
+///                  (arrow opacity → 0, ball opacity → 1)
+///   0.85 → 1.00: ball blooms back into arrow (ball opacity → 0,
+///                  arrow opacity → 1)
+///
+/// Cycle starts and ends with the static arrow at scale 1.0, so the
+/// loop is seamless and the idle state matches cycle boundaries
+/// (no jump when isAnimating toggles).
 ///
 /// `TimelineView(.animation, paused:)` drives the cycle so the
 /// animation pauses cleanly when not syncing — avoids the
@@ -1415,30 +1430,84 @@ private struct PlayfulSyncIcon: View {
                 return context.date.timeIntervalSinceReferenceDate
                     .truncatingRemainder(dividingBy: period) / period
             }()
-            let (scale, rotation) = Self.transform(at: phase)
-            Image(systemName: "arrow.triangle.2.circlepath")
-                .font(.system(size: size, weight: .semibold))
-                .foregroundStyle(color)
-                .rotationEffect(.degrees(rotation))
-                .scaleEffect(scale)
+            let state = Self.computeState(phase: phase, isAnimating: isAnimating)
+            ZStack {
+                // Solid disk that the arrow morphs into during the
+                // contract phase (and out of during the bloom phase).
+                // Sized to roughly the SF Symbol's circular footprint
+                // — a `size`-diameter circle centered on the same
+                // point.
+                Circle()
+                    .fill(color)
+                    .frame(width: size * 0.86, height: size * 0.86)
+                    .opacity(state.ballOpacity)
+                Image(systemName: "arrow.triangle.2.circlepath")
+                    .font(.system(size: size, weight: .semibold))
+                    .foregroundStyle(color)
+                    .rotationEffect(.degrees(state.rotation))
+                    .scaleEffect(state.scale)
+                    .opacity(state.arrowOpacity)
+            }
         }
     }
 
-    /// Three-segment keyframe: expand → rotate → contract. Cubic
-    /// ease-out within each segment approximates the CSS
-    /// `cubic-bezier(0.3, 1, 0, 1)` snappy-start, slow-finish curve.
-    /// Static-method so the closure inside `body` doesn't dodge the
-    /// view-builder type checker.
-    private static func transform(at phase: Double) -> (scale: Double, rotation: Double) {
-        if phase < 0.33 {
-            let t = phase / 0.33
-            return (1.0 + 0.25 * cubicEaseOut(t), 0)
-        } else if phase < 0.66 {
-            let t = (phase - 0.33) / (0.66 - 0.33)
-            return (1.25, 360 * cubicEaseOut(t))
+    private struct AnimState {
+        let scale: Double
+        let rotation: Double
+        let arrowOpacity: Double
+        let ballOpacity: Double
+    }
+
+    /// Four-segment keyframe per cycle. Cubic ease-out within each
+    /// segment approximates the CSS `cubic-bezier(0.3, 1, 0, 1)`
+    /// snappy-start, slow-finish curve.
+    private static func computeState(phase: Double, isAnimating: Bool) -> AnimState {
+        guard isAnimating else {
+            return AnimState(scale: 1.0, rotation: 0, arrowOpacity: 1.0, ballOpacity: 0.0)
+        }
+        if phase < 0.30 {
+            // Expand: arrow scales from 1.0 to 1.25.
+            let t = phase / 0.30
+            return AnimState(
+                scale: 1.0 + 0.25 * cubicEaseOut(t),
+                rotation: 0,
+                arrowOpacity: 1.0,
+                ballOpacity: 0.0
+            )
+        } else if phase < 0.60 {
+            // Rotate: full revolution while held at scale 1.25.
+            let t = (phase - 0.30) / (0.60 - 0.30)
+            return AnimState(
+                scale: 1.25,
+                rotation: 360 * cubicEaseOut(t),
+                arrowOpacity: 1.0,
+                ballOpacity: 0.0
+            )
+        } else if phase < 0.85 {
+            // Contract + morph to ball: arrow shrinks back to 1.0
+            // and crossfades into the solid disk. Rotation stays at
+            // 360° (visually the same as 0°) so no spin during the
+            // morph.
+            let t = (phase - 0.60) / (0.85 - 0.60)
+            let eased = cubicEaseOut(t)
+            return AnimState(
+                scale: 1.25 - 0.25 * eased,
+                rotation: 360,
+                arrowOpacity: 1.0 - eased,
+                ballOpacity: eased
+            )
         } else {
-            let t = (phase - 0.66) / (1.0 - 0.66)
-            return (1.25 - 0.25 * cubicEaseOut(t), 360)
+            // Bloom: ball at scale 1.0 crossfades back into the
+            // arrow. Rotation snaps to 0 here, but arrowOpacity at
+            // segment start is 0 so the snap is invisible.
+            let t = (phase - 0.85) / (1.0 - 0.85)
+            let eased = cubicEaseOut(t)
+            return AnimState(
+                scale: 1.0,
+                rotation: 0,
+                arrowOpacity: eased,
+                ballOpacity: 1.0 - eased
+            )
         }
     }
 
