@@ -352,16 +352,19 @@ public struct StatusScreen: View {
             // `.transition(.cairnBanner)` modifiers on individual
             // banners are no-ops (SwiftUI only plays transitions
             // inside an animated context).
-            .cairnBannerAnimation(value: bannerVisibilityKey)
-            // Single animation context for sync-state-driven layout
-            // changes: the syncCard's checklist appearing/disappearing
-            // AND every section below the card sliding to accommodate.
-            // `.smooth` is iOS 17+'s critically-damped spring — no
-            // overshoot, faster settle than cairnSpring. The shorter
-            // duration prevents the rotating icon's 60fps updates
-            // from competing with a long layout interpolation tail
-            // (which produced visible stutter on the appear path).
+            // Modifier order matters: `.smooth(value: isSyncing)` is
+            // applied FIRST so it sits inner (closer to the view);
+            // `cairnBannerAnimation(value: bannerVisibilityKey)` is
+            // applied second so it's the outermost animation context.
+            // When ONLY a banner-related change happens (e.g. the
+            // sync-success toast disappearing), cairnSpring drives
+            // the .cairnBanner transition. When isSyncing flips, the
+            // inner .smooth provides a critically-damped settle for
+            // the syncCard's layout shift. Reversed order made the
+            // outer .smooth dominate the banner's transition,
+            // producing a 250ms snap-out that read as "no animation."
             .animation(reduceMotion ? .none : .smooth(duration: 0.25), value: isSyncing)
+            .cairnBannerAnimation(value: bannerVisibilityKey)
         }
         .background(t.bg)
         .sheet(item: $journalRawJSONEntry) { entry in
@@ -1438,13 +1441,25 @@ private struct PlayfulSyncIcon: View {
     var period: Double = 2.0
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0/60.0, paused: !isAnimating)) { context in
-            let elapsed: Double = {
-                guard isAnimating else { return 0 }
-                return context.date.timeIntervalSinceReferenceDate
-                    .truncatingRemainder(dividingBy: period)
-            }()
-            let rotation = isAnimating ? (elapsed / period) * 360 : 0
+        TimelineView(.animation(minimumInterval: 1.0/30.0, paused: !isAnimating)) { context in
+            // Always compute rotation from elapsed — no `isAnimating ?
+            // rotation : 0` snap-to-zero. When the TimelineView is
+            // paused, `context.date` freezes at the pause moment, so
+            // this expression freezes at the last frame's angle. The
+            // icon visually freezes at whatever rotation it had when
+            // the sync ended, instead of snapping back to 0° (which
+            // looked like a sudden backwards rotation, confusing the
+            // user).
+            //
+            // 30fps update rate (was 60fps): at 180°/sec the icon
+            // moves 6°/frame instead of 3°/frame — still visually
+            // smooth for a slow continuous rotation, but halves
+            // contention with the parent's layout passes when
+            // `syncPhase` changes mid-sync (which would otherwise
+            // produce visible stutter on the checklist update).
+            let elapsed = context.date.timeIntervalSinceReferenceDate
+                .truncatingRemainder(dividingBy: period)
+            let rotation = (elapsed / period) * 360
             Image(systemName: "arrow.triangle.2.circlepath")
                 .font(.system(size: size, weight: .semibold))
                 .foregroundStyle(color)
