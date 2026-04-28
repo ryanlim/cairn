@@ -1761,7 +1761,17 @@ private struct SyncChecklistAnimator: View {
                 }
                 #endif
         }
-        .onChange(of: isAnimating, initial: true) { _, syncing in
+        // `initial: false` (the default) — don't fire on view
+        // appearance. Earlier `initial: true` ran the closure once
+        // with isAnimating=false at appear, which started a
+        // collapse-animation Task with a 0.5s sleep. If the user
+        // tapped Sync within that 0.5s window, the new expand
+        // started but the old collapse-Task was still pending; it
+        // fired mid-animation and cleared animationStart, pausing
+        // the TimelineView before the spring finished. Trace
+        // confirmed: only one RENDERED-HEIGHT event (the final
+        // post-pause sample at 64).
+        .onChange(of: isAnimating) { _, syncing in
             if syncing {
                 animationFrom = settledHeight
                 animationTo = expandedHeight
