@@ -63,6 +63,14 @@ Run tests + bump build + build the IPA
 
 Upload to TestFlight
 
+### ios metadata
+
+```sh
+[bundle exec] fastlane ios metadata
+```
+
+Push App Store listing metadata + screenshots without rebuilding
+
 ### ios release
 
 ```sh
@@ -77,7 +85,7 @@ Upload to App Store
 [bundle exec] fastlane ios screenshots
 ```
 
-Capture App Store + README screenshots via Fastlane snapshot
+Capture App Store + README screenshots
 
 ### ios setup_certificates
 

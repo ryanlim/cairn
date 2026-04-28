@@ -16,12 +16,16 @@ platform :ios do
 
   APP_IDENTIFIER = "app.cairn.ios"
 
-  # XcodeGen produces these alongside this Fastfile's parent dir.
-  XCODE_PROJECT = "Cairn.xcodeproj"
-  SCHEME        = "Cairn"
-  PROJECT_YML   = "../project.yml"
-
-  OUTPUT_DIRECTORY = "../build/ios"
+  # All paths anchored to absolute paths via __dir__ (= iOS/fastlane/).
+  # Different fastlane actions resolve relative paths from different
+  # cwds — `sh`/Ruby blocks resolve from iOS/fastlane/ but gym/build_app
+  # ends up resolving from iOS/, so a single `"../Foo"` string works
+  # for one and breaks the other. Absolute paths sidestep all of that.
+  IOS_DIR          = File.expand_path("..", __dir__)
+  XCODE_PROJECT    = File.join(IOS_DIR, "Cairn.xcodeproj")
+  SCHEME           = "Cairn"
+  PROJECT_YML      = File.join(IOS_DIR, "project.yml")
+  OUTPUT_DIRECTORY = File.join(IOS_DIR, "build", "ios")
 
   # ============================================================================
   # LANES
@@ -74,7 +78,7 @@ platform :ios do
     # Use Fastlane's gym (wraps xcodebuild + signing). Output lands in
     # OUTPUT_DIRECTORY relative to the iOS/ directory (the parent of fastlane/).
     build_app(
-      project:         "../#{XCODE_PROJECT}",
+      project:         XCODE_PROJECT,
       scheme:          SCHEME,
       configuration:   "Release",
       output_directory: OUTPUT_DIRECTORY,
@@ -82,7 +86,24 @@ platform :ios do
       clean:           true,
       export_method:   "app-store",
       include_bitcode: false,
-      include_symbols: true
+      include_symbols: true,
+      # Tell xcodebuild's export step to use automatic signing the same
+      # way archive does — without this, "No profiles for ..." fires
+      # because the App Store distribution profile is created on-demand
+      # at export time (not pre-provisioned), and the default export
+      # path expects pre-existing manual profiles.
+      export_options: {
+        signingStyle: "automatic",
+        teamID: "7VBG686USB"
+      },
+      # `-allowProvisioningUpdates` lets xcodebuild reach the developer
+      # portal during export to fetch / create the App Store
+      # distribution profile if one isn't cached locally. Without it,
+      # automatic signing only works inside the Xcode IDE — from the
+      # command line you have to either pre-create the profile (via
+      # match / sigh / a one-time Xcode Archive) or pass this flag.
+      xcargs:        "-allowProvisioningUpdates",
+      export_xcargs: "-allowProvisioningUpdates"
     )
     UI.success "✅ IPA built at #{OUTPUT_DIRECTORY}/Cairn.ipa"
   end
@@ -113,6 +134,36 @@ platform :ios do
       changelog: "Bug fixes and improvements"
     )
     UI.success "🚀 Uploaded to TestFlight"
+  end
+
+  desc "Push App Store listing metadata + screenshots without rebuilding"
+  lane :metadata do
+    # Pushes everything in fastlane/metadata/ + fastlane/screenshots/ to
+    # ASC's App Store Information page. Doesn't touch the binary, doesn't
+    # submit for review. Use after `make beta` has uploaded an IPA, when
+    # you want to populate description/keywords/screenshots in one shot
+    # instead of copy-pasting from `docs/app-store-metadata.md`.
+    api_key = app_store_connect_api_key(
+      key_id:       ENV["APP_STORE_CONNECT_API_KEY_KEY_ID"],
+      issuer_id:    ENV["APP_STORE_CONNECT_API_KEY_ISSUER_ID"],
+      key_filepath: ENV["APP_STORE_CONNECT_API_KEY_KEY_FILEPATH"]
+    )
+
+    upload_to_app_store(
+      api_key:                          api_key,
+      skip_binary_upload:               true,
+      skip_metadata:                    false,
+      skip_screenshots:                 false,
+      force:                            true,    # don't open the HTML preview, just push
+      precheck_include_in_app_purchases: false,
+      submit_for_review:                false,
+      automatic_release:                false,
+      submission_information: {
+        add_id_info_uses_idfa: false
+      }
+    )
+    UI.success "📝 Metadata + screenshots pushed to App Store Connect"
+    UI.important "⚠️  Privacy labels and age-rating questionnaire still need to be filled out manually in ASC — fastlane doesn't fully automate those."
   end
 
   desc "Upload to App Store"

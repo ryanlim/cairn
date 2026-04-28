@@ -4,7 +4,7 @@
 # the day-to-day commands stay short and discoverable. Run `make help` to
 # see what's available.
 
-.PHONY: help install generate open clean test build beta release setup-certs sync-certs screenshots export-wordmark device device-run device-list device-logs sim-run sim-seed
+.PHONY: help install generate open clean test build beta metadata release setup-certs sync-certs screenshots export-wordmark device device-run device-list device-logs sim-run sim-seed
 
 # Bundle identifier — must match PRODUCT_BUNDLE_IDENTIFIER in project.yml.
 BUNDLE_ID := app.cairn.ios
@@ -83,6 +83,9 @@ build:         ## Build a release IPA via fastlane.
 
 beta:          ## Build + upload to TestFlight.
 	bundle exec fastlane beta
+
+metadata:      ## Push App Store listing metadata + screenshots to ASC (no rebuild). Use after `make beta` to populate description/keywords/screenshots without copy-pasting.
+	bundle exec fastlane metadata
 
 release:       ## Build + upload to App Store.
 	bundle exec fastlane release
