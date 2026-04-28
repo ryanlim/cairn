@@ -5,45 +5,76 @@ import UIKit  // NSString text measurement for pre-sizing the journal-tail rows.
 #endif
 
 #if DEBUG
-/// Diagnostic logger for the appear-path stutter the user reported
-/// (separator below the syncCard moves down jerkily on sync start).
-/// Counts `StatusScreen.body` evaluations within a 600ms window
-/// starting from each `isSyncing` flip, then prints the count + per-
-/// eval timestamps. Toggle by flipping `enabled` — the conditional
-/// `let _ = ...` call site costs nothing when disabled.
+/// Diagnostic logger for the appear-path stutter (separator below the
+/// syncCard moves down jerkily on sync start). Captures everything
+/// that happens within a 600ms window starting from each `isSyncing`
+/// flip — body evaluations, observed-value snapshots, and frame-target
+/// changes — so we can correlate state mutations with re-renders.
 ///
-/// Usage on device: `make device-run` and watch the console for
-/// `[stutter]` lines after tapping Sync. A "healthy" appear is
-/// 1–3 evals across ~280ms; double-digit counts inside 100ms means
-/// something is causing render thrash.
+/// Usage: `make device-run`, tap Sync, watch the console for
+/// `[stutter]` lines. Filter by `subsystem:app.cairn.ios.diag`.
 private enum StatusBodyDiagnostic {
     static let enabled = true
     @MainActor static var lastSyncStart: Date? = nil
-    @MainActor static var evalsSinceStart: [Date] = []
+    @MainActor static var events: [Event] = []
     @MainActor static let log = Logger(subsystem: "app.cairn.ios.diag", category: "stutter")
 
-    @MainActor static func noteBodyEval() {
+    enum Event {
+        case bodyEval(at: Date, snapshot: [String: String])
+        case heightTarget(at: Date, height: CGFloat)
+        case visibilityFlip(at: Date)
+    }
+
+    @MainActor static func noteBodyEval(snapshot: [String: String]) {
         guard enabled, let start = lastSyncStart else { return }
         let now = Date()
         if now.timeIntervalSince(start) > 0.6 {
-            // Window closed — flush.
-            if !evalsSinceStart.isEmpty {
-                let offsets = evalsSinceStart.map {
-                    String(format: "%.0fms", $0.timeIntervalSince(start) * 1000)
-                }
-                log.notice("[stutter] StatusScreen body evals in 600ms after isSyncing→true: \(self.evalsSinceStart.count) (offsets: \(offsets.joined(separator: ", "), privacy: .public))")
-            }
+            flush(start: start)
             lastSyncStart = nil
-            evalsSinceStart.removeAll()
+            events.removeAll()
             return
         }
-        evalsSinceStart.append(now)
+        events.append(.bodyEval(at: now, snapshot: snapshot))
+    }
+
+    @MainActor static func noteHeightTarget(_ h: CGFloat) {
+        guard enabled, lastSyncStart != nil else { return }
+        events.append(.heightTarget(at: Date(), height: h))
+    }
+
+    @MainActor static func noteVisibilityFlip() {
+        guard enabled, lastSyncStart != nil else { return }
+        events.append(.visibilityFlip(at: Date()))
     }
 
     @MainActor static func noteSyncStarted() {
         guard enabled else { return }
         lastSyncStart = Date()
-        evalsSinceStart.removeAll()
+        events.removeAll()
+    }
+
+    @MainActor private static func flush(start: Date) {
+        guard !events.isEmpty else { return }
+        var lines: [String] = []
+        var prevSnapshot: [String: String] = [:]
+        for event in events {
+            switch event {
+            case .bodyEval(let at, let snapshot):
+                let offset = Int(at.timeIntervalSince(start) * 1000)
+                let diff = snapshot.filter { prevSnapshot[$0.key] != $0.value }
+                let diffStr = diff.isEmpty ? "—" : diff.map { "\($0.key)=\($0.value)" }.sorted().joined(separator: ", ")
+                lines.append("  \(offset)ms BODY changed:[\(diffStr)]")
+                prevSnapshot = snapshot
+            case .heightTarget(let at, let height):
+                let offset = Int(at.timeIntervalSince(start) * 1000)
+                lines.append("  \(offset)ms HEIGHT-TARGET=\(Int(height))")
+            case .visibilityFlip(let at):
+                let offset = Int(at.timeIntervalSince(start) * 1000)
+                lines.append("  \(offset)ms VISIBILITY-FLIP")
+            }
+        }
+        let combined = "[stutter] sync-start trace:\n" + lines.joined(separator: "\n")
+        log.notice("\(combined, privacy: .public)")
     }
 }
 #endif
@@ -206,6 +237,19 @@ public struct StatusScreen: View {
     /// without competing for frames against the layout pass —
     /// previously they ran simultaneously and the user saw stutter.
     @State private var checklistVisible: Bool = false
+    /// Explicit @State holding the SyncPhaseChecklist's frame
+    /// height. Driven by `.onChange(of: isSyncing)` rather than
+    /// derived inline as `isSyncing ? height : 0`. Why: the StatusScreen
+    /// body re-evaluates ~4 times in the first 280ms of sync (upstream
+    /// model property updates: syncPhase, syncProgress, etc.). With
+    /// the height computed inline, each body re-eval re-evaluated the
+    /// expression and SwiftUI's animation engine appeared to be
+    /// re-targeting the .smooth interpolation mid-flight, producing
+    /// visible jerks on the separator below the card. With explicit
+    /// @State, the height value is set once per isSyncing transition
+    /// and stays stable across body re-evals — the animation runs
+    /// uninterrupted from start to finish.
+    @State private var checklistFrameHeight: CGFloat = 0
     /// Filter chip on the journal-tail card. ON by default — routine
     /// no-op syncs are noise. `@AppStorage` so the user's choice
     /// survives tab navigation and relaunch.
@@ -390,7 +434,19 @@ public struct StatusScreen: View {
 
     public var body: some View {
         #if DEBUG
-        let _ = StatusBodyDiagnostic.noteBodyEval()
+        let _ = StatusBodyDiagnostic.noteBodyEval(snapshot: [
+            "isSyncing": "\(isSyncing)",
+            "syncPhase": "\(syncPhase)",
+            "syncProgress": syncProgress.map { "\($0.hashed)/\($0.total)" } ?? "nil",
+            "indexed": "\(indexed)",
+            "library.candidates": "\(library.candidates)",
+            "library.indexed": "\(library.indexed)",
+            "library.matched": "\(library.matched)",
+            "deferredQueue.count": "\(deferredQueue.count)",
+            "journalTail.count": "\(journalTail.count)",
+            "runs.count": "\(runs.count)",
+            "syncToast": syncToast.map { "\($0)" } ?? "nil",
+        ])
         #endif
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
@@ -420,13 +476,15 @@ public struct StatusScreen: View {
             // banners are no-ops (SwiftUI only plays transitions
             // inside an animated context).
             .cairnBannerAnimation(value: bannerVisibilityKey)
-            // Layout shifts driven by sync state-change use a
-            // critically-damped curve (no overshoot) rather than
-            // cairnSpring's slight-overshoot bounce. Test for the
-            // user's reported "line stutters as it moves down":
-            // overshoot reads visually as the line going past
-            // target then bouncing back, which we want to rule out.
-            .animation(reduceMotion ? .none : .smooth(duration: 0.35), value: isSyncing)
+            // No body-level `.animation(.smooth, value: isSyncing)`
+            // here. The syncCard's layout shift is driven by the
+            // `checklistFrameHeight` state and animated via a
+            // .smooth modifier on the SyncPhaseChecklist itself —
+            // applying it at body level had the side-effect of
+            // re-targeting the animation each time StatusScreen body
+            // re-evaluated (4× in the first 280ms of sync due to
+            // upstream model updates), which the user perceived as
+            // stutter on the separator line.
         }
         .background(t.bg)
         .sheet(item: $journalRawJSONEntry) { entry in
@@ -450,12 +508,22 @@ public struct StatusScreen: View {
                 #if DEBUG
                 StatusBodyDiagnostic.noteSyncStarted()
                 #endif
+                checklistFrameHeight = Self.checklistHeight
+                #if DEBUG
+                StatusBodyDiagnostic.noteHeightTarget(checklistFrameHeight)
+                #endif
                 Task { @MainActor in
                     try? await Task.sleep(for: .milliseconds(280))
-                    if isSyncing { checklistVisible = true }
+                    if isSyncing {
+                        checklistVisible = true
+                        #if DEBUG
+                        StatusBodyDiagnostic.noteVisibilityFlip()
+                        #endif
+                    }
                 }
             } else {
                 checklistVisible = false
+                checklistFrameHeight = 0
             }
         }
     }
@@ -963,9 +1031,10 @@ public struct StatusScreen: View {
                 // content draws don't compete with layout draws.
                 SyncPhaseChecklist(phase: syncPhase)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .frame(height: isSyncing ? Self.checklistHeight : 0, alignment: .top)
+                    .frame(height: checklistFrameHeight, alignment: .top)
                     .clipped()
                     .opacity(checklistVisible ? 1 : 0)
+                    .animation(reduceMotion ? .none : .smooth(duration: 0.35), value: checklistFrameHeight)
                     .animation(reduceMotion ? .none : .easeInOut(duration: 0.2), value: checklistVisible)
                 if quarantineCount > 0 {
                     quarantineLine
