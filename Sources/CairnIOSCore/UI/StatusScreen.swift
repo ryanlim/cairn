@@ -282,14 +282,18 @@ public struct StatusScreen: View {
             syncToast != nil,
             restoredAfterCairnTrashCount > 0,
             inferredOrphanCount > 0,
-            // Including isSyncing so the syncCard's checklist
-            // appear/disappear AND every section below it slide
-            // with the same single cairnSpring context. Earlier
-            // attempt with a separate .smooth modifier broke either
-            // the banner animation or the springy collapse depending
-            // on modifier order — single source of truth avoids that.
-            isSyncing,
         ]
+        // isSyncing intentionally NOT in this key — the syncCard's
+        // appear/collapse uses a separate `.animation(.smooth, value:
+        // isSyncing)` modifier on the outer body so we can use a
+        // critically-damped (no-overshoot) curve. cairnSpring's slight
+        // overshoot was reading as "stutter" on the thin horizontal
+        // separator below the syncCard — the line visibly moved down
+        // past target, then settled back ~10%. The .smooth curve
+        // eliminates the bounce-back so the line moves monotonically
+        // down and stops. Banner appearances/disappearances still use
+        // cairnSpring (kept springy), since `withAnimation(.cairnSpring)`
+        // wraps the syncToast clear explicitly.
     }
 
     /// One-line "what just happened" sentence above the journal card.
@@ -368,6 +372,13 @@ public struct StatusScreen: View {
             // banners are no-ops (SwiftUI only plays transitions
             // inside an animated context).
             .cairnBannerAnimation(value: bannerVisibilityKey)
+            // Layout shifts driven by sync state-change use a
+            // critically-damped curve (no overshoot) rather than
+            // cairnSpring's slight-overshoot bounce. Test for the
+            // user's reported "line stutters as it moves down":
+            // overshoot reads visually as the line going past
+            // target then bouncing back, which we want to rule out.
+            .animation(reduceMotion ? .none : .smooth(duration: 0.35), value: isSyncing)
         }
         .background(t.bg)
         .sheet(item: $journalRawJSONEntry) { entry in
