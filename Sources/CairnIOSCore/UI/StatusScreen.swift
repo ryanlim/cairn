@@ -265,6 +265,14 @@ public struct StatusScreen: View {
             syncToast != nil,
             restoredAfterCairnTrashCount > 0,
             inferredOrphanCount > 0,
+            // Including isSyncing here so the parent VStack's
+            // cairnBannerAnimation modifier picks up the syncCard
+            // height change (checklist appearing/disappearing).
+            // Without it, the cards below the syncCard ("Library",
+            // "Recent runs", "Latest journal" sections) snap
+            // downward instantly when sync starts instead of
+            // sliding smoothly with the spring.
+            isSyncing,
         ]
     }
 
@@ -1454,32 +1462,51 @@ private struct PlayfulSyncIcon: View {
         .transaction { $0.disablesAnimations = true }
     }
 
-    /// Flywheel rotation curve. See struct doc for the segment table.
+    /// Flywheel rotation curve. Each segment is C¹-continuous at the
+    /// boundary with the next so angular velocity never jumps —
+    /// otherwise the user sees a tiny "kick" at the cycle boundary
+    /// where v=0 (rest) snaps to high-velocity rotation start.
+    ///
+    /// - Spin (phase 0–0.55): `cubicEaseInOut` — v=0 at both ends.
+    ///   The rotation accelerates to max in the middle of the
+    ///   segment and smoothly decelerates to a stop at 360°.
+    /// - Springy overshoot (phase 0.55–0.72): bell curve
+    ///   `(1 − cos 2πt)/2` — v=0 at both ends. Rises to peak
+    ///   amplitude at segment midpoint, returns smoothly to 360°.
+    /// - Rest (phase 0.72–1.0): held at 360°, v=0.
+    /// - Cycle boundary: phase 1.0 (rotation 360°, v=0) ↔ phase 0
+    ///   (rotation 0°, v=0). Visually identical orientation,
+    ///   continuous velocity.
     private static func rotation(at phase: Double, isAnimating: Bool) -> Double {
         guard isAnimating else { return 0 }
         if phase < 0.55 {
-            // Kick + decelerate.
             let t = phase / 0.55
-            return 360 * cubicEaseOut(t)
+            return 360 * cubicEaseInOut(t)
         } else if phase < 0.72 {
-            // Springy overshoot. `sin(t * π)` over [0,1] is one half-
-            // wave (0 → 1 → 0), so rotation rides up to 360+amp and
-            // settles back to 360. Single transient — no multi-bounce
-            // ringing.
             let t = (phase - 0.55) / (0.72 - 0.55)
             let amplitude: Double = 9
-            return 360 + sin(t * .pi) * amplitude
+            // (1 − cos 2πt)/2 is a smooth bell: 0 → 1 → 0 over t ∈ [0,1]
+            // with derivative = 0 at both endpoints. Drop-in replacement
+            // for sin(πt) but with continuous velocity at the segment
+            // boundaries instead of a sudden derivative.
+            let bell = (1 - cos(2 * .pi * t)) / 2
+            return 360 + bell * amplitude
         } else {
-            // Rest before the next kick.
             return 360
         }
     }
 
-    /// `1 - (1 - t)³` — cubic ease-out. Snappy start, slow finish;
-    /// gives the rotation its decelerating-flywheel feel.
-    private static func cubicEaseOut(_ t: Double) -> Double {
-        let inv = 1 - t
-        return 1 - inv * inv * inv
+    /// Cubic ease-in-out: `4t³` for the first half, mirrored for
+    /// the second. v=0 at both endpoints; max velocity at t=0.5.
+    /// Replaces the previous cubic ease-out so the cycle boundary
+    /// (phase 1.0 → phase 0) has continuous angular velocity.
+    private static func cubicEaseInOut(_ t: Double) -> Double {
+        if t < 0.5 {
+            return 4 * t * t * t
+        } else {
+            let inv = -2 * t + 2
+            return 1 - inv * inv * inv / 2
+        }
     }
 }
 
