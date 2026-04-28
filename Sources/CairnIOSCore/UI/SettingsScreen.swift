@@ -59,6 +59,10 @@ public struct SettingsScreen: View {
     public let onReplayOnboarding: () -> Void
     public let onExportData: (CairnExportScope) -> Void
     public let onImportData: (URL, Bool) -> Void
+    /// Token incremented by the host when the user re-taps the active
+    /// tab — see `CairnTabBar.onReselect`. Each increment scrolls the
+    /// screen back to the top.
+    public let scrollResetToken: Int
 
     @Environment(\.cairnTokens) private var t
     @State private var pendingResetIndex: Bool = false
@@ -89,7 +93,8 @@ public struct SettingsScreen: View {
         syncProgress: (hashed: Int, total: Int)? = nil,
         onReplayOnboarding: @escaping () -> Void = {},
         onExportData: @escaping (CairnExportScope) -> Void = { _ in },
-        onImportData: @escaping (URL, Bool) -> Void = { _, _ in }
+        onImportData: @escaping (URL, Bool) -> Void = { _, _ in },
+        scrollResetToken: Int = 0
     ) {
         self._settings = settings
         self.serverUrl = serverUrl
@@ -109,12 +114,15 @@ public struct SettingsScreen: View {
         self.onReplayOnboarding = onReplayOnboarding
         self.onExportData = onExportData
         self.onImportData = onImportData
+        self.scrollResetToken = scrollResetToken
     }
 
     public var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                AppHeader(title: "Settings")
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    Color.clear.frame(height: 0).id(Self.scrollTopAnchor)
+                    AppHeader(title: "Settings")
 
                 immichServerSection
                 safetyRailsSection
@@ -206,13 +214,28 @@ public struct SettingsScreen: View {
                 }
             }
         )
+        .onChange(of: scrollResetToken) { _, _ in
+            withAnimation(.easeInOut(duration: 0.25)) {
+                proxy.scrollTo(Self.scrollTopAnchor, anchor: .top)
+            }
+        }
+        }
     }
+
+    private static let scrollTopAnchor = "cairn.scroll.top"
 
     // MARK: - Immich server
 
+    // MARK: - Section icon/tint mapping
+    //
+    // Each section gets a leading SF Symbol + semantic color so a
+    // long list of neutral-gray section titles becomes easy to scan.
+    // Color choices follow existing semantic uses elsewhere in the
+    // app (info=network, verified=safe, pending=warn, danger=destructive,
+    // accent=creative-when-no-other-fits, quiet=ambient-secondary).
     private var immichServerSection: some View {
         Group {
-            KeylineSection("Immich server")
+            KeylineSection("Immich server", icon: "network", iconTint: t.info)
             CairnCard {
                 VStack(spacing: 0) {
                     // Read-only — the URL is only editable via Sign
@@ -236,7 +259,7 @@ public struct SettingsScreen: View {
 
     private var safetyRailsSection: some View {
         Group {
-            KeylineSection("Safety rails")
+            KeylineSection("Safety rails", icon: "shield", iconTint: t.verified)
             CairnCard {
                 VStack(spacing: 0) {
                     VStack(alignment: .leading, spacing: 0) {
@@ -315,7 +338,7 @@ public struct SettingsScreen: View {
 
     private var notificationsSection: some View {
         Group {
-            KeylineSection("Notifications")
+            KeylineSection("Notifications", icon: "bell", iconTint: t.pending)
             CairnCard {
                 VStack(spacing: 0) {
                     ToggleRow(
@@ -340,7 +363,7 @@ public struct SettingsScreen: View {
 
     private var permissionsSection: some View {
         Group {
-            KeylineSection("Permissions")
+            KeylineSection("Permissions", icon: "lock", iconTint: t.quiet)
             CairnCard {
                 VStack(spacing: 0) {
                     // Can't *grant* permissions in-app — iOS only
@@ -383,7 +406,7 @@ public struct SettingsScreen: View {
 
     private var appearanceSection: some View {
         Group {
-            KeylineSection("Appearance")
+            KeylineSection("Appearance", icon: "paintpalette", iconTint: t.accent)
             CairnCard {
                 AppearanceRow(appearance: $settings.appearance)
             }
@@ -402,7 +425,7 @@ public struct SettingsScreen: View {
     /// how to inspect it server-side.
     private var howItWorksSection: some View {
         Group {
-            KeylineSection("How it works")
+            KeylineSection("How it works", icon: "info.circle", iconTint: t.quiet)
             CairnCard {
                 VStack(spacing: 0) {
                     Button {
@@ -514,7 +537,7 @@ public struct SettingsScreen: View {
 
     private var advancedSection: some View {
         Group {
-            KeylineSection("Advanced")
+            KeylineSection("Advanced", icon: "wrench.and.screwdriver", iconTint: t.textMuted)
             CairnCard {
                 VStack(spacing: 0) {
                     Button {
@@ -564,7 +587,7 @@ public struct SettingsScreen: View {
 
     private var dataSection: some View {
         Group {
-            KeylineSection("Data")
+            KeylineSection("Data", icon: "arrow.up.arrow.down", iconTint: t.verifiedInk)
             CairnCard {
                 VStack(spacing: 0) {
                     KeyValRow(
@@ -589,7 +612,7 @@ public struct SettingsScreen: View {
 
     private var dangerZoneSection: some View {
         Group {
-            KeylineSection("Danger zone")
+            KeylineSection("Danger zone", icon: "exclamationmark.triangle", iconTint: t.danger)
             CairnCard {
                 VStack(spacing: 0) {
                     KeyValRow(
@@ -1310,8 +1333,15 @@ public struct ApiKeyRow: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
         .onDisappear {
+            // Force-hide on navigation away. Just cancelling the timer
+            // (the previous behavior) left `revealed = true` stuck —
+            // when the user came back, the key was still on display
+            // with no auto-hide timer running. Navigation is a stronger
+            // signal than the 8s timer; treat it as immediate hide.
             revealTask?.cancel()
             copyTask?.cancel()
+            revealed = false
+            copied = false
         }
     }
 

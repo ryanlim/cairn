@@ -4,158 +4,6 @@ import os
 import UIKit  // NSString text measurement for pre-sizing the journal-tail rows.
 #endif
 
-#if DEBUG && canImport(UIKit)
-/// Samples the actual rendered height of its parent every animation
-/// tick. Reads CALayer's presentation layer (which CoreAnimation
-/// updates each frame as the spring interpolates) — captures
-/// intermediate animation states that GeometryReader misses
-/// (GeometryReader only fires on settled SwiftUI layout, not on
-/// CoreAnimation in-flight values). DEBUG-only diagnostic.
-private struct SyncPhaseFrameSampler: View {
-    var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0/60.0)) { _ in
-            FrameSamplingProbe()
-        }
-    }
-}
-
-private struct FrameSamplingProbe: UIViewRepresentable {
-    func makeUIView(context: Context) -> UIView {
-        let v = UIView()
-        v.backgroundColor = .clear
-        v.isUserInteractionEnabled = false
-        return v
-    }
-    func updateUIView(_ v: UIView, context: Context) {
-        guard let superview = v.superview else { return }
-        let h = superview.layer.presentation()?.bounds.height ?? superview.bounds.height
-        Task { @MainActor in
-            StatusBodyDiagnostic.noteRenderedHeight(h)
-        }
-    }
-}
-#endif
-
-#if DEBUG
-/// Diagnostic logger for the appear-path stutter (separator below the
-/// syncCard moves down jerkily on sync start). Captures everything
-/// that happens within a 600ms window starting from each `isSyncing`
-/// flip — body evaluations, observed-value snapshots, and frame-target
-/// changes — so we can correlate state mutations with re-renders.
-///
-/// Usage: `make device-run`, tap Sync, watch the console for
-/// `[stutter]` lines. Filter by `subsystem:app.cairn.ios.diag`.
-private enum StatusBodyDiagnostic {
-    static let enabled = true
-    @MainActor static var lastSyncStart: Date? = nil
-    @MainActor static var events: [Event] = []
-    @MainActor static let log = Logger(subsystem: "app.cairn.ios.diag", category: "stutter")
-
-    enum Event {
-        case bodyEval(at: Date, snapshot: [String: String])
-        case heightTarget(at: Date, height: CGFloat)
-        case visibilityFlip(at: Date)
-        /// Actual rendered height of the SyncPhaseChecklist as
-        /// measured by a GeometryReader. Captures the value at each
-        /// layout pass during the animation window — lets us see
-        /// whether the spring's overshoot actually manifests in
-        /// pixels (height goes above target then settles back) or
-        /// whether the value just monotonically grows to the target
-        /// (which would mean the .bouncy animation isn't being
-        /// applied at all).
-        case renderedHeight(at: Date, height: CGFloat)
-    }
-
-    @MainActor static func noteBodyEval(snapshot: [String: String]) {
-        guard enabled, let start = lastSyncStart else { return }
-        let now = Date()
-        if now.timeIntervalSince(start) > 0.6 {
-            flush(start: start)
-            lastSyncStart = nil
-            events.removeAll()
-            return
-        }
-        events.append(.bodyEval(at: now, snapshot: snapshot))
-    }
-
-    @MainActor static func noteHeightTarget(_ h: CGFloat) {
-        guard enabled, lastSyncStart != nil else { return }
-        events.append(.heightTarget(at: Date(), height: h))
-    }
-
-    @MainActor static func noteVisibilityFlip() {
-        guard enabled, lastSyncStart != nil else { return }
-        events.append(.visibilityFlip(at: Date()))
-    }
-
-    @MainActor static func noteRenderedHeight(_ h: CGFloat) {
-        guard enabled, lastSyncStart != nil else { return }
-        events.append(.renderedHeight(at: Date(), height: h))
-    }
-
-    @MainActor static func noteReduceMotion(_ v: Bool) {
-        guard enabled, v else { return }
-        log.notice("[stutter] reduceMotion ENABLED — animations are disabled by Settings → Accessibility → Motion. That would explain a non-elastic / instant transition.")
-    }
-
-    @MainActor static func noteSyncStarted() {
-        guard enabled else { return }
-        lastSyncStart = Date()
-        events.removeAll()
-    }
-
-    @MainActor private static func flush(start: Date) {
-        guard !events.isEmpty else { return }
-        var lines: [String] = []
-        var prevSnapshot: [String: String] = [:]
-        var prevRenderedTime: Date? = nil
-        var frameIntervals: [TimeInterval] = []
-        for event in events {
-            switch event {
-            case .bodyEval(let at, let snapshot):
-                let offset = Int(at.timeIntervalSince(start) * 1000)
-                let diff = snapshot.filter { prevSnapshot[$0.key] != $0.value }
-                let diffStr = diff.isEmpty ? "—" : diff.map { "\($0.key)=\($0.value)" }.sorted().joined(separator: ", ")
-                lines.append("  \(offset)ms BODY changed:[\(diffStr)]")
-                prevSnapshot = snapshot
-            case .heightTarget(let at, let height):
-                let offset = Int(at.timeIntervalSince(start) * 1000)
-                lines.append("  \(offset)ms HEIGHT-TARGET=\(Int(height))")
-            case .visibilityFlip(let at):
-                let offset = Int(at.timeIntervalSince(start) * 1000)
-                lines.append("  \(offset)ms VISIBILITY-FLIP")
-            case .renderedHeight(let at, let height):
-                let offset = Int(at.timeIntervalSince(start) * 1000)
-                let dt = prevRenderedTime.map { at.timeIntervalSince($0) * 1000 } ?? 0
-                if prevRenderedTime != nil {
-                    frameIntervals.append(dt)
-                }
-                let dtStr = prevRenderedTime == nil ? "—" : "Δ\(String(format: "%.1f", dt))ms"
-                lines.append("  \(offset)ms RENDERED-HEIGHT=\(String(format: "%.1f", height)) \(dtStr)")
-                prevRenderedTime = at
-            }
-        }
-        // Frame-interval statistics: mean, min, max, stddev. Tell us
-        // quantitatively whether the animation is sampling at a
-        // consistent rate (smooth) or with high variance (jittery).
-        // At 120fps target, expected interval is 8.33ms; at 60fps
-        // it's 16.67ms. Wide outliers indicate main-thread freezes.
-        if !frameIntervals.isEmpty {
-            let n = Double(frameIntervals.count)
-            let mean = frameIntervals.reduce(0, +) / n
-            let min = frameIntervals.min() ?? 0
-            let max = frameIntervals.max() ?? 0
-            let variance = frameIntervals.reduce(0.0) { $0 + ($1 - mean) * ($1 - mean) } / n
-            let stddev = variance.squareRoot()
-            let outliers = frameIntervals.filter { $0 > 20 }.count
-            lines.append("  ── frame-interval stats: n=\(frameIntervals.count) mean=\(String(format: "%.1f", mean))ms min=\(String(format: "%.1f", min))ms max=\(String(format: "%.1f", max))ms stddev=\(String(format: "%.1f", stddev))ms outliers(>20ms)=\(outliers)")
-        }
-        let combined = "[stutter] sync-start trace:\n" + lines.joined(separator: "\n")
-        log.notice("\(combined, privacy: .public)")
-    }
-}
-#endif
-
 /// The default landing screen. Mirrors the prototype's `screens/status.jsx`.
 ///
 /// Surfaces (top-to-bottom):
@@ -274,6 +122,12 @@ public struct StatusScreen: View {
     public let indexed: Int
     public let syncPhase: CairnAppModel.SyncPhase
     public let onStartSync: () -> Void
+    /// Pull-to-refresh handler. Returns when the sync triggered by the
+    /// gesture has finished (success, error, or cancel) so SwiftUI's
+    /// refresh control dismisses at the right moment. Distinct from
+    /// `onStartSync` — that one is fire-and-forget for the Sync button;
+    /// `.refreshable` requires an awaitable completion.
+    public let onRefreshSync: () async -> Void
     public let onCancelSync: () -> Void
     public let onOpenRun: (CairnFixtures.RunFixture) -> Void
     /// Tapping a journal-tail row whose `runId` matches a real run
@@ -289,6 +143,10 @@ public struct StatusScreen: View {
     public let onOpenDeleteQueue: () -> Void
     /// Tapping the deferred queue line opens the queue detail sheet.
     public let onOpenDeferredQueue: () -> Void
+    /// Token incremented by the host when the user re-taps the active
+    /// tab — see `CairnTabBar.onReselect`. Each increment scrolls the
+    /// screen back to the top.
+    public let scrollResetToken: Int
 
     @Environment(\.cairnTokens) private var t
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -361,6 +219,7 @@ public struct StatusScreen: View {
         indexed: Int = 0,
         syncPhase: CairnAppModel.SyncPhase = .idle,
         onStartSync: @escaping () -> Void = {},
+        onRefreshSync: @escaping () async -> Void = {},
         onCancelSync: @escaping () -> Void = {},
         onOpenRun: @escaping (CairnFixtures.RunFixture) -> Void = { _ in },
         onJournalRowTap: @escaping (String) -> Void = { _ in },
@@ -371,7 +230,8 @@ public struct StatusScreen: View {
         onResumeInitialScan: @escaping () -> Void = {},
         deferredQueue: CairnAppModel.DeferredQueueSummary = .empty,
         onForceDrainDeferred: @escaping () -> Void = {},
-        onRetryConnection: @escaping () -> Void = {}
+        onRetryConnection: @escaping () -> Void = {},
+        scrollResetToken: Int = 0
     ) {
         self.appState = appState
         self.degraded = degraded
@@ -399,6 +259,7 @@ public struct StatusScreen: View {
         self.indexed = indexed
         self.syncPhase = syncPhase
         self.onStartSync = onStartSync
+        self.onRefreshSync = onRefreshSync
         self.onCancelSync = onCancelSync
         self.onOpenRun = onOpenRun
         self.onJournalRowTap = onJournalRowTap
@@ -410,6 +271,7 @@ public struct StatusScreen: View {
         self.deferredQueue = deferredQueue
         self.onForceDrainDeferred = onForceDrainDeferred
         self.onRetryConnection = onRetryConnection
+        self.scrollResetToken = scrollResetToken
     }
 
     private var pct: Double {
@@ -500,53 +362,55 @@ public struct StatusScreen: View {
     }
 
     public var body: some View {
-        #if DEBUG
-        let _ = StatusBodyDiagnostic.noteBodyEval(snapshot: [
-            "isSyncing": "\(isSyncing)",
-            "syncPhase": "\(syncPhase)",
-            "syncProgress": syncProgress.map { "\($0.hashed)/\($0.total)" } ?? "nil",
-            "indexed": "\(indexed)",
-            "library.candidates": "\(library.candidates)",
-            "library.indexed": "\(library.indexed)",
-            "library.matched": "\(library.matched)",
-            "deferredQueue.count": "\(deferredQueue.count)",
-            "journalTail.count": "\(journalTail.count)",
-            "runs.count": "\(runs.count)",
-            "syncToast": syncToast.map { "\($0)" } ?? "nil",
-        ])
-        #endif
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                wordmarkHeader
-                degradedBanner
-                missingPermissionsBanner
-                stateBanner
-                initialScanPendingBanner
-                restoredAfterCairnTrashBanner
-                inferredOrphanBanner
-                backlogAlertBanner
-                syncToastBanner
-                syncCard
-                KeylineSection("Library")
-                libraryStats
-                KeylineSection("Recent runs")
-                recentRuns
-                KeylineSection("Latest journal")
-                journalHeroLine
-                journalTailCard
-                Spacer(minLength: 24)
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    Color.clear.frame(height: 0).id(Self.scrollTopAnchor)
+                    wordmarkHeader
+                    degradedBanner
+                    missingPermissionsBanner
+                    stateBanner
+                    initialScanPendingBanner
+                    restoredAfterCairnTrashBanner
+                    inferredOrphanBanner
+                    backlogAlertBanner
+                    syncToastBanner
+                    syncCard
+                    KeylineSection("Library")
+                    libraryStats
+                    KeylineSection("Recent runs")
+                    recentRuns
+                    KeylineSection("Latest journal")
+                    journalHeroLine
+                    journalTailCard
+                    Spacer(minLength: 24)
+                }
+                // Canonical spring timing shared across the app —
+                // see `cairnBannerAnimation(value:)` in
+                // CairnPrimitives.swift. Without this, the
+                // `.transition(.cairnBanner)` modifiers on individual
+                // banners are no-ops (SwiftUI only plays transitions
+                // inside an animated context).
+                .cairnBannerAnimation(value: bannerVisibilityKey)
+                // No body-level layout animation — the syncCard's
+                // checklist height is driven by a TimelineView at
+                // 60fps via spring physics, so SwiftUI's animation
+                // engine never touches it.
             }
-            // Canonical spring timing shared across the app —
-            // see `cairnBannerAnimation(value:)` in
-            // CairnPrimitives.swift. Without this, the
-            // `.transition(.cairnBanner)` modifiers on individual
-            // banners are no-ops (SwiftUI only plays transitions
-            // inside an animated context).
-            .cairnBannerAnimation(value: bannerVisibilityKey)
-            // No body-level layout animation — the syncCard's
-            // checklist height is driven by a TimelineView at
-            // 60fps via spring physics, so SwiftUI's animation
-            // engine never touches it.
+            .onChange(of: scrollResetToken) { _, _ in
+                withAnimation(.easeInOut(duration: 0.25)) {
+                    proxy.scrollTo(Self.scrollTopAnchor, anchor: .top)
+                }
+            }
+            .refreshable {
+                // Pull-to-refresh on the Status screen triggers a sync
+                // and awaits its completion so SwiftUI dismisses the
+                // refresh control at the right moment. The sync card
+                // still drives the visible progress UI (checklist,
+                // ProgressBar, etc.); the refresh spinner is just the
+                // gesture acknowledgment.
+                await onRefreshSync()
+            }
         }
         .background(t.bg)
         .sheet(item: $journalRawJSONEntry) { entry in
@@ -567,10 +431,6 @@ public struct StatusScreen: View {
             // afterward (the if-isSyncing guard removes the checklist
             // from the layout once it's gone).
             if syncing {
-                #if DEBUG
-                StatusBodyDiagnostic.noteSyncStarted()
-                StatusBodyDiagnostic.noteReduceMotion(reduceMotion)
-                #endif
                 // The SyncChecklistAnimator's onChange watches
                 // `isAnimating` and kicks off the height animation
                 // internally. StatusScreen is only responsible for
@@ -583,9 +443,6 @@ public struct StatusScreen: View {
                         withAnimation(reduceMotion ? .none : .easeInOut(duration: 0.14)) {
                             checklistVisible = true
                         }
-                        #if DEBUG
-                        StatusBodyDiagnostic.noteVisibilityFlip()
-                        #endif
                     }
                 }
             } else {
@@ -1097,7 +954,6 @@ public struct StatusScreen: View {
                     isContentVisible: checklistVisible,
                     phase: syncPhase,
                     expandedHeight: Self.checklistHeight,
-                    duration: Self.checklistAnimationDuration,
                     reduceMotion: reduceMotion
                 )
                 if quarantineCount > 0 {
@@ -1571,12 +1427,7 @@ public struct StatusScreen: View {
     /// bottom; reduce if there's a visible gap.
     private static let checklistHeight: CGFloat = 64
 
-    /// Total wall-clock duration of the checklist height animation
-    /// (spring expand or collapse). 0.5s gives the spring time for
-    /// one visible overshoot + settle without dragging on.
-    private static let checklistAnimationDuration: TimeInterval = 0.5
-
-    // currentChecklistHeight has moved into SyncChecklistAnimator.
+    private static let scrollTopAnchor = "cairn.scroll.top"
 
     private static let collapsedJournalTailLimit: Int = 8
 
@@ -1708,106 +1559,43 @@ public struct StatusScreen: View {
 
 // MARK: - SyncChecklist animator
 
-/// Owns the SyncPhaseChecklist's animated frame height. Extracted into
-/// a private View struct so its TimelineView is isolated from the
-/// parent StatusScreen's body re-evaluations (which fire 16+ times
-/// during sync start as upstream model properties update).
+/// The SyncPhaseChecklist's expand/collapse spring. `target` lives in
+/// `@State` and is driven via `withAnimation(.cairnSpring) { ... }`
+/// from `onChange(of: isAnimating)`, which establishes an explicit
+/// animation transaction — more reliable than the implicit
+/// `.animation(_:value:)` modifier, which under some modifier-chain
+/// configurations falls through to a critically-damped curve and
+/// loses the spring's overshoot.
 ///
-/// SwiftUI's diff: when the parent re-evaluates and creates a fresh
-/// `SyncChecklistAnimator` value with the SAME prop values as before,
-/// the diff treats it as unchanged and skips the body re-eval — the
-/// TimelineView keeps firing uninterrupted at its target framerate.
-/// Only when `isAnimating` or `phase` actually changes does the body
-/// re-evaluate. This avoids the per-frame contention that was capping
-/// the animation at ~50fps.
-///
-/// All the animation @State (start, from, to, elapsed, lastFrame,
-/// frameHeight) lives here so it persists with the view's identity.
-/// Mutable animation state held in a class so the elapsed-time
-/// accumulator can be safely advanced from inside the View's body
-/// closure. SwiftUI's @State property wrapper is for value types and
-/// shouldn't be mutated from inside body computations; for reference
-/// types stored via @State, the reference itself isn't tracked for
-/// changes, so mutating the referenced object doesn't trigger
-/// re-renders or warnings.
-@MainActor
-private final class SyncChecklistAnimState {
-    var animationStart: Date? = nil
-    var animationFrom: CGFloat = 0
-    var animationTo: CGFloat = 0
-    var elapsed: TimeInterval = 0
-    var lastFrameDate: Date? = nil
-    var settledHeight: CGFloat = 0
-
-    /// Advance the elapsed-time accumulator by this frame's clamped
-    /// delta and return the spring-eased height. Capping at 1/15s
-    /// per frame means a main-thread freeze (e.g., 130ms during
-    /// syncPhase=hashing) only advances the spring by ~67ms — the
-    /// animation continues smoothly from where it left off rather
-    /// than jumping forward to where it would be by wall-clock time.
-    /// Total animation time stretches by however long freezes
-    /// summed to.
-    func tick(now: Date, duration: TimeInterval) -> CGFloat {
-        guard animationStart != nil else { return settledHeight }
-        if let last = lastFrameDate {
-            let raw = now.timeIntervalSince(last)
-            elapsed += min(raw, 1.0 / 15.0)
-        }
-        lastFrameDate = now
-        if elapsed >= duration { return animationTo }
-        let t = elapsed / duration
-        let decay: Double = 8.0
-        let omega: Double = 9.5
-        let progress = 1 - exp(-decay * t) * cos(omega * t)
-        return animationFrom + (animationTo - animationFrom) * progress
-    }
-
-    func startAnimation(to target: CGFloat) {
-        animationFrom = settledHeight
-        animationTo = target
-        settledHeight = target
-        elapsed = 0
-        lastFrameDate = nil
-        animationStart = Date()
-    }
-}
-
+/// Subview wrapper keeps the @State stable across StatusScreen body
+/// re-evals (the parent rebuilds 16+ times during a sync start;
+/// SwiftUI's diff skips this view as long as props are unchanged, so
+/// the animation-in-progress isn't disturbed).
 private struct SyncChecklistAnimator: View {
     let isAnimating: Bool
     let isContentVisible: Bool
     let phase: CairnAppModel.SyncPhase
     let expandedHeight: CGFloat
-    let duration: TimeInterval
     let reduceMotion: Bool
 
-    @State private var anim = SyncChecklistAnimState()
+    @State private var target: CGFloat = 0
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0/120.0)) { context in
-            let h = reduceMotion ? anim.settledHeight : anim.tick(now: context.date, duration: duration)
-            SyncPhaseChecklist(phase: phase)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .frame(height: h, alignment: .top)
-                .clipped()
-                .opacity(isContentVisible ? 1 : 0)
-                #if DEBUG
-                .onAppear { StatusBodyDiagnostic.noteRenderedHeight(h) }
-                .onChange(of: h, initial: false) { _, new in
-                    StatusBodyDiagnostic.noteRenderedHeight(new)
+        SyncPhaseChecklist(phase: phase)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(height: target, alignment: .top)
+            .clipped()
+            .opacity(isContentVisible ? 1 : 0)
+            .onChange(of: isAnimating) { _, syncing in
+                let newTarget: CGFloat = syncing ? expandedHeight : 0
+                if reduceMotion {
+                    target = newTarget
+                } else {
+                    withAnimation(.cairnSpring) {
+                        target = newTarget
+                    }
                 }
-                #endif
-        }
-        .onChange(of: isAnimating) { _, syncing in
-            if reduceMotion {
-                anim.settledHeight = syncing ? expandedHeight : 0
-                anim.animationStart = nil
-            } else {
-                anim.startAnimation(to: syncing ? expandedHeight : 0)
             }
-            #if DEBUG
-            StatusBodyDiagnostic.noteHeightTarget(anim.settledHeight)
-            #endif
-        }
     }
 }
 

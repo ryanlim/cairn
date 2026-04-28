@@ -32,6 +32,10 @@ public struct RunsScreen: View {
     public let now: Date
     public let onOpenRun: (CairnFixtures.RunFixture) -> Void
     public let onStartSync: () -> Void
+    /// Token incremented by the host when the user re-taps the active
+    /// tab — see `CairnTabBar.onReselect`. Each increment scrolls the
+    /// screen back to the top.
+    public let scrollResetToken: Int
 
     @Environment(\.cairnTokens) private var t
 
@@ -46,27 +50,39 @@ public struct RunsScreen: View {
         runs: [CairnFixtures.RunFixture] = CairnFixtures.runs,
         now: Date = RunsScreen.previewNow,
         onOpenRun: @escaping (CairnFixtures.RunFixture) -> Void = { _ in },
-        onStartSync: @escaping () -> Void = {}
+        onStartSync: @escaping () -> Void = {},
+        scrollResetToken: Int = 0
     ) {
         self.runs = runs
         self.now = now
         self.onOpenRun = onOpenRun
         self.onStartSync = onStartSync
+        self.scrollResetToken = scrollResetToken
     }
 
     public var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                if runs.isEmpty {
-                    emptyState
-                } else {
-                    populated
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    Color.clear.frame(height: 0).id(Self.scrollTopAnchor)
+                    if runs.isEmpty {
+                        emptyState
+                    } else {
+                        populated
+                    }
+                    Spacer(minLength: 24)
                 }
-                Spacer(minLength: 24)
+            }
+            .background(t.bg)
+            .onChange(of: scrollResetToken) { _, _ in
+                withAnimation(.easeInOut(duration: 0.25)) {
+                    proxy.scrollTo(Self.scrollTopAnchor, anchor: .top)
+                }
             }
         }
-        .background(t.bg)
     }
+
+    private static let scrollTopAnchor = "cairn.scroll.top"
 
     // MARK: - Populated
 

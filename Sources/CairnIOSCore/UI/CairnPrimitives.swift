@@ -424,24 +424,48 @@ public struct AppHeader<Leading: View, Trailing: View>: View {
 
 /// The all-caps section header used between cards. Matches prototype's
 /// `<div class="keyline">` block.
+///
+/// Optional `icon` + `iconTint` add a small leading SF Symbol in a
+/// semantic color — used in dense lists (Settings) where a string of
+/// neutral-gray section titles makes it hard to scan. The icon carries
+/// the color; the title stays in `textMuted` so the type hierarchy is
+/// preserved. `nil` icon (the default) renders identically to the
+/// pre-icon design — backwards-compatible across all existing
+/// callsites.
 public struct KeylineSection: View {
     public let title: String
+    public let icon: String?
+    public let iconTint: Color?
     public let trailing: AnyView?
 
     @Environment(\.cairnTokens) private var t
 
-    public init(_ title: String) {
+    public init(_ title: String, icon: String? = nil, iconTint: Color? = nil) {
         self.title = title
+        self.icon = icon
+        self.iconTint = iconTint
         self.trailing = nil
     }
 
-    public init<V: View>(_ title: String, @ViewBuilder trailing: () -> V) {
+    public init<V: View>(
+        _ title: String,
+        icon: String? = nil,
+        iconTint: Color? = nil,
+        @ViewBuilder trailing: () -> V
+    ) {
         self.title = title
+        self.icon = icon
+        self.iconTint = iconTint
         self.trailing = AnyView(trailing())
     }
 
     public var body: some View {
-        HStack {
+        HStack(spacing: 7) {
+            if let icon, let iconTint {
+                Image(systemName: icon)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(iconTint)
+            }
             Text(title.uppercased())
                 .font(.system(size: 11, weight: .semibold))
                 .tracking(0.9)
@@ -1248,23 +1272,38 @@ public struct CairnTab: Hashable, Sendable {
 }
 
 /// Bottom tab bar matching the prototype's three-tab layout.
+///
+/// Tapping a tab that's already active fires `onReselect` instead of
+/// `onChange` — the standard iOS idiom for "scroll the active page
+/// back to the top." Hosts wire this to a per-tab token that each
+/// screen observes via `ScrollViewReader.scrollTo(...)`.
 public struct CairnTabBar: View {
     @Binding public var active: CairnTab
     public let onChange: ((CairnTab) -> Void)?
+    public let onReselect: ((CairnTab) -> Void)?
 
     @Environment(\.cairnTokens) private var t
 
-    public init(active: Binding<CairnTab>, onChange: ((CairnTab) -> Void)? = nil) {
+    public init(
+        active: Binding<CairnTab>,
+        onChange: ((CairnTab) -> Void)? = nil,
+        onReselect: ((CairnTab) -> Void)? = nil
+    ) {
         self._active = active
         self.onChange = onChange
+        self.onReselect = onReselect
     }
 
     public var body: some View {
         HStack(spacing: 0) {
             ForEach(CairnTab.all, id: \.id) { tab in
                 Button {
-                    active = tab
-                    onChange?(tab)
+                    if active.id == tab.id {
+                        onReselect?(tab)
+                    } else {
+                        active = tab
+                        onChange?(tab)
+                    }
                 } label: {
                     VStack(spacing: 4) {
                         Group {

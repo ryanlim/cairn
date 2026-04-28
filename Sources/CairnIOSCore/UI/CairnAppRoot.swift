@@ -31,6 +31,12 @@ public struct CairnAppRoot: View {
     @State private var activeSyncTask: Task<Void, Never>?
     @State private var exportedFileURL: URL?
     @State private var importResult: CairnImportResult?
+
+    /// Per-tab "scroll to top" token. Incremented when the user taps
+    /// the active tab in the bottom nav (the standard iOS re-tap
+    /// idiom). Each screen observes its slot via `.onChange` and
+    /// drives a `ScrollViewReader.scrollTo(...)`.
+    @State private var scrollResetTokens: [String: Int] = [:]
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     #if canImport(UIKit)
@@ -291,10 +297,15 @@ public struct CairnAppRoot: View {
             paginatedTabView
                 .ignoresSafeArea(.keyboard, edges: .bottom)
 
-            CairnTabBar(active: Binding(
-                get: { model.activeTab },
-                set: { model.activeTab = $0 }
-            ))
+            CairnTabBar(
+                active: Binding(
+                    get: { model.activeTab },
+                    set: { model.activeTab = $0 }
+                ),
+                onReselect: { tab in
+                    scrollResetTokens[tab.id, default: 0] += 1
+                }
+            )
                 .ignoresSafeArea(.keyboard, edges: .bottom)
         }
         .task {
@@ -378,6 +389,20 @@ public struct CairnAppRoot: View {
                 onStartSync: {
                     presentDryRunSheet(forceTripped: model.appState == .thresholdTripped)
                 },
+                onRefreshSync: {
+                    // Pull-to-refresh: kick the tracked sync, then
+                    // wait just long enough for the sync card to
+                    // expand and assume the "we're working" visual
+                    // role. Returning early dismisses SwiftUI's
+                    // refresh-control spinner so we don't have two
+                    // spinners (system + sync card's PlayfulSyncIcon)
+                    // running concurrently. `suppressErrors: true`
+                    // keeps a refresh-initiated failure from popping
+                    // a dialog — the Status screen's degraded banner
+                    // is the right surface for any error state.
+                    startTrackedSync(suppressErrors: true)
+                    try? await Task.sleep(for: .milliseconds(400))
+                },
                 onCancelSync: {
                     cancelActiveSync()
                 },
@@ -425,14 +450,16 @@ public struct CairnAppRoot: View {
                 },
                 onRetryConnection: {
                     Task { @MainActor in await model.actions.retryConnection() }
-                }
+                },
+                scrollResetToken: scrollResetTokens["status"] ?? 0
             )
         case "runs":
             RunsScreen(
                 runs: model.runs,
                 onOpenRun: { run in
                     presentRunDetail(for: run)
-                }
+                },
+                scrollResetToken: scrollResetTokens["runs"] ?? 0
             )
         case "settings":
             SettingsScreen(
@@ -471,7 +498,8 @@ public struct CairnAppRoot: View {
                             model.lastError = "Import failed: \(error.localizedDescription)"
                         }
                     }
-                }
+                },
+                scrollResetToken: scrollResetTokens["settings"] ?? 0
             )
         default:
             EmptyView()
