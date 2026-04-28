@@ -1,6 +1,51 @@
 import SwiftUI
+import os
 #if canImport(UIKit)
 import UIKit  // NSString text measurement for pre-sizing the journal-tail rows.
+#endif
+
+#if DEBUG
+/// Diagnostic logger for the appear-path stutter the user reported
+/// (separator below the syncCard moves down jerkily on sync start).
+/// Counts `StatusScreen.body` evaluations within a 600ms window
+/// starting from each `isSyncing` flip, then prints the count + per-
+/// eval timestamps. Toggle by flipping `enabled` — the conditional
+/// `let _ = ...` call site costs nothing when disabled.
+///
+/// Usage on device: `make device-run` and watch the console for
+/// `[stutter]` lines after tapping Sync. A "healthy" appear is
+/// 1–3 evals across ~280ms; double-digit counts inside 100ms means
+/// something is causing render thrash.
+private enum StatusBodyDiagnostic {
+    static let enabled = false
+    @MainActor static var lastSyncStart: Date? = nil
+    @MainActor static var evalsSinceStart: [Date] = []
+    @MainActor static let log = Logger(subsystem: "app.cairn.ios.diag", category: "stutter")
+
+    @MainActor static func noteBodyEval() {
+        guard enabled, let start = lastSyncStart else { return }
+        let now = Date()
+        if now.timeIntervalSince(start) > 0.6 {
+            // Window closed — flush.
+            if !evalsSinceStart.isEmpty {
+                let offsets = evalsSinceStart.map {
+                    String(format: "%.0fms", $0.timeIntervalSince(start) * 1000)
+                }
+                log.notice("[stutter] StatusScreen body evals in 600ms after isSyncing→true: \(self.evalsSinceStart.count) (offsets: \(offsets.joined(separator: ", "), privacy: .public))")
+            }
+            lastSyncStart = nil
+            evalsSinceStart.removeAll()
+            return
+        }
+        evalsSinceStart.append(now)
+    }
+
+    @MainActor static func noteSyncStarted() {
+        guard enabled else { return }
+        lastSyncStart = Date()
+        evalsSinceStart.removeAll()
+    }
+}
 #endif
 
 /// The default landing screen. Mirrors the prototype's `screens/status.jsx`.
@@ -344,6 +389,9 @@ public struct StatusScreen: View {
     }
 
     public var body: some View {
+        #if DEBUG
+        let _ = StatusBodyDiagnostic.noteBodyEval()
+        #endif
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 wordmarkHeader
@@ -399,6 +447,9 @@ public struct StatusScreen: View {
             // afterward (the if-isSyncing guard removes the checklist
             // from the layout once it's gone).
             if syncing {
+                #if DEBUG
+                StatusBodyDiagnostic.noteSyncStarted()
+                #endif
                 Task { @MainActor in
                     try? await Task.sleep(for: .milliseconds(280))
                     if isSyncing { checklistVisible = true }
@@ -876,27 +927,29 @@ public struct StatusScreen: View {
                     }
                 }
 
-                // Sync-phase checklist appears as its own row below
-                // the top HStack while syncing. Mounted (taking
-                // layout space) the moment isSyncing flips true, but
-                // its content opacity is gated on `checklistVisible`,
-                // a state that lags isSyncing by ~280ms when sync
-                // starts. Two-stage sequence:
-                //   1. isSyncing → true: checklist mounts at opacity 0;
-                //      card grows via the parent's cairnSpring layout
-                //      animation. No content rendering competes with
-                //      the layout pass.
-                //   2. ~280ms later (after layout settles):
-                //      checklistVisible → true; content crossfades in
-                //      via easeInOut over 200ms.
-                // On collapse the gate flips immediately (content
-                // fades fast, then card shrinks).
-                if isSyncing {
-                    SyncPhaseChecklist(phase: syncPhase)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .opacity(checklistVisible ? 1 : 0)
-                        .animation(reduceMotion ? .none : .easeInOut(duration: 0.2), value: checklistVisible)
-                }
+                // Sync-phase checklist is ALWAYS mounted in the view
+                // tree, with `.frame(height:)` collapsing it to 0
+                // when not syncing. This eliminates the view-
+                // creation cost at the moment isSyncing flips true:
+                // previously the first frame after the flip had to
+                // (1) instantiate the SyncPhaseChecklist subtree,
+                // (2) lay it out, and (3) start the layout
+                // animation, all in one frame. That heavy first
+                // frame was visible as stutter on the appear path.
+                //
+                // Now the subtree is permanently in the hierarchy
+                // (cheap — three rows of static content), and the
+                // layout grow is a simple frame-height interpolation
+                // animated by the outer `.animation(.smooth, value:
+                // isSyncing)`. Content opacity stage stays the same:
+                // checklistVisible lags isSyncing by ~280ms so
+                // content draws don't compete with layout draws.
+                SyncPhaseChecklist(phase: syncPhase)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(height: isSyncing ? Self.checklistHeight : 0, alignment: .top)
+                    .clipped()
+                    .opacity(checklistVisible ? 1 : 0)
+                    .animation(reduceMotion ? .none : .easeInOut(duration: 0.2), value: checklistVisible)
                 if quarantineCount > 0 {
                     quarantineLine
                 }
@@ -1358,6 +1411,16 @@ public struct StatusScreen: View {
 
     /// How many journal rows show in the collapsed state. Everything
     /// beyond this hides behind the "Show more" toggle.
+    /// Hardcoded height for the SyncPhaseChecklist — three rows of
+    /// 12pt text + 6pt VStack spacing + 4pt top padding ≈ 60pt.
+    /// Used as the explicit `.frame(height:)` target when isSyncing
+    /// is true so the layout shift is a deterministic frame
+    /// animation rather than a "view appears for the first time"
+    /// event that has to instantiate + measure + animate in one
+    /// frame. Tuning: bump if the checklist visibly clips at the
+    /// bottom; reduce if there's a visible gap.
+    private static let checklistHeight: CGFloat = 64
+
     private static let collapsedJournalTailLimit: Int = 8
 
     /// Cap for the expanded journal card's vertical extent. Beyond
