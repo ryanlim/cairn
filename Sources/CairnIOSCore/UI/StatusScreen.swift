@@ -4,6 +4,38 @@ import os
 import UIKit  // NSString text measurement for pre-sizing the journal-tail rows.
 #endif
 
+#if DEBUG && canImport(UIKit)
+/// Samples the actual rendered height of its parent every animation
+/// tick. Reads CALayer's presentation layer (which CoreAnimation
+/// updates each frame as the spring interpolates) — captures
+/// intermediate animation states that GeometryReader misses
+/// (GeometryReader only fires on settled SwiftUI layout, not on
+/// CoreAnimation in-flight values). DEBUG-only diagnostic.
+private struct SyncPhaseFrameSampler: View {
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0/60.0)) { _ in
+            FrameSamplingProbe()
+        }
+    }
+}
+
+private struct FrameSamplingProbe: UIViewRepresentable {
+    func makeUIView(context: Context) -> UIView {
+        let v = UIView()
+        v.backgroundColor = .clear
+        v.isUserInteractionEnabled = false
+        return v
+    }
+    func updateUIView(_ v: UIView, context: Context) {
+        guard let superview = v.superview else { return }
+        let h = superview.layer.presentation()?.bounds.height ?? superview.bounds.height
+        Task { @MainActor in
+            StatusBodyDiagnostic.noteRenderedHeight(h)
+        }
+    }
+}
+#endif
+
 #if DEBUG
 /// Diagnostic logger for the appear-path stutter (separator below the
 /// syncCard moves down jerkily on sync start). Captures everything
@@ -499,20 +531,19 @@ public struct StatusScreen: View {
             // inside an animated context).
             .cairnBannerAnimation(value: bannerVisibilityKey)
             // Body-level animation watching `checklistFrameHeight`
-            // (which is @State, set once per isSyncing transition).
-            // Stable value across body re-evals — no re-targeting
-            // problem. The `.bouncy` preset has noticeable overshoot
-            // (~25% extraBounce) so the layout shift reads as
-            // visibly elastic rather than just smooth.
+            // (@State, stable across body re-evals).
             //
-            // Body-level placement (vs `withAnimation` at the
-            // mutation site or `.animation` modifier on the
-            // SyncPhaseChecklist itself) ensures the animation
-            // context propagates UP through the parent VStack's
-            // layout cascade — the cards below the syncCard slide
-            // down with the same elastic motion, not just the
-            // checklist's own frame interpolation.
-            .animation(reduceMotion ? .none : .bouncy(duration: 0.55, extraBounce: 0.25), value: checklistFrameHeight)
+            // `.interpolatingSpring(stiffness: 180, damping: 18)`
+            // — higher damping (was 14) brings overshoot down to
+            // ~5%, so the user sees a single subtle elastic
+            // overshoot rather than multi-bounce wobble. The
+            // earlier .bouncy / lower-damping configurations
+            // produced visible oscillation that the user
+            // perceived as stutter — each peak/trough on the thin
+            // separator below the card read as a jerky
+            // correction. Lightly-elastic + monotonic-ish settling
+            // should give the "feel" without the wobble.
+            .animation(reduceMotion ? .none : .interpolatingSpring(stiffness: 180, damping: 18), value: checklistFrameHeight)
         }
         .background(t.bg)
         .sheet(item: $journalRawJSONEntry) { entry in
@@ -1073,25 +1104,17 @@ public struct StatusScreen: View {
                     .frame(height: checklistFrameHeight, alignment: .top)
                     .clipped()
                     .opacity(checklistVisible ? 1 : 0)
-                    // No `.animation(_:value:)` here — that modifier
-                    // scopes the animation to the SyncPhaseChecklist's
-                    // own size interpolation but doesn't propagate up
-                    // to the parent VStack's layout cascade, so the
-                    // parent snaps. Animations applied at mutation
-                    // sites via `withAnimation` (in onChange below)
-                    // propagate through the entire layout pass.
-                    #if DEBUG
-                    .background(
-                        GeometryReader { geo in
-                            Color.clear
-                                .onAppear {
-                                    StatusBodyDiagnostic.noteRenderedHeight(geo.size.height)
-                                }
-                                .onChange(of: geo.size.height, initial: false) { _, h in
-                                    StatusBodyDiagnostic.noteRenderedHeight(h)
-                                }
-                        }
-                    )
+                    #if DEBUG && canImport(UIKit)
+                    // TimelineView-driven height sampler. GeometryReader
+                    // captures only the SwiftUI layout target (final
+                    // value), not intermediate animation states —
+                    // CoreAnimation handles spring interpolation below
+                    // the layer SwiftUI's state change pipeline observes.
+                    // TimelineView fires every animation frame and reads
+                    // the layer's *presentation layer* via UIView
+                    // introspection so we see the actual rendered
+                    // height as the animation interpolates.
+                    .background(SyncPhaseFrameSampler())
                     #endif
                 if quarantineCount > 0 {
                     quarantineLine
