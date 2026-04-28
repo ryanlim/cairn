@@ -1413,100 +1413,64 @@ public struct StatusScreen: View {
 
 // MARK: - Playful sync icon
 
-/// Flywheel-style sync glyph used as the syncCard's primary action.
-/// Each cycle: a quick decelerating spin to 360°, a single springy
-/// overshoot at the stop, then a brief rest before the next "kick".
-/// The rhythm reads as ongoing-but-deliberate — like a wheel that's
-/// being kicked back into motion at intervals — distinct from the
-/// continuous-spin pattern of standard activity indicators.
+/// Flywheel-style sync glyph driven by a damped-harmonic-oscillator
+/// curve. A single closed-form expression fills the entire cycle —
+/// no piecewise segments, no rest phase, no segment-boundary
+/// derivative jumps.
 ///
-///   0.00 →  0.55: rotate 0° → 360° with cubic ease-out (kick + decelerate)
-///   0.55 →  0.72: single overshoot to ≈ +9° past 360° and settle back
-///                  (sin half-cycle — one transient spring, no
-///                  multi-bounce ringing)
-///   0.72 →  1.00: rest at 360°. Next cycle starts at 0°, which is
-///                  visually identical, so the loop is seamless.
+///   rotation(t) = 360 × (1 − exp(−decay·t) · cos(ω·t))
+///
+/// At t=0 this is 0° with a sharp positive angular velocity (the
+/// "kick"). The exponential envelope decays to ~0 well before the
+/// cycle ends, so by the time the loop wraps, rotation has settled
+/// at 360° and angular velocity has decayed to ≈0 — meaning the
+/// only velocity discontinuity in the whole motion is the kick at
+/// each cycle start, which is the deliberate flywheel beat.
+///
+/// Constants tuned for one visible overshoot of ~9° at t≈0.45s and
+/// near-complete settling by t≈1.0s; the remaining ~0.2s of the
+/// cycle is the icon resting at 360° before the next kick.
 ///
 /// `TimelineView(.animation, paused:)` drives the cycle and pauses
-/// cleanly when not syncing — avoids the `withAnimation(.repeatForever)`
-/// trap where the bound state goes false but the animation keeps
-/// going. Idle state (isAnimating == false) is the static arrow at
-/// 0°, matching cycle start/end.
+/// cleanly when not syncing. `.transaction` opts the icon out of
+/// inherited animation contexts so a parent `.animation(.spring,
+/// value:)` doesn't pull the per-frame rotation updates into a
+/// spring interpolation (which would visibly stutter the rotation).
 private struct PlayfulSyncIcon: View {
     let isAnimating: Bool
     let color: Color
     var size: CGFloat = 22
-    var period: Double = 1.4
+    var period: Double = 1.2
 
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0/60.0, paused: !isAnimating)) { context in
-            let phase: Double = {
+            let elapsed: Double = {
                 guard isAnimating else { return 0 }
                 return context.date.timeIntervalSinceReferenceDate
-                    .truncatingRemainder(dividingBy: period) / period
+                    .truncatingRemainder(dividingBy: period)
             }()
-            let rotation = Self.rotation(at: phase, isAnimating: isAnimating)
+            let rotation = Self.rotation(elapsed: elapsed, isAnimating: isAnimating)
             Image(systemName: "arrow.triangle.2.circlepath")
                 .font(.system(size: size, weight: .semibold))
                 .foregroundStyle(color)
                 .rotationEffect(.degrees(rotation))
         }
-        // Opt out of inherited animation contexts. Without this, an
-        // ancestor `.animation(.spring, value:)` (e.g. the syncCard's
-        // checklist-appear spring) wraps every frame of TimelineView's
-        // rotation updates — each per-frame angle change gets pulled
-        // through the spring's interpolation, fighting with the next
-        // frame's update and producing visible stutter. `disablesAnimations`
-        // tells SwiftUI: ignore the surrounding animation context;
-        // apply rotation values directly.
         .transaction { $0.disablesAnimations = true }
     }
 
-    /// Flywheel rotation curve. Each segment is C¹-continuous at the
-    /// boundary with the next so angular velocity never jumps —
-    /// otherwise the user sees a tiny "kick" at the cycle boundary
-    /// where v=0 (rest) snaps to high-velocity rotation start.
-    ///
-    /// - Spin (phase 0–0.55): `cubicEaseInOut` — v=0 at both ends.
-    ///   The rotation accelerates to max in the middle of the
-    ///   segment and smoothly decelerates to a stop at 360°.
-    /// - Springy overshoot (phase 0.55–0.72): bell curve
-    ///   `(1 − cos 2πt)/2` — v=0 at both ends. Rises to peak
-    ///   amplitude at segment midpoint, returns smoothly to 360°.
-    /// - Rest (phase 0.72–1.0): held at 360°, v=0.
-    /// - Cycle boundary: phase 1.0 (rotation 360°, v=0) ↔ phase 0
-    ///   (rotation 0°, v=0). Visually identical orientation,
-    ///   continuous velocity.
-    private static func rotation(at phase: Double, isAnimating: Bool) -> Double {
+    /// Damped-harmonic-oscillator rotation toward 360° as the cycle
+    /// elapses. Tuned for ~9° overshoot at the first peak and full
+    /// settle inside the 1.2s cycle.
+    private static func rotation(elapsed: Double, isAnimating: Bool) -> Double {
         guard isAnimating else { return 0 }
-        if phase < 0.55 {
-            let t = phase / 0.55
-            return 360 * cubicEaseInOut(t)
-        } else if phase < 0.72 {
-            let t = (phase - 0.55) / (0.72 - 0.55)
-            let amplitude: Double = 9
-            // (1 − cos 2πt)/2 is a smooth bell: 0 → 1 → 0 over t ∈ [0,1]
-            // with derivative = 0 at both endpoints. Drop-in replacement
-            // for sin(πt) but with continuous velocity at the segment
-            // boundaries instead of a sudden derivative.
-            let bell = (1 - cos(2 * .pi * t)) / 2
-            return 360 + bell * amplitude
-        } else {
-            return 360
-        }
-    }
-
-    /// Cubic ease-in-out: `4t³` for the first half, mirrored for
-    /// the second. v=0 at both endpoints; max velocity at t=0.5.
-    /// Replaces the previous cubic ease-out so the cycle boundary
-    /// (phase 1.0 → phase 0) has continuous angular velocity.
-    private static func cubicEaseInOut(_ t: Double) -> Double {
-        if t < 0.5 {
-            return 4 * t * t * t
-        } else {
-            let inv = -2 * t + 2
-            return 1 - inv * inv * inv / 2
-        }
+        // decay = 8, omega = 7 — see struct doc for tuning rationale.
+        // - First peak at t = π/ω ≈ 0.449s, rotation ≈ 369°
+        //   (overshoot = 360 · exp(−decay·π/ω) ≈ 360 · 0.027 ≈ 9.7°)
+        // - exp(−decay·t) at t=1.0 ≈ 0.000335, so rotation has
+        //   settled to ~360° well within the cycle.
+        let decay: Double = 8
+        let omega: Double = 7
+        return 360 * (1 - exp(-decay * elapsed) * cos(omega * elapsed))
     }
 }
 
