@@ -108,6 +108,8 @@ private enum StatusBodyDiagnostic {
         guard !events.isEmpty else { return }
         var lines: [String] = []
         var prevSnapshot: [String: String] = [:]
+        var prevRenderedTime: Date? = nil
+        var frameIntervals: [TimeInterval] = []
         for event in events {
             switch event {
             case .bodyEval(let at, let snapshot):
@@ -124,8 +126,29 @@ private enum StatusBodyDiagnostic {
                 lines.append("  \(offset)ms VISIBILITY-FLIP")
             case .renderedHeight(let at, let height):
                 let offset = Int(at.timeIntervalSince(start) * 1000)
-                lines.append("  \(offset)ms RENDERED-HEIGHT=\(String(format: "%.1f", height))")
+                let dt = prevRenderedTime.map { at.timeIntervalSince($0) * 1000 } ?? 0
+                if prevRenderedTime != nil {
+                    frameIntervals.append(dt)
+                }
+                let dtStr = prevRenderedTime == nil ? "—" : "Δ\(String(format: "%.1f", dt))ms"
+                lines.append("  \(offset)ms RENDERED-HEIGHT=\(String(format: "%.1f", height)) \(dtStr)")
+                prevRenderedTime = at
             }
+        }
+        // Frame-interval statistics: mean, min, max, stddev. Tell us
+        // quantitatively whether the animation is sampling at a
+        // consistent rate (smooth) or with high variance (jittery).
+        // At 120fps target, expected interval is 8.33ms; at 60fps
+        // it's 16.67ms. Wide outliers indicate main-thread freezes.
+        if !frameIntervals.isEmpty {
+            let n = Double(frameIntervals.count)
+            let mean = frameIntervals.reduce(0, +) / n
+            let min = frameIntervals.min() ?? 0
+            let max = frameIntervals.max() ?? 0
+            let variance = frameIntervals.reduce(0.0) { $0 + ($1 - mean) * ($1 - mean) } / n
+            let stddev = variance.squareRoot()
+            let outliers = frameIntervals.filter { $0 > 20 }.count
+            lines.append("  ── frame-interval stats: n=\(frameIntervals.count) mean=\(String(format: "%.1f", mean))ms min=\(String(format: "%.1f", min))ms max=\(String(format: "%.1f", max))ms stddev=\(String(format: "%.1f", stddev))ms outliers(>20ms)=\(outliers)")
         }
         let combined = "[stutter] sync-start trace:\n" + lines.joined(separator: "\n")
         log.notice("\(combined, privacy: .public)")
@@ -1138,7 +1161,13 @@ public struct StatusScreen: View {
                 // syncProgress, etc.) can't perturb the curve. The
                 // `paused:` parameter halts CPU when no animation is
                 // in flight.
-                TimelineView(.animation(minimumInterval: 1.0/60.0, paused: checklistAnimationStart == nil)) { context in
+                // 120fps to match ProMotion displays (iPhone 13 Pro+,
+                // iPhone 14/15/16/17 Pro). At 60fps on a 120Hz
+                // display, every other display refresh shows the
+                // same height value, producing motion that reads as
+                // half-rate / jittery. 1/120s minimumInterval =
+                // 8.33ms per frame, matching ProMotion's max refresh.
+                TimelineView(.animation(minimumInterval: 1.0/120.0, paused: checklistAnimationStart == nil)) { context in
                     let h = currentChecklistHeight(at: context.date)
                     SyncPhaseChecklist(phase: syncPhase)
                         .frame(maxWidth: .infinity, alignment: .leading)
