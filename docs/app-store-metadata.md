@@ -7,18 +7,20 @@ Source of truth for the text fields in App Store Connect. Paste from here; keep 
 _30 characters max. Appears under the icon on the home screen and at the top of the App Store listing._
 
 ```
-cairn
+cairn — Immich sync
 ```
+
+(Working title disambiguates from other "cairn" projects already on the App Store. 19 chars, well under the limit.)
 
 ## Subtitle
 
 _30 characters max. One line under the app name on the App Store listing. Clarifies what the app does in a phrase._
 
 ```
-Reconcile Photos with Immich
+Sync photo deletions to Immich
 ```
 
-(Alt: `Photo deletions for Immich`, 26 chars — swap if the above reads too dense.)
+(30 chars — at the limit. Action-verb-first framing matches the description's opening sentence. Alts: `Photo deletion sync for Immich` (30), `Deletion sync for Immich` (24, less specific).)
 
 ## Promotional text
 
@@ -57,7 +59,7 @@ PRIVACY
 
 REQUIREMENTS
 — An Immich server you run or control.
-— An Immich API key with asset.read, asset.delete, tag.create, tag.asset scopes (plus tag.read for the history view).
+— An Immich API key. cairn requests these scopes: asset.read, asset.view, asset.download, asset.delete, tag.create, tag.asset, tag.read. The Setup screen lists them when you paste your key.
 
 cairn is not affiliated with the Immich project. It talks to Immich over its public API; compatibility only.
 

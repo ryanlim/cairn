@@ -25,7 +25,7 @@ Flow:
 1. Open cairn. Complete the Setup wizard — paste the URL and API key above, grant Full Photos access, accept defaults, tap "Finish setup."
 2. Tap "Start indexing" on the Initial Scan screen. Takes a few seconds.
 3. Status tab shows matched counts. 0 candidates because nothing is deleted yet.
-4. In the Photos app, delete 2-3 of the photos you uploaded. Return to cairn, pull to refresh.
+4. In the Photos app, delete 2-3 of the photos you uploaded. Return to cairn and tap the circular Sync button on the Status screen.
 5. Candidates appear. Tap "Review & sync" to see the list. Nothing touches the server until you confirm.
 6. After confirming, the Runs tab shows the run. Tap a run, select an asset, tap "Restore" to reverse it.
 

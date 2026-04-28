@@ -55,13 +55,14 @@ Ordered checklist — work through top to bottom.
 
 ### 3. Signing + provisioning
 
-- [ ] **Set `DEVELOPMENT_TEAM` in Xcode.** Open `Cairn.xcodeproj` → Signing & Capabilities → select your team. Persists across `make generate` runs.
-- [ ] **Fastlane Match setup** — `make setup-certs`. Creates a private git repo holding encrypted certs. `make sync-certs` is the read-only counterpart for other machines / CI.
+- [ ] **Set `DEVELOPMENT_TEAM` in Xcode.** Open `Cairn.xcodeproj` → Signing & Capabilities → check "Automatically manage signing" + select your team. Persists across `make generate` runs.
+- [ ] _(optional)_ **Fastlane Match setup** — `make setup-certs`. Only needed for multi-machine / CI / multi-developer setups where shared cert distribution matters. For a single dev on a single Mac with Xcode's automatic signing, skip this entirely; `make beta` will use whatever signing Xcode is configured for. Match adds a private encrypted git repo to manage certs across machines, which is overkill for solo work.
 
 ### 4. Build + smoke test
 
-- [ ] **First TestFlight build.** `make beta` — builds IPA, uploads to TestFlight.
-- [ ] **Smoke test on a real device** via TestFlight. Validate: PhotoKit enumeration against a real library, end-to-end s   ync against your Immich, background refresh scheduling (simulator lies about `BGAppRefreshTask`).
+- [ ] **Re-capture screenshots.** `make screenshots`. UI has shifted since the last capture (sync card v2, Settings color icons, scroll-to-top, eager-persist-defers UI). Required before App Store submission; not required for TestFlight beta.
+- [ ] **First TestFlight build.** `make beta` — builds IPA, uploads to TestFlight. *No screenshots / metadata required for TestFlight; only the IPA + ASC API key.*
+- [ ] **Smoke test on a real device** via TestFlight. Validate: PhotoKit enumeration against a real library, end-to-end sync against your Immich, background refresh scheduling (simulator lies about `BGAppRefreshTask`).
 
 ### 5. Reviewer access
 
@@ -86,6 +87,7 @@ Ordered checklist — work through top to bottom.
 - [x] **Version & build numbers.** `CFBundleShortVersionString: "0.1.0"` + `CFBundleVersion: "1"` in `iOS/project.yml`.
 - [x] **App icon.** Light + dark variants in place.
 - [x] **Screenshot pipeline.** `make screenshots` produces light + dark sets for two device sizes.
+- [x] **Demand-evidence doc.** `docs/IMMICH_DEMAND.md` — direction-verified list of GitHub discussions to cite + post on. Use #4341 as the primary citation.
 - [x] **Privacy policy.** Live at `https://glarue.github.io/cairn/PRIVACY`.
 
 ---
