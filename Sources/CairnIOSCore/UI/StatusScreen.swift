@@ -1396,32 +1396,30 @@ public struct StatusScreen: View {
 
 // MARK: - Playful sync icon
 
-/// Four-phase springy sync glyph used as the syncCard's primary
-/// action. Adapted from the user-provided CSS keyframe animation
-/// `@keyframes l18` (cubic-bezier(0.3, 1, 0, 1) at 1.5s per cycle),
-/// extended with a ball-morph phase so the icon visibly compresses
-/// into a solid disk and then blooms back to the arrow each cycle:
+/// Flywheel-style sync glyph used as the syncCard's primary action.
+/// Each cycle: a quick decelerating spin to 360°, a single springy
+/// overshoot at the stop, then a brief rest before the next "kick".
+/// The rhythm reads as ongoing-but-deliberate — like a wheel that's
+/// being kicked back into motion at intervals — distinct from the
+/// continuous-spin pattern of standard activity indicators.
 ///
-///   0.00 → 0.30: arrow scales 1.0 → 1.25 (expand outward)
-///   0.30 → 0.60: hold at 1.25, rotate 0° → 360°
-///   0.60 → 0.85: arrow contracts to 1.0 AND morphs into solid ball
-///                  (arrow opacity → 0, ball opacity → 1)
-///   0.85 → 1.00: ball blooms back into arrow (ball opacity → 0,
-///                  arrow opacity → 1)
+///   0.00 →  0.55: rotate 0° → 360° with cubic ease-out (kick + decelerate)
+///   0.55 →  0.72: single overshoot to ≈ +9° past 360° and settle back
+///                  (sin half-cycle — one transient spring, no
+///                  multi-bounce ringing)
+///   0.72 →  1.00: rest at 360°. Next cycle starts at 0°, which is
+///                  visually identical, so the loop is seamless.
 ///
-/// Cycle starts and ends with the static arrow at scale 1.0, so the
-/// loop is seamless and the idle state matches cycle boundaries
-/// (no jump when isAnimating toggles).
-///
-/// `TimelineView(.animation, paused:)` drives the cycle so the
-/// animation pauses cleanly when not syncing — avoids the
-/// `withAnimation(.repeatForever)` trap where the bound state goes
-/// false but the animation keeps going.
+/// `TimelineView(.animation, paused:)` drives the cycle and pauses
+/// cleanly when not syncing — avoids the `withAnimation(.repeatForever)`
+/// trap where the bound state goes false but the animation keeps
+/// going. Idle state (isAnimating == false) is the static arrow at
+/// 0°, matching cycle start/end.
 private struct PlayfulSyncIcon: View {
     let isAnimating: Bool
     let color: Color
     var size: CGFloat = 22
-    var period: Double = 1.5
+    var period: Double = 1.4
 
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0/60.0, paused: !isAnimating)) { context in
@@ -1430,90 +1428,37 @@ private struct PlayfulSyncIcon: View {
                 return context.date.timeIntervalSinceReferenceDate
                     .truncatingRemainder(dividingBy: period) / period
             }()
-            let state = Self.computeState(phase: phase, isAnimating: isAnimating)
-            ZStack {
-                // Solid disk that the arrow morphs into during the
-                // contract phase (and out of during the bloom phase).
-                // Sized to roughly the SF Symbol's circular footprint
-                // — a `size`-diameter circle centered on the same
-                // point.
-                Circle()
-                    .fill(color)
-                    .frame(width: size * 0.86, height: size * 0.86)
-                    .opacity(state.ballOpacity)
-                Image(systemName: "arrow.triangle.2.circlepath")
-                    .font(.system(size: size, weight: .semibold))
-                    .foregroundStyle(color)
-                    .rotationEffect(.degrees(state.rotation))
-                    .scaleEffect(state.scale)
-                    .opacity(state.arrowOpacity)
-            }
+            let rotation = Self.rotation(at: phase, isAnimating: isAnimating)
+            Image(systemName: "arrow.triangle.2.circlepath")
+                .font(.system(size: size, weight: .semibold))
+                .foregroundStyle(color)
+                .rotationEffect(.degrees(rotation))
         }
     }
 
-    private struct AnimState {
-        let scale: Double
-        let rotation: Double
-        let arrowOpacity: Double
-        let ballOpacity: Double
-    }
-
-    /// Four-segment keyframe per cycle. Cubic ease-out within each
-    /// segment approximates the CSS `cubic-bezier(0.3, 1, 0, 1)`
-    /// snappy-start, slow-finish curve.
-    private static func computeState(phase: Double, isAnimating: Bool) -> AnimState {
-        guard isAnimating else {
-            return AnimState(scale: 1.0, rotation: 0, arrowOpacity: 1.0, ballOpacity: 0.0)
-        }
-        if phase < 0.30 {
-            // Expand: arrow scales from 1.0 to 1.25.
-            let t = phase / 0.30
-            return AnimState(
-                scale: 1.0 + 0.25 * cubicEaseOut(t),
-                rotation: 0,
-                arrowOpacity: 1.0,
-                ballOpacity: 0.0
-            )
-        } else if phase < 0.60 {
-            // Rotate: full revolution while held at scale 1.25.
-            let t = (phase - 0.30) / (0.60 - 0.30)
-            return AnimState(
-                scale: 1.25,
-                rotation: 360 * cubicEaseOut(t),
-                arrowOpacity: 1.0,
-                ballOpacity: 0.0
-            )
-        } else if phase < 0.85 {
-            // Contract + morph to ball: arrow shrinks back to 1.0
-            // and crossfades into the solid disk. Rotation stays at
-            // 360° (visually the same as 0°) so no spin during the
-            // morph.
-            let t = (phase - 0.60) / (0.85 - 0.60)
-            let eased = cubicEaseOut(t)
-            return AnimState(
-                scale: 1.25 - 0.25 * eased,
-                rotation: 360,
-                arrowOpacity: 1.0 - eased,
-                ballOpacity: eased
-            )
+    /// Flywheel rotation curve. See struct doc for the segment table.
+    private static func rotation(at phase: Double, isAnimating: Bool) -> Double {
+        guard isAnimating else { return 0 }
+        if phase < 0.55 {
+            // Kick + decelerate.
+            let t = phase / 0.55
+            return 360 * cubicEaseOut(t)
+        } else if phase < 0.72 {
+            // Springy overshoot. `sin(t * π)` over [0,1] is one half-
+            // wave (0 → 1 → 0), so rotation rides up to 360+amp and
+            // settles back to 360. Single transient — no multi-bounce
+            // ringing.
+            let t = (phase - 0.55) / (0.72 - 0.55)
+            let amplitude: Double = 9
+            return 360 + sin(t * .pi) * amplitude
         } else {
-            // Bloom: ball at scale 1.0 crossfades back into the
-            // arrow. Rotation snaps to 0 here, but arrowOpacity at
-            // segment start is 0 so the snap is invisible.
-            let t = (phase - 0.85) / (1.0 - 0.85)
-            let eased = cubicEaseOut(t)
-            return AnimState(
-                scale: 1.0,
-                rotation: 0,
-                arrowOpacity: eased,
-                ballOpacity: 1.0 - eased
-            )
+            // Rest before the next kick.
+            return 360
         }
     }
 
-    /// `1 - (1 - t)³` — fair approximation of CSS
-    /// `cubic-bezier(0.3, 1, 0, 1)`. Snappy start, slow tail, no
-    /// overshoot.
+    /// `1 - (1 - t)³` — cubic ease-out. Snappy start, slow finish;
+    /// gives the rotation its decelerating-flywheel feel.
     private static func cubicEaseOut(_ t: Double) -> Double {
         let inv = 1 - t
         return 1 - inv * inv * inv
