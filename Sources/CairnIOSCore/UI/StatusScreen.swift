@@ -265,16 +265,14 @@ public struct StatusScreen: View {
             syncToast != nil,
             restoredAfterCairnTrashCount > 0,
             inferredOrphanCount > 0,
+            // Including isSyncing so the syncCard's checklist
+            // appear/disappear AND every section below it slide
+            // with the same single cairnSpring context. Earlier
+            // attempt with a separate .smooth modifier broke either
+            // the banner animation or the springy collapse depending
+            // on modifier order — single source of truth avoids that.
+            isSyncing,
         ]
-        // Note: isSyncing is intentionally NOT in this key. It gets
-        // its own dedicated `.animation(.smooth, value: isSyncing)`
-        // modifier on the body's outer VStack. Why: cairnBannerAnimation
-        // uses cairnSpring (response 0.5, slight overshoot), which
-        // has a long tail that overlaps with the rotating-icon's
-        // 60fps TimelineView updates and produces visible stutter
-        // during the appear transition specifically. A shorter
-        // critically-damped animation finishes before the icon's
-        // rotation phase has time to compete with the layout pass.
     }
 
     /// One-line "what just happened" sentence above the journal card.
@@ -352,18 +350,6 @@ public struct StatusScreen: View {
             // `.transition(.cairnBanner)` modifiers on individual
             // banners are no-ops (SwiftUI only plays transitions
             // inside an animated context).
-            // Modifier order matters: `.smooth(value: isSyncing)` is
-            // applied FIRST so it sits inner (closer to the view);
-            // `cairnBannerAnimation(value: bannerVisibilityKey)` is
-            // applied second so it's the outermost animation context.
-            // When ONLY a banner-related change happens (e.g. the
-            // sync-success toast disappearing), cairnSpring drives
-            // the .cairnBanner transition. When isSyncing flips, the
-            // inner .smooth provides a critically-damped settle for
-            // the syncCard's layout shift. Reversed order made the
-            // outer .smooth dominate the banner's transition,
-            // producing a 250ms snap-out that read as "no animation."
-            .animation(reduceMotion ? .none : .smooth(duration: 0.25), value: isSyncing)
             .cairnBannerAnimation(value: bannerVisibilityKey)
         }
         .background(t.bg)
