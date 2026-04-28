@@ -51,6 +51,7 @@ SAFETY MODEL
 — Breadcrumbs. Every run is tagged on Immich (cairn/v1/run/<id>) so you can find it server-side.
 — Forensic journal. Local append-only log records every step — planned, tagged, trashed, restored, failed.
 — Exclusions. Protect specific photos from ever being flagged.
+— Indexing scope. Restrict cairn to a specific set of Photos albums. Photos outside the scope are silently ignored — never hashed, never proposed for trash. Useful if you want to manage just one album and leave synced family albums alone.
 
 PRIVACY
 — No analytics, no telemetry, no crash reporting, no ads.

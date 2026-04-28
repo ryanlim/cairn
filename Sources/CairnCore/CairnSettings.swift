@@ -126,6 +126,16 @@ public struct CairnSettings: Sendable, Codable, Equatable {
     /// on write.
     public static let iCloudMaxEverBytesMBRange: ClosedRange<Int> = 50...10_240
 
+    /// Which slice of the user's Photos library cairn manages. Default
+    /// `.fullLibrary` matches the original behavior (every visible asset
+    /// in the user library is in scope). `.selectedAlbums` restricts
+    /// cairn's view to a hand-picked set of Photos albums (identified
+    /// by `PHAssetCollection.localIdentifier`); photos outside those
+    /// albums are silently ignored — never hashed, never proposed for
+    /// trash, never enter the EverSeen / Confirmed flow until they're
+    /// added to a selected album.
+    public var indexingScope: IndexingScope
+
     public init(
         maxDeletePercent: Double = 1.0,
         minDeleteFloor: Int = 5,
@@ -138,7 +148,8 @@ public struct CairnSettings: Sendable, Codable, Equatable {
         appearance: AppearanceOverride = .system,
         deletionBacklogAlertThreshold: Int = 25,
         thumbnailCacheCapMB: Int = 100,
-        thumbhashCapMB: Int = 5
+        thumbhashCapMB: Int = 5,
+        indexingScope: IndexingScope = .fullLibrary
     ) {
         self.maxDeletePercent = maxDeletePercent
         self.minDeleteFloor = minDeleteFloor
@@ -152,6 +163,7 @@ public struct CairnSettings: Sendable, Codable, Equatable {
         self.deletionBacklogAlertThreshold = deletionBacklogAlertThreshold
         self.thumbnailCacheCapMB = thumbnailCacheCapMB
         self.thumbhashCapMB = thumbhashCapMB
+        self.indexingScope = indexingScope
     }
 
     /// The factory defaults. Kept as a single constant so tests and the
@@ -167,6 +179,7 @@ public struct CairnSettings: Sendable, Codable, Equatable {
         case iCloudDownloadLimitMB, iCloudMaxEverBytesMB, appearance
         case deletionBacklogAlertThreshold
         case thumbnailCacheCapMB, thumbhashCapMB
+        case indexingScope
     }
 
     public init(from decoder: Decoder) throws {
@@ -184,6 +197,77 @@ public struct CairnSettings: Sendable, Codable, Equatable {
         self.deletionBacklogAlertThreshold = try c.decodeIfPresent(Int.self, forKey: .deletionBacklogAlertThreshold) ?? d.deletionBacklogAlertThreshold
         self.thumbnailCacheCapMB = try c.decodeIfPresent(Int.self, forKey: .thumbnailCacheCapMB) ?? d.thumbnailCacheCapMB
         self.thumbhashCapMB = try c.decodeIfPresent(Int.self, forKey: .thumbhashCapMB) ?? d.thumbhashCapMB
+        self.indexingScope = try c.decodeIfPresent(IndexingScope.self, forKey: .indexingScope) ?? d.indexingScope
+    }
+}
+
+/// Which slice of the user's Photos library cairn watches.
+///
+/// Encoded as a tagged-payload object, e.g.
+/// `{"kind":"fullLibrary"}` or
+/// `{"kind":"selectedAlbums","albums":["AB12...","CD34..."]}`. The
+/// hand-rolled coding keeps the on-disk shape stable and human-readable,
+/// and avoids the synthesized `{"selectedAlbums":{"_0":[...]}}` format
+/// that ties the JSON to Swift's enum-associated-value internals.
+///
+/// `albums` is `Set<String>` of `PHAssetCollection.localIdentifier`
+/// values. Stable across launches; PhotoKit also returns these values
+/// from the picker UI.
+public enum IndexingScope: Sendable, Equatable {
+    case fullLibrary
+    case selectedAlbums(Set<String>)
+
+    /// Convenience: `true` iff a specific album set is being watched.
+    public var isRestricted: Bool {
+        switch self {
+        case .fullLibrary: return false
+        case .selectedAlbums: return true
+        }
+    }
+
+    /// The selected album localIdentifiers when restricted; empty set
+    /// when `.fullLibrary`. Useful for callers that just want a flat
+    /// collection without unwrapping the enum each time.
+    public var albumLocalIdentifiers: Set<String> {
+        switch self {
+        case .fullLibrary: return []
+        case .selectedAlbums(let ids): return ids
+        }
+    }
+}
+
+extension IndexingScope: Codable {
+    private enum CodingKeys: String, CodingKey {
+        case kind, albums
+    }
+
+    private enum Kind: String, Codable {
+        case fullLibrary, selectedAlbums
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let kind = try c.decode(Kind.self, forKey: .kind)
+        switch kind {
+        case .fullLibrary:
+            self = .fullLibrary
+        case .selectedAlbums:
+            let albums = try c.decodeIfPresent(Set<String>.self, forKey: .albums) ?? []
+            self = .selectedAlbums(albums)
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .fullLibrary:
+            try c.encode(Kind.fullLibrary, forKey: .kind)
+        case .selectedAlbums(let ids):
+            try c.encode(Kind.selectedAlbums, forKey: .kind)
+            // Encode as a sorted array for stable JSON; the Swift
+            // `Set<String>` decode side accepts any ordering.
+            try c.encode(ids.sorted(), forKey: .albums)
+        }
     }
 }
 

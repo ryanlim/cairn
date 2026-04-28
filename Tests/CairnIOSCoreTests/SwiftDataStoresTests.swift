@@ -83,6 +83,70 @@ struct SwiftDataEverSeenStoreTests {
         try await store.union([])
         #expect(try await store.snapshot().isEmpty)
     }
+
+    // MARK: - Scope-aware tag API
+
+    @Test("recordObserved persists album tags retrievable via snapshotWithTags")
+    func recordObservedPersistsTags() async throws {
+        let container = try makeContainer()
+        let store = SwiftDataEverSeenStore(container: container)
+
+        try await store.recordObserved([
+            ck("A"): ["album-1", "album-2"],
+            ck("B"): ["album-1"],
+        ])
+        let snap = try await store.snapshotWithTags()
+        #expect(snap[ck("A")] == ["album-1", "album-2"])
+        #expect(snap[ck("B")] == ["album-1"])
+    }
+
+    @Test("recordObserved replaces tags on re-observation — accommodates album moves")
+    func recordObservedReplaces() async throws {
+        let container = try makeContainer()
+        let store = SwiftDataEverSeenStore(container: container)
+
+        try await store.recordObserved([ck("A"): ["album-1"]])
+        try await store.recordObserved([ck("A"): ["album-2"]])
+        let snap = try await store.snapshotWithTags()
+        #expect(snap[ck("A")] == ["album-2"])
+    }
+
+    @Test("setTags bulk-replaces tags only on existing entries; missing checksums skip")
+    func setTagsBulkSafe() async throws {
+        let container = try makeContainer()
+        let store = SwiftDataEverSeenStore(container: container)
+
+        try await store.recordObserved([
+            ck("A"): ["old"],
+            ck("B"): ["old"],
+        ])
+        try await store.setTags(for: cks("A", "B", "MISSING"), tags: ["fresh"])
+        let snap = try await store.snapshotWithTags()
+        #expect(snap[ck("A")] == ["fresh"])
+        #expect(snap[ck("B")] == ["fresh"])
+        #expect(snap[ck("MISSING")] == nil)
+    }
+
+    @Test("legacy union() preserves tags on existing entries; new entries get empty tags")
+    func unionPreservesTags() async throws {
+        let container = try makeContainer()
+        let store = SwiftDataEverSeenStore(container: container)
+
+        try await store.recordObserved([ck("A"): ["album-1"]])
+        try await store.union(cks("A", "B"))
+        let snap = try await store.snapshotWithTags()
+        #expect(snap[ck("A")] == ["album-1"])    // preserved
+        #expect(snap[ck("B")] == [])              // new = empty
+    }
+
+    @Test("CSV codec round-trips: empty, one, many tags")
+    func csvCodecRoundTrips() {
+        #expect(SwiftDataEverSeenStore.parseAlbumCSV("") == [])
+        #expect(SwiftDataEverSeenStore.parseAlbumCSV("A") == ["A"])
+        #expect(SwiftDataEverSeenStore.parseAlbumCSV("A,B,C") == ["A", "B", "C"])
+        #expect(SwiftDataEverSeenStore.formatAlbumCSV([]) == "")
+        #expect(SwiftDataEverSeenStore.formatAlbumCSV(["B", "A", "C"]) == "A,B,C")  // sorted
+    }
 }
 
 // MARK: - SwiftDataExclusionStore

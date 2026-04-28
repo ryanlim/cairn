@@ -117,6 +117,19 @@ The older `deviceAssetId` / `deviceId` scheme used by the Immich mobile app was 
 
 Our reconciliation uses a client-side **ever-seen SHA1 set** to express "delete on iPhone propagates to Immich" without touching photos that were never on the iPhone.
 
+### Scope-aware EverSeen (Wave 5: indexing scope)
+
+`CairnSettings.indexingScope` lets the user restrict cairn's purview to a hand-picked set of Photos albums (`.selectedAlbums(Set<PHAssetCollection.localIdentifier>)`) rather than the full library. Each `EverSeenStore` entry carries a `Set<String>` of album localIdentifiers — the selected-scope albums in which cairn most recently observed the asset. The reconciler filters `everSeenChecksums` to entries where `tags ∩ scope ≠ ∅` before computing candidates: out-of-scope photos quietly exclude themselves; legacy entries (untagged, written before scope-aware indexing) are also out of scope under restricted scope until re-observed.
+
+Implementation details:
+- `StoredEverSeenChecksum.albumIdsCSV` (SwiftData) and `[String: [String]]` JSON (`JSONFileEverSeenStore`) carry tags. The SwiftData field has a default `""`, making the field addition migration-free for SwiftData's lightweight migration path. The JSON store transparently migrates the legacy v1 `[String]` format on first read.
+- `recordObserved(_:)` on `EverSeenStore` upserts entries with replaced (not merged) tags — moving an asset between albums shows up correctly. `setTags(for:tags:)` bulk-updates tags on existing entries; used during scope-change rebuilds.
+- `recomputeScopeTags` action (wired in `CairnAppRoot` via `.onChange(of: model.settings.indexingScope)`) walks the user's selected albums and tags everSeen entries that match. Without this, toggling to a restricted scope would leave every entry untagged → out of scope → "0 candidates forever."
+- The reconciler's PhotoKit enumeration sites still walk the full library at v1; the engine-level filter is the safety boundary. A future iteration could push album filtering into the enumerator (e.g., `PHAsset.fetchAssets(in: collection)` per selected album) for performance and to skip hashing out-of-scope photos. Not required for correctness.
+- Scope change semantics: `.fullLibrary` bypasses the filter entirely (legacy behavior preserved). `.selectedAlbums([])` is a valid degraded state (engine emits zero candidates — safe, since "no albums picked yet" is a real intermediate state during the picking flow). Empty tags ≠ wildcard match: untagged entries are out-of-scope under restricted scope by design.
+
+Worked scenarios + the Option-1 / Option-2 design rationale live in the plan doc `notes/scope-aware-indexing-plan.md` (or session history).
+
 ## API endpoints that matter
 
 All auth via `x-api-key` header.

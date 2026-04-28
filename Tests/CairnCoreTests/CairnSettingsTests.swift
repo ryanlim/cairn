@@ -106,6 +106,67 @@ struct CairnSettingsTests {
         #expect(decoded.deletionStrictness == CairnSettings.defaults.deletionStrictness)
         #expect(decoded.quarantineDays == CairnSettings.defaults.quarantineDays)
     }
+
+    @Test("indexingScope defaults to .fullLibrary")
+    func indexingScopeDefaultsFullLibrary() {
+        #expect(CairnSettings.defaults.indexingScope == .fullLibrary)
+        #expect(CairnSettings.defaults.indexingScope.isRestricted == false)
+    }
+
+    @Test("legacy JSON without indexingScope decodes as .fullLibrary")
+    func legacyJSONMissingIndexingScopeUsesFullLibrary() throws {
+        let legacyJSON = """
+        {
+            "maxDeletePercent": 1.0,
+            "minDeleteFloor": 5,
+            "notifyOnAbort": true,
+            "verboseLogging": false,
+            "deletionStrictness": "trusting",
+            "quarantineDays": 14
+        }
+        """
+        let decoded = try JSONDecoder().decode(CairnSettings.self, from: Data(legacyJSON.utf8))
+        #expect(decoded.indexingScope == .fullLibrary)
+    }
+
+    @Test(".selectedAlbums round-trips with stable on-disk shape")
+    func selectedAlbumsRoundTrips() throws {
+        let original = CairnSettings(
+            indexingScope: .selectedAlbums(["AB12-camera-roll", "EF56-family"])
+        )
+        let data = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(CairnSettings.self, from: data)
+        #expect(decoded.indexingScope == .selectedAlbums(["AB12-camera-roll", "EF56-family"]))
+        #expect(decoded.indexingScope.albumLocalIdentifiers == ["AB12-camera-roll", "EF56-family"])
+        #expect(decoded.indexingScope.isRestricted)
+    }
+
+    @Test(".selectedAlbums with empty set is a valid degraded state")
+    func selectedAlbumsEmptyRoundTrips() throws {
+        let original = CairnSettings(indexingScope: .selectedAlbums([]))
+        let data = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(CairnSettings.self, from: data)
+        #expect(decoded.indexingScope == .selectedAlbums([]))
+        #expect(decoded.indexingScope.isRestricted)
+        #expect(decoded.indexingScope.albumLocalIdentifiers.isEmpty)
+    }
+
+    @Test("IndexingScope encodes as a tagged-payload object, not Swift's synthesized form")
+    func indexingScopeOnDiskShapeIsTaggedPayload() throws {
+        // The custom encoding produces `{"kind":"selectedAlbums","albums":[...]}`
+        // rather than the synthesized `{"selectedAlbums":{"_0":[...]}}`.
+        // Lock this in so the on-disk format stays stable across Swift
+        // version bumps that might affect synthesized enum coding.
+        let value = IndexingScope.selectedAlbums(["A", "B"])
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let json = try String(data: encoder.encode(value), encoding: .utf8) ?? ""
+        #expect(json.contains("\"kind\":\"selectedAlbums\""))
+        #expect(json.contains("\"albums\":[\"A\",\"B\"]"))
+
+        let fullJSON = try String(data: encoder.encode(IndexingScope.fullLibrary), encoding: .utf8) ?? ""
+        #expect(fullJSON == #"{"kind":"fullLibrary"}"#)
+    }
 }
 
 @Suite("JSONFileSettingsStore")

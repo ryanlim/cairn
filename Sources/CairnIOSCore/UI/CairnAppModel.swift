@@ -354,6 +354,7 @@ public final class CairnAppModel {
         case runDetail(CairnFixtures.RunFixture, assets: [CairnFixtures.CandidateFixture])
         case pendingReview
         case deferredQueue
+        case albumPicker
 
         public var id: String {
             switch self {
@@ -361,6 +362,7 @@ public final class CairnAppModel {
             case .runDetail(let r, _): "run-detail-\(r.id)"
             case .pendingReview: "pending-review"
             case .deferredQueue: "deferred-queue"
+            case .albumPicker: "album-picker"
             }
         }
     }
@@ -600,6 +602,17 @@ public struct CairnAppActions: Sendable {
     /// DEBUG-gated row in Settings → Advanced.
     public var replayOnboarding: @Sendable () async -> Void
 
+    /// Refresh `EverSeenStore` album tags to match the currently
+    /// selected scope. Called automatically when
+    /// `CairnSettings.indexingScope` changes (host wires this from a
+    /// SwiftUI `.onChange`). For `.fullLibrary` scope this is a no-op
+    /// — the engine bypasses the tag filter in that mode. For
+    /// `.selectedAlbums(ids)`, walks each selected album, looks up
+    /// the contained assets' checksums via `LocalHashStore`, and
+    /// updates `EverSeenStore` tags via `recordObserved`. Idempotent;
+    /// safe to call repeatedly.
+    public var recomputeScopeTags: @Sendable () async -> Void
+
     public init(
         requestSync: @escaping @Sendable () async throws -> Void = {},
         confirmTrash: @escaping @Sendable () async throws -> Void = {},
@@ -627,7 +640,8 @@ public struct CairnAppActions: Sendable {
         dismissInitialScan: @escaping @Sendable () async -> Void = {},
         startOverInitialScan: @escaping @Sendable () async -> Void = {},
         forceDrainDeferred: @escaping @Sendable () async -> Void = {},
-        replayOnboarding: @escaping @Sendable () async -> Void = {}
+        replayOnboarding: @escaping @Sendable () async -> Void = {},
+        recomputeScopeTags: @escaping @Sendable () async -> Void = {}
     ) {
         self.requestSync = requestSync
         self.confirmTrash = confirmTrash
@@ -654,6 +668,7 @@ public struct CairnAppActions: Sendable {
         self.startOverInitialScan = startOverInitialScan
         self.forceDrainDeferred = forceDrainDeferred
         self.replayOnboarding = replayOnboarding
+        self.recomputeScopeTags = recomputeScopeTags
     }
 
     /// All-no-op closures with successful default returns. Use in previews

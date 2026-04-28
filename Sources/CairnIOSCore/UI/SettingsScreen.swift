@@ -59,6 +59,10 @@ public struct SettingsScreen: View {
     public let onReplayOnboarding: () -> Void
     public let onExportData: (CairnExportScope) -> Void
     public let onImportData: (URL, Bool) -> Void
+    /// Opens the album-picker sheet for `IndexingScope.selectedAlbums`.
+    /// Host (CairnAppRoot) wires this to mutate `model.presentedSheet`
+    /// and persist the picker's resulting selection back into settings.
+    public let onOpenAlbumPicker: () -> Void
     /// Token incremented by the host when the user re-taps the active
     /// tab — see `CairnTabBar.onReselect`. Each increment scrolls the
     /// screen back to the top.
@@ -94,6 +98,7 @@ public struct SettingsScreen: View {
         onReplayOnboarding: @escaping () -> Void = {},
         onExportData: @escaping (CairnExportScope) -> Void = { _ in },
         onImportData: @escaping (URL, Bool) -> Void = { _, _ in },
+        onOpenAlbumPicker: @escaping () -> Void = {},
         scrollResetToken: Int = 0
     ) {
         self._settings = settings
@@ -114,6 +119,7 @@ public struct SettingsScreen: View {
         self.onReplayOnboarding = onReplayOnboarding
         self.onExportData = onExportData
         self.onImportData = onImportData
+        self.onOpenAlbumPicker = onOpenAlbumPicker
         self.scrollResetToken = scrollResetToken
     }
 
@@ -126,6 +132,7 @@ public struct SettingsScreen: View {
 
                 immichServerSection
                 safetyRailsSection
+                indexingScopeSection
                 notificationsSection
                 permissionsSection
                 appearanceSection
@@ -328,6 +335,42 @@ public struct SettingsScreen: View {
             Text(excludedCount > 0 ? "\(excludedCount) protected" : "None")
                 .font(.system(size: 15))
                 .foregroundStyle(excludedCount > 0 ? t.infoInk : t.textMuted)
+            Image(systemName: "chevron.right")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(t.textHint)
+        }
+    }
+
+    // MARK: - Indexing scope
+
+    private var indexingScopeSection: some View {
+        Group {
+            KeylineSection("Indexing scope", icon: "rectangle.dashed", iconTint: t.info)
+            CairnCard {
+                VStack(spacing: 0) {
+                    IndexingScopeRow(scope: $settings.indexingScope)
+                    if settings.indexingScope.isRestricted {
+                        RowDivider()
+                        KeyValRow(
+                            "Selected albums",
+                            value: { selectedAlbumsValue },
+                            onTap: onOpenAlbumPicker
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var selectedAlbumsValue: some View {
+        let count = settings.indexingScope.albumLocalIdentifiers.count
+        HStack(spacing: 6) {
+            Text(count == 0
+                 ? "Pick at least one"
+                 : "\(count) album\(count == 1 ? "" : "s")")
+                .font(.system(size: 15))
+                .foregroundStyle(count > 0 ? t.infoInk : t.pendingInk)
             Image(systemName: "chevron.right")
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(t.textHint)
@@ -705,6 +748,81 @@ private struct ConnectionPill: View {
 /// Segmented picker for `DeletionStrictness`. The copy below the
 /// picker is our own (the prototype was built before this landed) and is
 /// kept short and factual — matches the existing sysadmin-tool tone.
+/// Picker row for `CairnSettings.indexingScope`. Two-segment toggle:
+/// "Full library" (default) vs. "Selected albums". The actual album
+/// list is picked in a separate sheet — this row just owns the kind
+/// switch + a one-line explanation that adapts per choice.
+///
+/// Because `IndexingScope` carries an associated `Set<String>` for the
+/// selected case, the picker can't bind directly to the enum. We bridge
+/// through a private `Kind` enum: switching to "Selected albums"
+/// preserves the previously-selected album set if any, otherwise
+/// initializes an empty set (the user's next tap on "Selected albums"
+/// row opens the picker to fill it in).
+private struct IndexingScopeRow: View {
+    @Binding var scope: IndexingScope
+    @Environment(\.cairnTokens) private var t
+
+    private enum Kind: Hashable { case fullLibrary, selectedAlbums }
+
+    private var kindBinding: Binding<Kind> {
+        Binding(
+            get: { scope.isRestricted ? .selectedAlbums : .fullLibrary },
+            set: { newKind in
+                switch newKind {
+                case .fullLibrary:
+                    scope = .fullLibrary
+                case .selectedAlbums:
+                    // Preserve any prior selection; default to empty
+                    // so the "pick at least one" affordance surfaces.
+                    scope = .selectedAlbums(scope.albumLocalIdentifiers)
+                }
+            }
+        )
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Indexing scope")
+                    .font(.system(size: 15))
+                    .foregroundStyle(t.textBody)
+                HelpPopover {
+                    Text("**Full library** — cairn watches every visible photo on this iPhone. The default.")
+                    Text("**Selected albums** — cairn only watches photos in albums you pick. Photos outside those albums are silently ignored: never hashed, never proposed for trash, never sent to your server. Add a photo to a selected album later and cairn picks it up on the next sync.")
+                    Text("Useful if you want to manage just one album (Camera Roll, say) and leave synced family albums alone — or if you're recording a demo and don't want your full library on screen.")
+                }
+                Spacer()
+            }
+            CairnSegmentedPicker(
+                selection: kindBinding,
+                options: [
+                    .init(value: Kind.fullLibrary,    label: "Full library"),
+                    .init(value: Kind.selectedAlbums, label: "Selected albums"),
+                ]
+            )
+            Text(explanation)
+                .font(.system(size: 12))
+                .foregroundStyle(t.textMuted)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 14)
+    }
+
+    private var explanation: String {
+        switch scope {
+        case .fullLibrary:
+            return "Every visible photo on this iPhone is in scope."
+        case .selectedAlbums(let ids):
+            if ids.isEmpty {
+                return "Pick the albums cairn should watch. Until you pick at least one, no photos are in scope."
+            }
+            return "cairn watches only the picked albums. Photos elsewhere are ignored."
+        }
+    }
+}
+
 private struct StrictnessRow: View {
     @Binding var strictness: DeletionStrictness
     @Environment(\.cairnTokens) private var t

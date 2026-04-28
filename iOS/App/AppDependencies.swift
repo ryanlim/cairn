@@ -810,6 +810,25 @@ final class AppDependencies {
             }
         }()
         let settings = model.settings
+
+        // Scope-aware indexing: when the user has restricted cairn to
+        // specific albums, fetch the album-tag map and pass it (along
+        // with the active scope) into the engine. The engine filters
+        // EverSeen entries to only those whose tags intersect the scope
+        // before computing candidates — out-of-scope photos quietly
+        // exclude themselves from the diff. `nil` for full-library mode
+        // (the default) preserves the legacy behavior.
+        let everSeenAlbumTags: [Checksum: Set<String>]?
+        let selectedAlbumScope: Set<String>?
+        switch settings.indexingScope {
+        case .fullLibrary:
+            everSeenAlbumTags = nil
+            selectedAlbumScope = nil
+        case .selectedAlbums(let albumIds):
+            everSeenAlbumTags = (try? await everSeen.snapshotWithTags()) ?? [:]
+            selectedAlbumScope = albumIds
+        }
+
         var result = ReconciliationEngine.compute(.init(
             serverAssets: serverAssets,
             currentLocalChecksums: extendedLocal,
@@ -818,7 +837,9 @@ final class AppDependencies {
             confirmedDeletedAt: confirmedMap,
             now: Date(),
             quarantineDays: settings.quarantineDays,
-            strictness: settings.deletionStrictness
+            strictness: settings.deletionStrictness,
+            everSeenAlbumTags: everSeenAlbumTags,
+            selectedAlbumScope: selectedAlbumScope
         ))
 
         // Token-expiry safety gate. A full re-enumeration triggered by an
@@ -1145,6 +1166,84 @@ final class AppDependencies {
     }
 
     @MainActor
+    /// Refresh `EverSeenStore` album tags to match the currently
+    /// selected scope. Called from a SwiftUI `.onChange` in
+    /// CairnAppRoot whenever `model.settings.indexingScope` mutates.
+    /// No-op for `.fullLibrary` (the engine bypasses the tag filter
+    /// in that mode, so tags don't need to match anything). For
+    /// `.selectedAlbums`, walks each selected album once via
+    /// `PHAssetCollection.fetchAssetCollections`, builds a
+    /// `[Checksum: Set<albumId>]` map by joining album membership
+    /// against `LocalHashStore`'s `[localId: Set<Checksum>]`, and
+    /// upserts via `recordObserved`. Idempotent.
+    fileprivate func recomputeScopeTagsImpl() async {
+        let scope = await MainActor.run { model.settings.indexingScope }
+        guard case .selectedAlbums(let albumIds) = scope, !albumIds.isEmpty else {
+            return
+        }
+        guard let everSeenStore = self.everSeenStore else { return }
+
+        // PhotoKit enumeration of selected albums runs off-main —
+        // potentially hundreds of localIdentifiers across multiple
+        // albums, and we don't want to block any animations while it's
+        // happening.
+        let albumMembership = await Task.detached(priority: .userInitiated) {
+            Self.enumerateAlbumMembership(albumIds: albumIds)
+        }.value
+
+        // Join with LocalHashStore: for each known localId in any
+        // selected album, attribute its checksums to the album set.
+        let allHashes: [String: Set<Checksum>]
+        do {
+            allHashes = try await self.localHashStore.snapshot()
+        } catch {
+            syncLog.error("[cairn.scope] hash-store snapshot failed during tag rebuild: \(Self.describeSyncError(error), privacy: .public)")
+            return
+        }
+
+        var tagsByChecksum: [Checksum: Set<String>] = [:]
+        for (localId, albumIdSet) in albumMembership {
+            guard let checksums = allHashes[localId] else { continue }
+            for checksum in checksums {
+                tagsByChecksum[checksum, default: []].formUnion(albumIdSet)
+            }
+        }
+
+        do {
+            try await everSeenStore.recordObserved(tagsByChecksum)
+            syncLog.info("[cairn.scope] tagged \(tagsByChecksum.count, privacy: .public) ever-seen entries across \(albumIds.count, privacy: .public) selected album(s)")
+        } catch {
+            syncLog.error("[cairn.scope] recordObserved failed during tag rebuild: \(Self.describeSyncError(error), privacy: .public)")
+        }
+    }
+
+    /// Build a `[localId: Set<albumId>]` inverted map by enumerating
+    /// each selected `PHAssetCollection`'s assets. Albums that don't
+    /// resolve (deleted from Photos.app since the user picked them)
+    /// are silently skipped — the Settings UI will surface the missing-
+    /// album warning separately.
+    nonisolated static func enumerateAlbumMembership(albumIds: Set<String>) -> [String: Set<String>] {
+        let identifiers = Array(albumIds)
+        let collections = PHAssetCollection.fetchAssetCollections(
+            withLocalIdentifiers: identifiers,
+            options: nil
+        )
+        var inverted: [String: Set<String>] = [:]
+        collections.enumerateObjects { collection, _, _ in
+            let albumId = collection.localIdentifier
+            // Include hidden assets so Live Photo motion videos and
+            // user-hidden items (which can still be in albums) show up
+            // and align with how the reconciler enumerates the library.
+            let assetOpts = PHFetchOptions()
+            assetOpts.includeHiddenAssets = true
+            let assets = PHAsset.fetchAssets(in: collection, options: assetOpts)
+            assets.enumerateObjects { asset, _, _ in
+                inverted[asset.localIdentifier, default: []].insert(albumId)
+            }
+        }
+        return inverted
+    }
+
     fileprivate func refreshDeferredQueueSummary() async {
         let entries = (try? await deferredHashStore.snapshot()) ?? []
         let ceilingMB = model.settings.iCloudMaxEverBytesMB
@@ -2208,6 +2307,10 @@ final class AppDependencies {
                     }
                     self.model.needsOnboarding = true
                 }
+            },
+            recomputeScopeTags: { [weak self] in
+                guard let self else { return }
+                await self.recomputeScopeTagsImpl()
             }
         )
 

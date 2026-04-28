@@ -444,4 +444,111 @@ struct ReconciliationEngineTests {
         #expect(gated.deleteCandidates.isEmpty)
         #expect(gated.pendingReviewCandidates.isEmpty)
     }
+
+    // MARK: - Scope-aware indexing (Wave 5)
+
+    @Test("scope filter excludes EverSeen entries whose tags don't intersect the active scope")
+    func scopeFilterExcludesOutOfScopeEntries() {
+        // A and B are both in EverSeen and absent from current-local —
+        // both would be candidates under full library mode. With scope
+        // = {album-1} and only A tagged with album-1, only A surfaces.
+        let output = ReconciliationEngine.compute(.init(
+            serverAssets: [asset("s1", "A"), asset("s2", "B")],
+            currentLocalChecksums: [],
+            everSeenChecksums: checksums("A", "B"),
+            everSeenAlbumTags: [
+                Checksum(base64: "A"): ["album-1"],
+                Checksum(base64: "B"): ["album-2"],
+            ],
+            selectedAlbumScope: ["album-1"]
+        ))
+        #expect(output.deleteCandidates.map(\.id) == ["s1"])
+    }
+
+    @Test("scope filter: untagged (legacy) EverSeen entries are out of scope when restricted")
+    func scopeFilterExcludesUntaggedEntries() {
+        // Empty tags = "untagged / pre-scope-aware" — under any
+        // restricted scope, exclude. The user must trigger
+        // recordObserved to bring legacy entries into scope.
+        let output = ReconciliationEngine.compute(.init(
+            serverAssets: [asset("s1", "A"), asset("s2", "B")],
+            currentLocalChecksums: [],
+            everSeenChecksums: checksums("A", "B"),
+            everSeenAlbumTags: [
+                Checksum(base64: "A"): ["album-1"],
+                Checksum(base64: "B"): [],   // legacy / untagged
+            ],
+            selectedAlbumScope: ["album-1"]
+        ))
+        #expect(output.deleteCandidates.map(\.id) == ["s1"])
+    }
+
+    @Test("scope filter: tags-and-scope intersection means even one matching album is enough")
+    func scopeFilterIntersectionAcceptsAnyOverlap() {
+        let output = ReconciliationEngine.compute(.init(
+            serverAssets: [asset("s1", "A")],
+            currentLocalChecksums: [],
+            everSeenChecksums: checksums("A"),
+            everSeenAlbumTags: [
+                // Tagged in three albums; only one is in scope. Still in scope.
+                Checksum(base64: "A"): ["album-1", "album-2", "album-3"],
+            ],
+            selectedAlbumScope: ["album-2"]
+        ))
+        #expect(output.deleteCandidates.map(\.id) == ["s1"])
+    }
+
+    @Test("scope filter: nil tags or nil scope = full library mode (no filter applied)")
+    func scopeFilterNilFallsBackToFullLibrary() {
+        // Same input as `scopeFilterExcludesOutOfScopeEntries` but with
+        // nil scope. Both candidates survive — full library behavior.
+        let output = ReconciliationEngine.compute(.init(
+            serverAssets: [asset("s1", "A"), asset("s2", "B")],
+            currentLocalChecksums: [],
+            everSeenChecksums: checksums("A", "B"),
+            everSeenAlbumTags: [
+                Checksum(base64: "A"): ["album-1"],
+                Checksum(base64: "B"): ["album-2"],
+            ],
+            selectedAlbumScope: nil
+        ))
+        #expect(Set(output.deleteCandidates.map(\.id)) == ["s1", "s2"])
+    }
+
+    @Test("scope filter: assetsInEverSeen denominator reflects the scoped subset")
+    func scopeFilterAdjustsAssetsInEverSeenCount() {
+        // With 3 server assets all in EverSeen but only one tagged in
+        // scope, the denominator drops to 1 — safety rails are evaluated
+        // against the scope-restricted universe, not the full library.
+        let output = ReconciliationEngine.compute(.init(
+            serverAssets: [asset("s1", "A"), asset("s2", "B"), asset("s3", "C")],
+            currentLocalChecksums: checksums("A", "B", "C"),
+            everSeenChecksums: checksums("A", "B", "C"),
+            everSeenAlbumTags: [
+                Checksum(base64: "A"): ["album-1"],
+                Checksum(base64: "B"): ["album-2"],
+                Checksum(base64: "C"): [],
+            ],
+            selectedAlbumScope: ["album-1"]
+        ))
+        #expect(output.assetsInEverSeen == 1)
+    }
+
+    @Test("scope filter: empty scope means no candidates regardless of tags")
+    func scopeFilterEmptyScopeProducesZeroCandidates() {
+        // The "user toggled to selected albums but hasn't picked any
+        // yet" degraded state. Engine emits zero candidates — no
+        // accidental mass-delete during the picking window.
+        let output = ReconciliationEngine.compute(.init(
+            serverAssets: [asset("s1", "A"), asset("s2", "B")],
+            currentLocalChecksums: [],
+            everSeenChecksums: checksums("A", "B"),
+            everSeenAlbumTags: [
+                Checksum(base64: "A"): ["album-1"],
+                Checksum(base64: "B"): ["album-2"],
+            ],
+            selectedAlbumScope: []
+        ))
+        #expect(output.deleteCandidates.isEmpty)
+    }
 }

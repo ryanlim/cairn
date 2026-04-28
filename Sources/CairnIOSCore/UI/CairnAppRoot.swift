@@ -86,6 +86,16 @@ public struct CairnAppRoot: View {
             .onChange(of: model.settings) { _, newValue in
                 Task { await model.actions.persistSettings(newValue) }
             }
+            // Scope changes need to refresh `EverSeenStore` album tags
+            // — without this, toggling to a restricted scope leaves
+            // every existing entry untagged, which the engine filter
+            // treats as out-of-scope, which surfaces "0 candidates" no
+            // matter what you do. Triggering on the scope value (not
+            // the whole settings struct) avoids re-running on unrelated
+            // settings changes.
+            .onChange(of: model.settings.indexingScope) { _, _ in
+                Task { await model.actions.recomputeScopeTags() }
+            }
     }
 
     @ViewBuilder
@@ -499,6 +509,7 @@ public struct CairnAppRoot: View {
                         }
                     }
                 },
+                onOpenAlbumPicker: { model.presentedSheet = .albumPicker },
                 scrollResetToken: scrollResetTokens["settings"] ?? 0
             )
         default:
@@ -623,6 +634,19 @@ public struct CairnAppRoot: View {
                 entries: model.deferredQueueEntries,
                 ceilingBytes: ceilingBytes,
                 onClose: { model.presentedSheet = nil }
+            )
+            .cairnTheme(palette)
+        case .albumPicker:
+            AlbumPickerSheet(
+                initialSelection: model.settings.indexingScope.albumLocalIdentifiers,
+                onClose: { model.presentedSheet = nil },
+                onSave: { selection in
+                    // Persist the picker's resulting selection back into
+                    // settings. Even an empty set is a valid (degraded)
+                    // state — the IndexingScope row's helper text guides
+                    // the user to pick at least one album.
+                    model.settings.indexingScope = .selectedAlbums(selection)
+                }
             )
             .cairnTheme(palette)
         }

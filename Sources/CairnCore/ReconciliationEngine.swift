@@ -37,6 +37,21 @@ public struct ReconciliationInput: Sendable {
     /// directly or must wait for manual review. See `DeletionStrictness`.
     public let strictness: DeletionStrictness
 
+    /// Per-checksum album-membership tags, paired with `selectedAlbumScope`
+    /// for scope-aware indexing. `nil` (the default) means "no scope filter
+    /// — full library mode." When non-nil and `selectedAlbumScope` is also
+    /// non-nil, the engine restricts `everSeenChecksums` to entries whose
+    /// tags intersect the scope before running the diff. Untagged entries
+    /// (legacy / pre-scope-aware) are excluded under restricted scope —
+    /// they get re-tagged on next sync.
+    public let everSeenAlbumTags: [Checksum: Set<String>]?
+
+    /// Active album scope: `Set` of `PHAssetCollection.localIdentifier`
+    /// values from `CairnSettings.indexingScope.selectedAlbums`. Pair
+    /// with `everSeenAlbumTags` to enable scope filtering. `nil` for
+    /// full-library mode.
+    public let selectedAlbumScope: Set<String>?
+
     public init(
         serverAssets: [ServerAsset],
         currentLocalChecksums: Set<Checksum>,
@@ -45,7 +60,9 @@ public struct ReconciliationInput: Sendable {
         confirmedDeletedAt: [Checksum: Date] = [:],
         now: Date = Date(),
         quarantineDays: Int = 14,
-        strictness: DeletionStrictness = .trusting
+        strictness: DeletionStrictness = .trusting,
+        everSeenAlbumTags: [Checksum: Set<String>]? = nil,
+        selectedAlbumScope: Set<String>? = nil
     ) {
         self.serverAssets = serverAssets
         self.currentLocalChecksums = currentLocalChecksums
@@ -55,6 +72,8 @@ public struct ReconciliationInput: Sendable {
         self.now = now
         self.quarantineDays = quarantineDays
         self.strictness = strictness
+        self.everSeenAlbumTags = everSeenAlbumTags
+        self.selectedAlbumScope = selectedAlbumScope
     }
 }
 
@@ -139,12 +158,30 @@ public enum ReconciliationEngine {
     ///      into `deleteCandidates`, `pendingReviewCandidates`, or
     ///      `heldByQuarantineCandidates`.
     public static func compute(_ input: ReconciliationInput) -> ReconciliationOutput {
-        let newlyObserved = input.currentLocalChecksums.subtracting(input.everSeenChecksums)
+        // Scope filter (Wave 5: scope-aware indexing). When the user has
+        // restricted cairn to specific Photos albums, only EverSeen
+        // entries whose album tags intersect the scope are considered.
+        // Out-of-scope entries (and untagged-legacy ones) drop out
+        // before the diff runs — they don't become candidates and they
+        // don't count toward `assetsInEverSeen` (the safety-rails
+        // denominator). When either side of the pair is nil we fall
+        // back to full-library behavior.
+        let effectiveEverSeen: Set<Checksum>
+        if let tags = input.everSeenAlbumTags, let scope = input.selectedAlbumScope {
+            effectiveEverSeen = input.everSeenChecksums.filter { ck in
+                guard let entryTags = tags[ck] else { return false }
+                return !entryTags.isDisjoint(with: scope)
+            }
+        } else {
+            effectiveEverSeen = input.everSeenChecksums
+        }
+
+        let newlyObserved = input.currentLocalChecksums.subtracting(effectiveEverSeen)
 
         // Pass 1: would-be candidates, ignoring exclusions/quarantine/strictness.
         let wouldBeCandidates = input.serverAssets.filter { asset in
             guard !asset.isTrashed else { return false }
-            return input.everSeenChecksums.contains(asset.checksum)
+            return effectiveEverSeen.contains(asset.checksum)
                 && !input.currentLocalChecksums.contains(asset.checksum)
         }
 
@@ -199,7 +236,7 @@ public enum ReconciliationEngine {
         }
 
         let inEverSeen = input.serverAssets.reduce(into: 0) { count, asset in
-            if !asset.isTrashed, input.everSeenChecksums.contains(asset.checksum) {
+            if !asset.isTrashed, effectiveEverSeen.contains(asset.checksum) {
                 count += 1
             }
         }
