@@ -23,6 +23,15 @@ private enum StatusBodyDiagnostic {
         case bodyEval(at: Date, snapshot: [String: String])
         case heightTarget(at: Date, height: CGFloat)
         case visibilityFlip(at: Date)
+        /// Actual rendered height of the SyncPhaseChecklist as
+        /// measured by a GeometryReader. Captures the value at each
+        /// layout pass during the animation window — lets us see
+        /// whether the spring's overshoot actually manifests in
+        /// pixels (height goes above target then settles back) or
+        /// whether the value just monotonically grows to the target
+        /// (which would mean the .bouncy animation isn't being
+        /// applied at all).
+        case renderedHeight(at: Date, height: CGFloat)
     }
 
     @MainActor static func noteBodyEval(snapshot: [String: String]) {
@@ -45,6 +54,16 @@ private enum StatusBodyDiagnostic {
     @MainActor static func noteVisibilityFlip() {
         guard enabled, lastSyncStart != nil else { return }
         events.append(.visibilityFlip(at: Date()))
+    }
+
+    @MainActor static func noteRenderedHeight(_ h: CGFloat) {
+        guard enabled, lastSyncStart != nil else { return }
+        events.append(.renderedHeight(at: Date(), height: h))
+    }
+
+    @MainActor static func noteReduceMotion(_ v: Bool) {
+        guard enabled, v else { return }
+        log.notice("[stutter] reduceMotion ENABLED — animations are disabled by Settings → Accessibility → Motion. That would explain a non-elastic / instant transition.")
     }
 
     @MainActor static func noteSyncStarted() {
@@ -71,6 +90,9 @@ private enum StatusBodyDiagnostic {
             case .visibilityFlip(let at):
                 let offset = Int(at.timeIntervalSince(start) * 1000)
                 lines.append("  \(offset)ms VISIBILITY-FLIP")
+            case .renderedHeight(let at, let height):
+                let offset = Int(at.timeIntervalSince(start) * 1000)
+                lines.append("  \(offset)ms RENDERED-HEIGHT=\(String(format: "%.1f", height))")
             }
         }
         let combined = "[stutter] sync-start trace:\n" + lines.joined(separator: "\n")
@@ -513,6 +535,7 @@ public struct StatusScreen: View {
             if syncing {
                 #if DEBUG
                 StatusBodyDiagnostic.noteSyncStarted()
+                StatusBodyDiagnostic.noteReduceMotion(reduceMotion)
                 #endif
                 // Plain @State mutation — body-level
                 // `.animation(.bouncy, value: checklistFrameHeight)`
@@ -1057,6 +1080,19 @@ public struct StatusScreen: View {
                     // parent snaps. Animations applied at mutation
                     // sites via `withAnimation` (in onChange below)
                     // propagate through the entire layout pass.
+                    #if DEBUG
+                    .background(
+                        GeometryReader { geo in
+                            Color.clear
+                                .onAppear {
+                                    StatusBodyDiagnostic.noteRenderedHeight(geo.size.height)
+                                }
+                                .onChange(of: geo.size.height, initial: false) { _, h in
+                                    StatusBodyDiagnostic.noteRenderedHeight(h)
+                                }
+                        }
+                    )
+                    #endif
                 if quarantineCount > 0 {
                     quarantineLine
                 }
