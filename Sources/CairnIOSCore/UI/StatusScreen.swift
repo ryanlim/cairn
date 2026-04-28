@@ -737,45 +737,55 @@ public struct StatusScreen: View {
         CairnCard {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(alignment: .top) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("READY TO TRASH")
-                            .font(.system(size: 11, weight: .semibold)).tracking(0.9)
-                            .foregroundStyle(t.textMuted)
-                        Button(action: { if library.candidates > 0 { onOpenDeleteQueue() } }) {
-                            Text("\(library.candidates)")
-                                .font(.system(size: 44, weight: .semibold).monospacedDigit())
-                                .tracking(-1.5)
-                                .foregroundStyle(readyToTrashColor)
-                                .lineLimit(1)
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(library.candidates == 0)
-                        .accessibilityLabel("\(library.candidates) ready to trash. Tap to view.")
-                        if !isSyncing, let checked = lastCheckedAt {
-                            Text("Last checked \(Self.relativeTime(checked))")
-                                .font(.system(size: 11))
-                                .foregroundStyle(t.textHint)
+                    // During sync, the hero count is irrelevant (it's
+                    // about to update); the sync-phase checklist takes
+                    // its place so the user sees what's actually
+                    // happening. When idle, the hero count returns and
+                    // the checklist is hidden.
+                    if isSyncing {
+                        SyncPhaseChecklist(phase: syncPhase)
+                    } else {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("READY TO TRASH")
+                                .font(.system(size: 11, weight: .semibold)).tracking(0.9)
+                                .foregroundStyle(t.textMuted)
+                            Button(action: { if library.candidates > 0 { onOpenDeleteQueue() } }) {
+                                Text("\(library.candidates)")
+                                    .font(.system(size: 44, weight: .semibold).monospacedDigit())
+                                    .tracking(-1.5)
+                                    .foregroundStyle(readyToTrashColor)
+                                    .lineLimit(1)
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(library.candidates == 0)
+                            .accessibilityLabel("\(library.candidates) ready to trash. Tap to view.")
+                            if let checked = lastCheckedAt {
+                                Text("Last checked \(Self.relativeTime(checked))")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(t.textHint)
+                            }
                         }
                     }
                     Spacer()
                     VStack(alignment: .trailing, spacing: 6) {
                         // Circular icon-only sync action — replaces the
-                        // former full-width "Sync now" CTA. `variableColor`
-                        // animation cycles the SF Symbol's per-layer
-                        // tints while syncing so users see the action is
-                        // live without a separate spinner. Kept on
-                        // iOS 17 baseline — `.rotate` symbolEffect is
-                        // iOS 18+ and we'd lose the animation on
-                        // 17.x devices.
+                        // former full-width "Sync now" CTA. Continuous
+                        // 60fps rotation (TimelineView-driven) when
+                        // syncing; clean stop at 0° when idle. Avoids
+                        // the `withAnimation(.repeatForever)` problem
+                        // where the rotation continues after the state
+                        // flips back. `paused: !isSyncing` halts the
+                        // timeline when not syncing so we don't burn
+                        // CPU on offscreen frames.
                         Button(action: { if !syncBlocked && !isSyncing { onStartSync() } }) {
                             ZStack {
                                 Circle()
                                     .fill(syncBlocked ? t.surfaceAlt : t.primary.opacity(0.14))
                                     .frame(width: 52, height: 52)
-                                Image(systemName: "arrow.triangle.2.circlepath")
-                                    .font(.system(size: 22, weight: .semibold))
-                                    .foregroundStyle(syncBlocked ? t.textMuted : t.primary)
-                                    .symbolEffect(.variableColor.iterative.reversing, options: .repeating, isActive: isSyncing)
+                                RotatingSyncIcon(
+                                    isSpinning: isSyncing,
+                                    color: syncBlocked ? t.textMuted : t.primary
+                                )
                             }
                             .contentShape(Circle())
                         }
@@ -837,8 +847,9 @@ public struct StatusScreen: View {
                 // Cancel affordance during sync. Standalone since the
                 // primary sync action lives in the top-right circular
                 // button — when syncing, that button is disabled and
-                // visibly animated; this row offers an interrupt and
-                // surfaces the phase checklist.
+                // visibly animated; this row interrupts. The phase
+                // checklist moved to the top-left of the card during
+                // sync, so no checklist below.
                 if isSyncing {
                     Button(action: onCancelSync) {
                         Text("Cancel")
@@ -851,8 +862,6 @@ public struct StatusScreen: View {
                     }
                     .buttonStyle(CairnPressStyle())
                     .accessibilityLabel("Cancel sync")
-
-                    SyncPhaseChecklist(phase: syncPhase)
                 }
 
                 // Surface the sync-blocked reason inline when applicable —
@@ -1371,6 +1380,33 @@ public struct StatusScreen: View {
             return t.textBody
         default:
             return t.textBody
+        }
+    }
+}
+
+// MARK: - Rotating sync icon
+
+/// Continuous-rotation sync glyph used as the syncCard's primary
+/// action. `TimelineView(.animation, paused: !isSpinning)` drives a
+/// time-based angle so the rotation is buttery and pauses cleanly
+/// when not syncing — avoids the `withAnimation(.repeatForever)`
+/// problem where the animation continues after the bound state
+/// changes back. One full revolution every `period` seconds.
+private struct RotatingSyncIcon: View {
+    let isSpinning: Bool
+    let color: Color
+    var size: CGFloat = 22
+    var period: Double = 1.2
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0/60.0, paused: !isSpinning)) { context in
+            let phase = context.date.timeIntervalSinceReferenceDate
+                .truncatingRemainder(dividingBy: period) / period
+            let angle = isSpinning ? phase * 360 : 0
+            Image(systemName: "arrow.triangle.2.circlepath")
+                .font(.system(size: size, weight: .semibold))
+                .foregroundStyle(color)
+                .rotationEffect(.degrees(angle))
         }
     }
 }
