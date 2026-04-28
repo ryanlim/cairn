@@ -265,15 +265,16 @@ public struct StatusScreen: View {
             syncToast != nil,
             restoredAfterCairnTrashCount > 0,
             inferredOrphanCount > 0,
-            // Including isSyncing here so the parent VStack's
-            // cairnBannerAnimation modifier picks up the syncCard
-            // height change (checklist appearing/disappearing).
-            // Without it, the cards below the syncCard ("Library",
-            // "Recent runs", "Latest journal" sections) snap
-            // downward instantly when sync starts instead of
-            // sliding smoothly with the spring.
-            isSyncing,
         ]
+        // Note: isSyncing is intentionally NOT in this key. It gets
+        // its own dedicated `.animation(.smooth, value: isSyncing)`
+        // modifier on the body's outer VStack. Why: cairnBannerAnimation
+        // uses cairnSpring (response 0.5, slight overshoot), which
+        // has a long tail that overlaps with the rotating-icon's
+        // 60fps TimelineView updates and produces visible stutter
+        // during the appear transition specifically. A shorter
+        // critically-damped animation finishes before the icon's
+        // rotation phase has time to compete with the layout pass.
     }
 
     /// One-line "what just happened" sentence above the journal card.
@@ -352,6 +353,15 @@ public struct StatusScreen: View {
             // banners are no-ops (SwiftUI only plays transitions
             // inside an animated context).
             .cairnBannerAnimation(value: bannerVisibilityKey)
+            // Single animation context for sync-state-driven layout
+            // changes: the syncCard's checklist appearing/disappearing
+            // AND every section below the card sliding to accommodate.
+            // `.smooth` is iOS 17+'s critically-damped spring — no
+            // overshoot, faster settle than cairnSpring. The shorter
+            // duration prevents the rotating icon's 60fps updates
+            // from competing with a long layout interpolation tail
+            // (which produced visible stutter on the appear path).
+            .animation(reduceMotion ? .none : .smooth(duration: 0.25), value: isSyncing)
         }
         .background(t.bg)
         .sheet(item: $journalRawJSONEntry) { entry in
@@ -895,15 +905,6 @@ public struct StatusScreen: View {
                 }
             }
             .padding(14)
-            // Snappier spring for the checklist appear/disappear. The
-            // longer cairnSpring (response 0.5, slight overshoot) made
-            // the card height oscillate visibly while settling — the
-            // user reported it as stuttery rearrangement. cairnSpringSnappy
-            // (response 0.28) lands the new layout in ~280ms with less
-            // oscillation; the PlayfulSyncIcon opts out of inherited
-            // animations via .transaction so its rotation isn't dragged
-            // into this spring's interpolation either.
-            .animation(reduceMotion ? .none : .cairnSpringSnappy, value: isSyncing)
         }
         .padding(.bottom, 14)
     }
