@@ -1063,7 +1063,11 @@ public struct StatusScreen: View {
     private var libraryStats: some View {
         CairnCard {
             HStack(spacing: 16) {
-                Stat(label: "On iPhone", value: library.local.formatted(.number), sub: "current")
+                // Three semantically distinct stats get three semantically
+                // distinct hues — reads as a color-keyed pipeline:
+                // orange (the device, the source) → green (indexed,
+                // ready) → blue (the server, the destination).
+                Stat(label: "On iPhone", value: library.local.formatted(.number), sub: "current", color: t.accentInk)
                 Rectangle().fill(t.divider).frame(width: 0.5)
                 Stat(label: "Indexed", value: library.indexed.formatted(.number), sub: "SHA1 set", color: t.verifiedInk)
                 Rectangle().fill(t.divider).frame(width: 0.5)
@@ -1088,13 +1092,13 @@ public struct StatusScreen: View {
                 Button(action: onSeeAllRuns) {
                     HStack(spacing: 6) {
                         Text("See all runs")
-                            .font(.system(size: 13))
+                            .font(.system(size: 13, weight: .medium))
                         Image(systemName: "chevron.right")
                             .font(.system(size: 10, weight: .semibold))
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 12)
-                    .foregroundStyle(t.textMuted)
+                    .foregroundStyle(t.accentInk)
                     .background(
                         Rectangle()
                             .fill(t.divider)
@@ -1916,43 +1920,53 @@ private struct RunRow: View {
 
     var body: some View {
         Button(action: onOpen) {
-            HStack(spacing: 12) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .fill(iconBg)
-                        .frame(width: 30, height: 30)
-                    Image(systemName: iconName)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(iconInk)
-                }
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 8) {
-                        Text(verb)
-                            .font(.system(size: 14, weight: .medium))
-                            .foregroundStyle(t.text)
-                        if run.restored > 0 {
-                            Chip(label: "\(run.restored) restored", tone: .neutral)
+            HStack(spacing: 0) {
+                // Leading-edge color stripe tinted by run outcome —
+                // adds an at-a-glance color cue to a list that was
+                // otherwise mostly neutral text. 3pt wide × full row
+                // height, matching the Callout primitive's accent
+                // stripe convention.
+                Rectangle()
+                    .fill(iconInk)
+                    .frame(width: 3)
+                HStack(spacing: 12) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 9, style: .continuous)
+                            .fill(iconBg)
+                            .frame(width: 30, height: 30)
+                        Image(systemName: iconName)
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(iconInk)
+                    }
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 8) {
+                            Text(verb)
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundStyle(t.text)
+                            if run.restored > 0 {
+                                Chip(label: "\(run.restored) restored", tone: .neutral)
+                            }
+                        }
+                        HStack(spacing: 4) {
+                            Text(CairnTimeHelpers.relativeTime(run.startedAt, now: Date()))
+                                .font(.system(size: 11.5))
+                                .foregroundStyle(t.textHint)
+                            Text("·")
+                                .font(.system(size: 11.5))
+                                .foregroundStyle(t.textHint)
+                            Text(String(run.id.suffix(8)))
+                                .font(.system(size: 10.5, design: .monospaced))
+                                .foregroundStyle(t.textHint)
                         }
                     }
-                    HStack(spacing: 4) {
-                        Text(CairnTimeHelpers.relativeTime(run.startedAt, now: Date()))
-                            .font(.system(size: 11.5))
-                            .foregroundStyle(t.textHint)
-                        Text("·")
-                            .font(.system(size: 11.5))
-                            .foregroundStyle(t.textHint)
-                        Text(String(run.id.suffix(8)))
-                            .font(.system(size: 10.5, design: .monospaced))
-                            .foregroundStyle(t.textHint)
-                    }
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(t.textHint)
                 }
-                Spacer()
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(t.textHint)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 14)
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 14)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

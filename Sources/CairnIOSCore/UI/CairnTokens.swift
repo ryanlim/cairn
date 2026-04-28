@@ -64,6 +64,15 @@ public struct CairnTokens: Sendable {
     public let infoSoft: Color
     public let infoInk: Color
 
+    /// Warm-orange accent role — surfaces a hue distinct from danger
+    /// (red), pending (amber), and verified (green) so the UI has
+    /// somewhere to land when none of those semantics fit but a
+    /// color-keyed accent reads better than another shade of gray.
+    /// Drawn from the palette's `accent` (Carrot Orange).
+    public let accent: Color
+    public let accentSoft: Color
+    public let accentInk: Color
+
     // MARK: - Construction
 
     /// Build tokens from a palette + a color scheme. Soft variants are
@@ -104,6 +113,10 @@ public struct CairnTokens: Sendable {
             info         = p.info.tinted(0.05)
             infoSoft     = p.info.mix(with: p.graphite, amount: 0.78)
             infoInk      = p.info.tinted(0.20)
+
+            accent       = p.accent.tinted(0.05)
+            accentSoft   = p.accent.mix(with: p.graphite, amount: 0.78)
+            accentInk    = p.accent.tinted(0.18)
         } else {
             bg          = p.paper
             surface     = p.bone
@@ -131,6 +144,10 @@ public struct CairnTokens: Sendable {
             info         = p.info
             infoSoft     = p.info.mix(with: p.bone, amount: 0.85)
             infoInk      = p.info.shaded(0.30)
+
+            accent       = p.accent
+            accentSoft   = p.accent.mix(with: p.bone, amount: 0.85)
+            accentInk    = p.accent.shaded(0.18)
         }
     }
 }
