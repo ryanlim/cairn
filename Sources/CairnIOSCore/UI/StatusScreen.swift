@@ -782,8 +782,8 @@ public struct StatusScreen: View {
                                 Circle()
                                     .fill(syncBlocked ? t.surfaceAlt : t.primary.opacity(0.14))
                                     .frame(width: 52, height: 52)
-                                RotatingSyncIcon(
-                                    isSpinning: isSyncing,
+                                PlayfulSyncIcon(
+                                    isAnimating: isSyncing,
                                     color: syncBlocked ? t.textMuted : t.primary
                                 )
                             }
@@ -1384,30 +1384,70 @@ public struct StatusScreen: View {
     }
 }
 
-// MARK: - Rotating sync icon
+// MARK: - Playful sync icon
 
-/// Continuous-rotation sync glyph used as the syncCard's primary
-/// action. `TimelineView(.animation, paused: !isSpinning)` drives a
-/// time-based angle so the rotation is buttery and pauses cleanly
-/// when not syncing — avoids the `withAnimation(.repeatForever)`
-/// problem where the animation continues after the bound state
-/// changes back. One full revolution every `period` seconds.
-private struct RotatingSyncIcon: View {
-    let isSpinning: Bool
+/// Three-phase springy sync glyph used as the syncCard's primary
+/// action. Adapted from the user-provided CSS keyframe animation
+/// `@keyframes l18` (cubic-bezier(0.3, 1, 0, 1) at 1.5s per cycle).
+/// The CSS variant ran four corner "petals" expanding-then-rotating;
+/// here the same rhythm is applied to a single SF Symbol so the
+/// existing arrow.triangle.2.circlepath is the visual anchor:
+///
+///   0     →  0.33: scale 1.0 → 1.25 (expand outward, no rotation)
+///   0.33  →  0.66: hold at 1.25, rotate 0° → 360°
+///   0.66  →  1.0 : scale 1.25 → 1.0 (contract back, rotation
+///                   already at 360° = visually 0°, no jump)
+///
+/// `TimelineView(.animation, paused:)` drives the cycle so the
+/// animation pauses cleanly when not syncing — avoids the
+/// `withAnimation(.repeatForever)` trap where the bound state goes
+/// false but the animation keeps going.
+private struct PlayfulSyncIcon: View {
+    let isAnimating: Bool
     let color: Color
     var size: CGFloat = 22
-    var period: Double = 1.2
+    var period: Double = 1.5
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0/60.0, paused: !isSpinning)) { context in
-            let phase = context.date.timeIntervalSinceReferenceDate
-                .truncatingRemainder(dividingBy: period) / period
-            let angle = isSpinning ? phase * 360 : 0
+        TimelineView(.animation(minimumInterval: 1.0/60.0, paused: !isAnimating)) { context in
+            let phase: Double = {
+                guard isAnimating else { return 0 }
+                return context.date.timeIntervalSinceReferenceDate
+                    .truncatingRemainder(dividingBy: period) / period
+            }()
+            let (scale, rotation) = Self.transform(at: phase)
             Image(systemName: "arrow.triangle.2.circlepath")
                 .font(.system(size: size, weight: .semibold))
                 .foregroundStyle(color)
-                .rotationEffect(.degrees(angle))
+                .rotationEffect(.degrees(rotation))
+                .scaleEffect(scale)
         }
+    }
+
+    /// Three-segment keyframe: expand → rotate → contract. Cubic
+    /// ease-out within each segment approximates the CSS
+    /// `cubic-bezier(0.3, 1, 0, 1)` snappy-start, slow-finish curve.
+    /// Static-method so the closure inside `body` doesn't dodge the
+    /// view-builder type checker.
+    private static func transform(at phase: Double) -> (scale: Double, rotation: Double) {
+        if phase < 0.33 {
+            let t = phase / 0.33
+            return (1.0 + 0.25 * cubicEaseOut(t), 0)
+        } else if phase < 0.66 {
+            let t = (phase - 0.33) / (0.66 - 0.33)
+            return (1.25, 360 * cubicEaseOut(t))
+        } else {
+            let t = (phase - 0.66) / (1.0 - 0.66)
+            return (1.25 - 0.25 * cubicEaseOut(t), 360)
+        }
+    }
+
+    /// `1 - (1 - t)³` — fair approximation of CSS
+    /// `cubic-bezier(0.3, 1, 0, 1)`. Snappy start, slow tail, no
+    /// overshoot.
+    private static func cubicEaseOut(_ t: Double) -> Double {
+        let inv = 1 - t
+        return 1 - inv * inv * inv
     }
 }
 
