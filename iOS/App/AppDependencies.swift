@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 import SwiftData
 import Photos
 import os
@@ -1100,7 +1101,19 @@ final class AppDependencies {
         Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(CairnAppModel.SyncToast.autoDismissSeconds * 1_000_000_000))
             guard self?.model.syncToast == toast else { return }
-            self?.model.syncToast = nil
+            // Explicit withAnimation here so the auto-dismiss is
+            // animated even though the mutation happens inside a
+            // detached Task. The `cairnBannerAnimation(value:)`
+            // modifier on StatusScreen *should* be enough — it
+            // watches bannerVisibilityKey which includes
+            // `syncToast != nil` — but in practice SwiftUI doesn't
+            // always pick up the animation context for state
+            // mutations originating from Task contexts. Wrapping
+            // here guarantees the .transition(.cairnBanner) on the
+            // banner runs with the canonical springy timing.
+            withAnimation(.cairnSpring) {
+                self?.model.syncToast = nil
+            }
         }
     }
 
