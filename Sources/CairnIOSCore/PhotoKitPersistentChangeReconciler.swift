@@ -397,31 +397,20 @@ public final class PhotoKitPersistentChangeReconciler {
     /// falls back to `runFullEnumeration()` — Apple doesn't document
     /// the retention window, so token expiry is a normal code path.
     private func runIncremental(since token: PHPersistentChangeToken, skipDrain: Bool = false) async throws -> Result {
-        let fetchResult = try PHPhotoLibrary.shared().fetchPersistentChanges(since: token)
-
-        var insertedIds: Set<String> = []
-        var updatedIds: Set<String> = []
-        var deletedIds: Set<String> = []
-        var events = 0
-
-        for change in fetchResult {
-            events += 1
-            do {
-                let details = try change.changeDetails(for: PHObjectType.asset)
-                insertedIds.formUnion(details.insertedLocalIdentifiers)
-                updatedIds.formUnion(details.updatedLocalIdentifiers)
-                deletedIds.formUnion(details.deletedLocalIdentifiers)
-            } catch let ns as NSError where ns.domain == PHPhotosErrorDomain
-                                          && ns.code == PHPhotosError.persistentChangeDetailsUnavailable.rawValue {
-                // Per-change details are unavailable for this specific
-                // change — treat as "something happened but we don't know
-                // what." Safe fallback: resync that specific range by
-                // reinterpreting the library state afterwards, but for now
-                // we proceed with the others and accept the miss. A future
-                // iteration could trigger a full re-enum in this case.
-                continue
-            }
-        }
+        // Off-main: `fetchPersistentChanges` + the per-change enumeration
+        // are blocking PhotoKit calls that don't need the main thread.
+        // Empirically ~130ms of main-thread freeze on a 6.5k-asset library
+        // when the change log has any backlog — this trace was visible
+        // as a stutter in the sync-card spring during the .hashing phase
+        // transition. Detaching makes the prelude invisible to the UI
+        // thread.
+        let collected = try await Task.detached(priority: .userInitiated) {
+            try Self.collectIncrementalChanges(since: token)
+        }.value
+        var insertedIds = collected.insertedIds
+        let updatedIds = collected.updatedIds
+        let deletedIds = collected.deletedIds
+        let events = collected.events
 
         // Library→cache untracked sweep. PHAssets that exist in the visible
         // library but aren't in either `LocalHashStore` or `DeferredHashStore`
@@ -435,6 +424,26 @@ public final class PhotoKitPersistentChangeReconciler {
         if !untrackedIds.isEmpty {
             Self.reconLog.notice("[cairn.recon] untracked sweep: \(untrackedIds.count, privacy: .public) PHAssets visible but neither indexed nor queued — adding to insert pipeline")
             insertedIds.formUnion(untrackedIds)
+        }
+
+        // Snapshot the deferred queue once for this scan — used to filter
+        // `insertedIds` and `staleUpdates` below. The drain owns retry of
+        // these items; the persistent-change-driven hash paths shouldn't
+        // compete (they don't respect the soft/hard iCloud-fetch ceiling
+        // and would re-attempt → re-defer on every PhotoKit `updated`
+        // event, surfacing as a perpetual `deferred-large` log line).
+        let deferredQueueIds: Set<String> = await {
+            guard let deferredStore else { return [] }
+            let snapshot = (try? await deferredStore.snapshot()) ?? []
+            return Set(snapshot.map(\.localIdentifier))
+        }()
+        Self.reconLog.info("[cairn.recon] deferred-queue snapshot at scan-start: count=\(deferredQueueIds.count, privacy: .public)")
+        if !deferredQueueIds.isEmpty {
+            let blockedInserts = insertedIds.intersection(deferredQueueIds)
+            if !blockedInserts.isEmpty {
+                insertedIds.subtract(blockedInserts)
+                Self.reconLog.notice("[cairn.recon] skipped \(blockedInserts.count, privacy: .public) insert candidates already in deferred queue — drain owns retry")
+            }
         }
 
         // Diagnostic log — makes "why didn't my delete propagate?"
@@ -482,10 +491,21 @@ public final class PhotoKitPersistentChangeReconciler {
         // moves) that don't change pixel bytes. Skipping those here
         // saves 2,000+ unnecessary re-hashes on a typical relaunch.
         let observed = try await observeAndFilter(insertedIds: insertedIds, updatedIds: updatedIds)
-        let staleUpdates = observed.staleUpdates
+        var staleUpdates = observed.staleUpdates
         if updatedIds.count > 0 && staleUpdates.count != updatedIds.count {
             let skipped = updatedIds.count - staleUpdates.count
             hashLog.notice("[cairn.recon] skipped \(skipped, privacy: .public) update events with unchanged modDate")
+        }
+
+        // Drop staleUpdates that are already in the deferred queue —
+        // same reasoning as the inserts filter above. Reuses the
+        // scan-start snapshot so we don't re-fetch.
+        if !deferredQueueIds.isEmpty && !staleUpdates.isEmpty {
+            let blocked = staleUpdates.intersection(deferredQueueIds)
+            if !blocked.isEmpty {
+                staleUpdates.subtract(blocked)
+                hashLog.notice("[cairn.recon] skipped \(blocked.count, privacy: .public) update events for already-deferred assets — drain owns retry")
+            }
         }
 
         // Capture pre-set checksums for the ids we're about to re-hash.
@@ -811,6 +831,73 @@ public final class PhotoKitPersistentChangeReconciler {
         deferredIds: Set<String>
     ) -> Set<String> {
         liveIds.subtracting(cacheIds).subtracting(deferredIds)
+    }
+
+    /// Carries the result of the off-main `fetchPersistentChanges` +
+    /// per-change enumeration so it can hop back to the @MainActor
+    /// reconciler without crossing non-Sendable PhotoKit objects.
+    nonisolated struct IncrementalChangeCollection: Sendable {
+        let insertedIds: Set<String>
+        let updatedIds: Set<String>
+        let deletedIds: Set<String>
+        let events: Int
+    }
+
+    /// Off-main wrapper for the synchronous PhotoKit prelude of an
+    /// incremental scan. `fetchPersistentChanges` and `changeDetails(for:)`
+    /// are both blocking calls; on a 6.5k-asset library with non-trivial
+    /// change backlog they cost ~130ms of main-thread time, which shows
+    /// up as a stutter in the sync-card spring during the .hashing phase
+    /// transition. Running this from `Task.detached` keeps the prelude
+    /// invisible to the UI thread. `nonisolated` because the body uses
+    /// no instance state.
+    nonisolated static func collectIncrementalChanges(
+        since token: PHPersistentChangeToken
+    ) throws -> IncrementalChangeCollection {
+        let fetchResult = try PHPhotoLibrary.shared().fetchPersistentChanges(since: token)
+        var insertedIds: Set<String> = []
+        var updatedIds: Set<String> = []
+        var deletedIds: Set<String> = []
+        var events = 0
+        for change in fetchResult {
+            events += 1
+            do {
+                let details = try change.changeDetails(for: PHObjectType.asset)
+                insertedIds.formUnion(details.insertedLocalIdentifiers)
+                updatedIds.formUnion(details.updatedLocalIdentifiers)
+                deletedIds.formUnion(details.deletedLocalIdentifiers)
+            } catch let ns as NSError where ns.domain == PHPhotosErrorDomain
+                                          && ns.code == PHPhotosError.persistentChangeDetailsUnavailable.rawValue {
+                // Per-change details are unavailable for this specific
+                // change — treat as "something happened but we don't know
+                // what." Safe fallback: proceed with the others and
+                // accept the miss; the orphan sweep is the safety net.
+                continue
+            }
+        }
+        return IncrementalChangeCollection(
+            insertedIds: insertedIds,
+            updatedIds: updatedIds,
+            deletedIds: deletedIds,
+            events: events
+        )
+    }
+
+    /// Off-main wrapper for `PHAsset.fetchAssets` + `enumerateObjects`.
+    /// Same reasoning as `collectIncrementalChanges`: enumerating 6k+
+    /// assets on the main thread is a perceptible UI stall during sync.
+    nonisolated static func enumerateLiveLocalIdentifiers(
+        includeHiddenAssets: Bool,
+        sourceTypes: PHAssetSourceType
+    ) -> Set<String> {
+        let opts = PHFetchOptions()
+        opts.includeHiddenAssets = includeHiddenAssets
+        opts.includeAssetSourceTypes = sourceTypes
+        let fetch = PHAsset.fetchAssets(with: opts)
+        var ids: Set<String> = []
+        ids.reserveCapacity(fetch.count)
+        fetch.enumerateObjects { asset, _, _ in ids.insert(asset.localIdentifier) }
+        return ids
     }
 
     /// Pure partition: split edit-retired SHA1s into "protected"
@@ -1389,12 +1476,12 @@ public final class PhotoKitPersistentChangeReconciler {
             ? nil
             : perAssetTimeoutSeconds
         let now = clock()
-        // Upsert buffer: defer-queue writes are batched at the end of
-        // the batch rather than per-asset, so the SwiftData actor only
-        // serves one `save()` instead of N small transactions.
-        var deferredUpserts: [DeferredHashEntry] = []
         // Successful re-hashes remove their previously-queued entry.
-        // Batched for the same reason.
+        // Batched here so the SwiftData actor only serves one
+        // `save()` for the cleanup pass. (Defer-queue *upserts*, by
+        // contrast, persist eagerly per-asset above — losing them on
+        // cancellation re-attempts the same large iCloud assets every
+        // scan, which is exactly what the eager pattern prevents.)
         var successfullyHashedIDs: Set<String> = []
 
         try await withThrowingTaskGroup(of: HashResult.self) { group in
@@ -1422,41 +1509,47 @@ public final class PhotoKitPersistentChangeReconciler {
                 inFlight -= 1
 
                 if let reason = result.deferReason {
-                    // Log individual defer events — useful for seeing
-                    // what's getting skipped. Large ones log bytes so
-                    // you can tune the threshold with real data.
+                    // Build the queue entry + log; persist eagerly per-
+                    // asset (mirroring the success path) so a cancellation
+                    // mid-batch doesn't lose the defer-records. Earlier
+                    // revision batched these into one upsert at end-of-
+                    // batch — cheaper but lost everything when the task
+                    // got cancelled by a competing sync trigger, leaving
+                    // the same large iCloud assets to be re-attempted
+                    // every scan.
+                    let entry: DeferredHashEntry?
                     switch reason {
                     case .tooLarge(let bytes):
                         out.deferredLarge += 1
                         out.deferredLargeBytes += bytes
-                        deferredUpserts.append(DeferredHashEntry(
+                        entry = DeferredHashEntry(
                             localIdentifier: result.assetID,
                             reason: .tooLarge,
                             sizeBytes: bytes,
                             firstDeferredAt: now
-                        ))
+                        )
                         let msg = "[cairn.hash] deferred-large: id=\(result.assetID.prefix(12))… would-download=\(Self.formatBytes(bytes))"
                         hashLog.notice("\(msg, privacy: .public)")
                         print(msg)
                     case .timedOut:
                         out.deferredTimeout += 1
-                        deferredUpserts.append(DeferredHashEntry(
+                        entry = DeferredHashEntry(
                             localIdentifier: result.assetID,
                             reason: .timedOut,
                             sizeBytes: nil,
                             firstDeferredAt: now
-                        ))
+                        )
                         let msg = "[cairn.hash] deferred-timeout: id=\(result.assetID.prefix(12))… after=\(Int(result.elapsedMs))ms"
                         hashLog.notice("\(msg, privacy: .public)")
                         print(msg)
                     case .noHashableResources:
                         out.deferredEmpty += 1
-                        deferredUpserts.append(DeferredHashEntry(
+                        entry = DeferredHashEntry(
                             localIdentifier: result.assetID,
                             reason: .noHashableResources,
                             sizeBytes: nil,
                             firstDeferredAt: now
-                        ))
+                        )
                     case .aboveHardCeiling(let bytes):
                         // Not counted in the `deferred*` buckets because
                         // it's not deferred under the soft-limit
@@ -1474,15 +1567,22 @@ public final class PhotoKitPersistentChangeReconciler {
                         // because the size-based filter takes over.
                         out.aboveHardCeiling += 1
                         out.aboveHardCeilingBytes += bytes
-                        deferredUpserts.append(DeferredHashEntry(
+                        entry = DeferredHashEntry(
                             localIdentifier: result.assetID,
                             reason: .aboveHardCeiling,
                             sizeBytes: bytes,
                             firstDeferredAt: now
-                        ))
+                        )
                         let msg = "[cairn.hash] above-hard-ceiling: id=\(result.assetID.prefix(12))… would-download=\(Self.formatBytes(bytes)) (out-of-scope)"
                         hashLog.notice("\(msg, privacy: .public)")
                         print(msg)
+                    }
+                    if let entry, let deferredStore {
+                        do {
+                            try await deferredStore.upsert([entry])
+                        } catch {
+                            hashLog.error("[cairn.hash] deferred-queue upsert FAILED for id=\(result.assetID.prefix(12), privacy: .public): \(String(describing: error), privacy: .public)")
+                        }
                     }
                 } else if !result.checksums.isEmpty {
                     out.checksumsByID[result.assetID] = result.checksums
@@ -1544,19 +1644,18 @@ public final class PhotoKitPersistentChangeReconciler {
             }
         }
 
-        // Commit defer-queue writes in one batched pass per batch —
-        // cheaper than per-asset saves and keeps the `DeferredHashStore`
-        // transaction surface small. Successful re-hashes drop any
-        // prior queue entry; defer outcomes upsert (first-write-wins
-        // on `firstDeferredAt`). Hard-ceiling outcomes also upsert
-        // (with `.aboveHardCeiling` reason) so the UI can surface them
-        // and the untracked sweep stops re-discovering them.
-        if let deferredStore {
-            if !deferredUpserts.isEmpty {
-                try? await deferredStore.upsert(deferredUpserts)
-            }
-            if !successfullyHashedIDs.isEmpty {
-                try? await deferredStore.remove(successfullyHashedIDs)
+        // Bulk cleanup of queue entries for the assets that hashed
+        // successfully this batch. Defer-queue *upserts* happen eagerly
+        // per-asset above; the bulk path here only handles successful
+        // removals (cheap to batch — these are no-ops if the id wasn't
+        // queued, and resilience-wise the per-asset success path
+        // already removes them inline as well, so this is a belt-and-
+        // suspenders cleanup).
+        if let deferredStore, !successfullyHashedIDs.isEmpty {
+            do {
+                try await deferredStore.remove(successfullyHashedIDs)
+            } catch {
+                hashLog.error("[cairn.hash] deferred-queue remove FAILED: \(String(describing: error), privacy: .public)")
             }
         }
 
@@ -1818,13 +1917,12 @@ public final class PhotoKitPersistentChangeReconciler {
     /// duplicate cost) plus two store snapshots (`allLocalIdentifiers`,
     /// `deferredStore.snapshot()`), all set-membership-only.
     private func discoverUntrackedAssets() async throws -> Set<String> {
-        let opts = PHFetchOptions()
-        opts.includeHiddenAssets = false
-        opts.includeAssetSourceTypes = [.typeUserLibrary]
-        let fetch = PHAsset.fetchAssets(with: opts)
-        var liveIds: Set<String> = []
-        liveIds.reserveCapacity(fetch.count)
-        fetch.enumerateObjects { asset, _, _ in liveIds.insert(asset.localIdentifier) }
+        let liveIds = await Task.detached(priority: .userInitiated) {
+            Self.enumerateLiveLocalIdentifiers(
+                includeHiddenAssets: false,
+                sourceTypes: [.typeUserLibrary]
+            )
+        }.value
 
         let cacheIds = try await hashStore.allLocalIdentifiers()
         var deferredIds: Set<String> = []
@@ -1850,13 +1948,12 @@ public final class PhotoKitPersistentChangeReconciler {
     ) async throws -> (checksums: Set<Checksum>, orphanIds: Set<String>, sourceIdByChecksum: [Checksum: String]) {
         // Include hidden assets so Live Photo motion videos (which
         // live in `hidden` visibility) don't get flagged as orphans.
-        let opts = PHFetchOptions()
-        opts.includeHiddenAssets = true
-        opts.includeAssetSourceTypes = [.typeUserLibrary, .typeCloudShared]
-        let fetch = PHAsset.fetchAssets(with: opts)
-        var liveIds: Set<String> = []
-        liveIds.reserveCapacity(fetch.count)
-        fetch.enumerateObjects { asset, _, _ in liveIds.insert(asset.localIdentifier) }
+        let liveIds = await Task.detached(priority: .userInitiated) {
+            Self.enumerateLiveLocalIdentifiers(
+                includeHiddenAssets: true,
+                sourceTypes: [.typeUserLibrary, .typeCloudShared]
+            )
+        }.value
 
         // Use the keys-only fetch — we don't need the actual checksums
         // here, just set-membership. On 7k+ libraries this saves a

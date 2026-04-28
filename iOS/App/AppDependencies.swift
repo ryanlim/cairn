@@ -169,6 +169,23 @@ final class AppDependencies {
     private var photoLibraryBridge: PhotoLibraryChangeBridge?
     private var pendingForegroundSyncTask: Task<Void, Never>?
 
+    /// Wall-clock time of the most recent `requestSync` completion.
+    /// `scheduleForegroundSync` uses this to suppress sync triggers
+    /// that arrive in the immediate post-sync window — those are
+    /// almost always `photoLibraryDidChange` events fired by PhotoKit
+    /// in response to iCloud asset downloads cairn's own hash pipeline
+    /// caused, NOT genuine new user activity. Without the cooldown the
+    /// observer + scheduler form a self-perpetuating loop where every
+    /// sync triggers the next one.
+    private var lastSyncEndedAt: Date?
+
+    /// How long after a sync ends to ignore observer-triggered sync
+    /// requests. Picked to comfortably cover the iCloud activity tail
+    /// from a long sync (most events arrive within a few seconds of
+    /// sync end). Real user actions — taking a photo, deleting one —
+    /// produce events that show up well outside this window.
+    private static let postSyncObserverCooldown: TimeInterval = 15
+
     /// Tracked fetch the foreground observer diffs against. Required to
     /// turn a `PHChange` into `insertedObjects` without re-enumerating
     /// the whole library — that's how we capture metadata eagerly,
@@ -552,11 +569,21 @@ final class AppDependencies {
     /// Debounced sync trigger from the change observer. Coalesces bursts
     /// of events (e.g. import of 50 photos firing 50 changes) into one
     /// sync run.
+    ///
+    /// Suppresses triggers in the post-sync cooldown window — `chg=N`
+    /// events fired by PhotoKit in response to iCloud downloads our
+    /// previous sync caused would otherwise immediately schedule a new
+    /// sync, forming a self-perpetuating loop.
     private func scheduleForegroundSync() {
         pendingForegroundSyncTask?.cancel()
         pendingForegroundSyncTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 1_500_000_000)
             guard let self, !Task.isCancelled, !self.model.isSyncing else { return }
+            if let last = self.lastSyncEndedAt,
+               Date().timeIntervalSince(last) < Self.postSyncObserverCooldown {
+                syncLog.info("[cairn.observer] suppressing post-sync trigger; cooldown not expired")
+                return
+            }
             try? await self.model.actions.requestSync()
         }
     }
@@ -1349,6 +1376,7 @@ final class AppDependencies {
                         self.model.syncStartedAt = nil
                         self.model.pausedSyncElapsedSeconds = nil
                         self.model.degraded = .none
+                        self.lastSyncEndedAt = Date()
                     }
                 } catch is CancellationError {
                     await MainActor.run {
@@ -1359,6 +1387,7 @@ final class AppDependencies {
                         self.model.syncStartedAt = nil
                         self.model.isSyncing = false
                         self.model.syncPhase = .idle
+                        self.lastSyncEndedAt = Date()
                     }
                 } catch {
                     let degraded = Self.degradedState(for: error)
@@ -1372,6 +1401,7 @@ final class AppDependencies {
                         self.model.syncStartedAt = nil
                         self.model.pausedSyncElapsedSeconds = nil
                         if let degraded { self.model.degraded = degraded }
+                        self.lastSyncEndedAt = Date()
                     }
                 }
             },
