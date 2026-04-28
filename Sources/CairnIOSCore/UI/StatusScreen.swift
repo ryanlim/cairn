@@ -762,16 +762,6 @@ public struct StatusScreen: View {
                                 .foregroundStyle(t.textHint)
                         }
                     }
-                    // Three-step sync checklist appears to the right of
-                    // the hero column while a sync is running. Doesn't
-                    // displace any other content — the right column
-                    // (icon + chip + safety-rail) stays in place; the
-                    // Spacer absorbs the layout difference.
-                    if isSyncing {
-                        SyncPhaseChecklist(phase: syncPhase)
-                            .padding(.leading, 12)
-                            .transition(.opacity)
-                    }
                     Spacer()
                     VStack(alignment: .trailing, spacing: 6) {
                         // Circular icon-only sync action — replaces the
@@ -820,9 +810,20 @@ public struct StatusScreen: View {
                     }
                 }
 
-                // (above HStack ends here — checklist transitions
-                //  in/out via .transition(.opacity); animation
-                //  bound to isSyncing so the slide is smooth.)
+                // Sync-phase checklist appears as its own row below
+                // the top HStack while syncing. Earlier inline-with-
+                // hero placement caused the "READY TO TRASH" text to
+                // wrap onto two lines because the checklist's
+                // intrinsic width competed with the hero column for
+                // horizontal space. Putting it in a separate row
+                // means the card just grows vertically during sync —
+                // no horizontal rearrangement of any element above
+                // or below.
+                if isSyncing {
+                    SyncPhaseChecklist(phase: syncPhase)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .transition(.opacity)
+                }
                 if quarantineCount > 0 {
                     quarantineLine
                 }
