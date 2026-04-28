@@ -1426,15 +1426,20 @@ private struct PlayfulSyncIcon: View {
     /// the CSS `l5` reference (.5turn per 1s).
     var period: Double = 2.0
 
-    /// Absolute Date at which the coast-to-zero phase finishes. nil
-    /// when the icon is either actively spinning (isAnimating == true)
-    /// or fully stopped at 0° (idle). When isAnimating flips from
-    /// true to false, this is set to the next cycle-wrap moment so
-    /// the icon completes its current revolution before pausing —
-    /// guaranteeing a clean 0° landing instead of stopping at a
-    /// random offset that the next sync-start would have to jump
-    /// from.
-    @State private var coastEnd: Date? = nil
+    /// Coast plan when isAnimating flips from true to false. Picked
+    /// to take the shortest path to 0° — forward to cycle-wrap if
+    /// the icon is already past 180°, reverse linearly to 0° if
+    /// it's still in the first half. Worst case post-stop motion
+    /// is half a revolution instead of a full one.
+    private enum Coast {
+        /// Continue forward at the natural cycle pace until the
+        /// next 360° wrap (which lands at exactly 0° visually).
+        case forwardUntil(Date)
+        /// Reverse linearly from `angle` to 0° over `duration`,
+        /// starting at `at`. Used when reversing is shorter.
+        case reverseFrom(angle: Double, at: Date, duration: Double)
+    }
+    @State private var coast: Coast? = nil
 
     var body: some View {
         // TimelineView runs continuously (no `paused:`) so the body
@@ -1449,11 +1454,19 @@ private struct PlayfulSyncIcon: View {
             let rotation: Double = {
                 if isAnimating {
                     return inCycleRotation
-                } else if let stop = coastEnd, context.date < stop {
-                    // Coasting — keep spinning until the cycle wraps
-                    // to 0° at the scheduled stop moment.
-                    return inCycleRotation
-                } else {
+                }
+                switch coast {
+                case .forwardUntil(let end):
+                    return context.date < end ? inCycleRotation : 0
+                case .reverseFrom(let angle, let at, let dur):
+                    let dt = context.date.timeIntervalSince(at)
+                    if dt < dur {
+                        let t = dt / dur
+                        return angle * (1 - t)
+                    } else {
+                        return 0
+                    }
+                case nil:
                     return 0
                 }
             }()
@@ -1465,19 +1478,30 @@ private struct PlayfulSyncIcon: View {
         .transaction { $0.disablesAnimations = true }
         .onChange(of: isAnimating) { _, newValue in
             if newValue {
-                // Resuming (or never paused): clear any pending coast.
-                coastEnd = nil
+                // Resuming: clear any pending coast.
+                coast = nil
             } else {
-                // Schedule the coast end at the next natural cycle-
-                // wrap moment so the icon parks at exactly 0°
-                // (visually identical to 360° = end of cycle). The
-                // calculation finds how much of the current cycle
-                // remains, then adds that to `now`.
+                // Pick shortest path to 0°. At 180°/sec, the choice
+                // splits at 180°: less than that, reversing is
+                // quicker; more than that, finishing the revolution
+                // is quicker.
                 let now = Date()
                 let elapsedInCycle = now.timeIntervalSinceReferenceDate
                     .truncatingRemainder(dividingBy: period)
-                let timeToWrap = period - elapsedInCycle
-                coastEnd = now.addingTimeInterval(timeToWrap)
+                let currentAngle = (elapsedInCycle / period) * 360
+                if currentAngle <= 180 {
+                    // Reverse at the same angular speed as the
+                    // forward spin (currentAngle * period / 360
+                    // = duration at 360°/period rate). Floor at
+                    // 200ms so very small angles still register as
+                    // a visible "settle" rather than teleport.
+                    let raw = currentAngle * period / 360
+                    let duration = max(0.2, raw)
+                    coast = .reverseFrom(angle: currentAngle, at: now, duration: duration)
+                } else {
+                    let timeToWrap = period - elapsedInCycle
+                    coast = .forwardUntil(now.addingTimeInterval(timeToWrap))
+                }
             }
         }
     }
