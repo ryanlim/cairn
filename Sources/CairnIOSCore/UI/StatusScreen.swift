@@ -527,9 +527,17 @@ public struct StatusScreen: View {
                 StatusBodyDiagnostic.noteHeightTarget(checklistFrameHeight)
                 #endif
                 Task { @MainActor in
-                    try? await Task.sleep(for: .milliseconds(280))
+                    // 60ms delay (was 280ms): just enough for the
+                    // layout grow to visibly begin before content
+                    // starts fading in. Now that withAnimation is
+                    // mutation-anchored, the content fade running
+                    // concurrent with the still-settling cairnSpring
+                    // doesn't disrupt the layout — they run side by
+                    // side cleanly. User-perceived "checklist
+                    // appears" time drops from ~480ms to ~200ms.
+                    try? await Task.sleep(for: .milliseconds(60))
                     if isSyncing {
-                        withAnimation(reduceMotion ? .none : .easeInOut(duration: 0.2)) {
+                        withAnimation(reduceMotion ? .none : .easeInOut(duration: 0.14)) {
                             checklistVisible = true
                         }
                         #if DEBUG
@@ -538,7 +546,7 @@ public struct StatusScreen: View {
                     }
                 }
             } else {
-                withAnimation(reduceMotion ? .none : .easeInOut(duration: 0.2)) {
+                withAnimation(reduceMotion ? .none : .easeInOut(duration: 0.14)) {
                     checklistVisible = false
                 }
                 // cairnSpring on collapse so the symmetric pair of
