@@ -476,15 +476,21 @@ public struct StatusScreen: View {
             // banners are no-ops (SwiftUI only plays transitions
             // inside an animated context).
             .cairnBannerAnimation(value: bannerVisibilityKey)
-            // No body-level `.animation(.smooth, value: isSyncing)`
-            // here. The syncCard's layout shift is driven by the
-            // `checklistFrameHeight` state and animated via a
-            // .smooth modifier on the SyncPhaseChecklist itself —
-            // applying it at body level had the side-effect of
-            // re-targeting the animation each time StatusScreen body
-            // re-evaluated (4× in the first 280ms of sync due to
-            // upstream model updates), which the user perceived as
-            // stutter on the separator line.
+            // Body-level animation watching `checklistFrameHeight`
+            // (which is @State, set once per isSyncing transition).
+            // Stable value across body re-evals — no re-targeting
+            // problem. The `.bouncy` preset has noticeable overshoot
+            // (~25% extraBounce) so the layout shift reads as
+            // visibly elastic rather than just smooth.
+            //
+            // Body-level placement (vs `withAnimation` at the
+            // mutation site or `.animation` modifier on the
+            // SyncPhaseChecklist itself) ensures the animation
+            // context propagates UP through the parent VStack's
+            // layout cascade — the cards below the syncCard slide
+            // down with the same elastic motion, not just the
+            // checklist's own frame interpolation.
+            .animation(reduceMotion ? .none : .bouncy(duration: 0.55, extraBounce: 0.25), value: checklistFrameHeight)
         }
         .background(t.bg)
         .sheet(item: $journalRawJSONEntry) { entry in
@@ -508,33 +514,17 @@ public struct StatusScreen: View {
                 #if DEBUG
                 StatusBodyDiagnostic.noteSyncStarted()
                 #endif
-                // cairnSpring (elastic, slight overshoot) matches the
-                // contraction feel — during sync end, the syncToast
-                // appears and triggers cairnBannerAnimation, which
-                // applies cairnSpring across the entire VStack
-                // including the syncCard's collapse. Using the same
-                // spring on expansion gives symmetric "elastic"
-                // motion. Now safe to use even though it has
-                // overshoot, because withAnimation is mutation-
-                // anchored and not re-targeted by body re-evals
-                // (which is what produced the stutter when this
-                // spring was applied via `.animation(_:value:)` at
-                // body level).
-                withAnimation(reduceMotion ? .none : .cairnSpring) {
-                    checklistFrameHeight = Self.checklistHeight
-                }
+                // Plain @State mutation — body-level
+                // `.animation(.bouncy, value: checklistFrameHeight)`
+                // catches it and runs the elastic animation across
+                // the layout cascade.
+                checklistFrameHeight = Self.checklistHeight
                 #if DEBUG
                 StatusBodyDiagnostic.noteHeightTarget(checklistFrameHeight)
                 #endif
                 Task { @MainActor in
-                    // 60ms delay (was 280ms): just enough for the
-                    // layout grow to visibly begin before content
-                    // starts fading in. Now that withAnimation is
-                    // mutation-anchored, the content fade running
-                    // concurrent with the still-settling cairnSpring
-                    // doesn't disrupt the layout — they run side by
-                    // side cleanly. User-perceived "checklist
-                    // appears" time drops from ~480ms to ~200ms.
+                    // 60ms delay just lets the layout grow visibly
+                    // begin before content starts fading in.
                     try? await Task.sleep(for: .milliseconds(60))
                     if isSyncing {
                         withAnimation(reduceMotion ? .none : .easeInOut(duration: 0.14)) {
@@ -549,13 +539,7 @@ public struct StatusScreen: View {
                 withAnimation(reduceMotion ? .none : .easeInOut(duration: 0.14)) {
                     checklistVisible = false
                 }
-                // cairnSpring on collapse so the symmetric pair of
-                // expand/collapse motions both feel elastic — even
-                // when the syncToast doesn't appear at sync end (so
-                // cairnBannerAnimation wouldn't fire on its own).
-                withAnimation(reduceMotion ? .none : .cairnSpring) {
-                    checklistFrameHeight = 0
-                }
+                checklistFrameHeight = 0
             }
         }
     }
