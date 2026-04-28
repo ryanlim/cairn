@@ -291,19 +291,25 @@ public struct StatusScreen: View {
     /// without competing for frames against the layout pass —
     /// previously they ran simultaneously and the user saw stutter.
     @State private var checklistVisible: Bool = false
-    /// Explicit @State holding the SyncPhaseChecklist's frame
-    /// height. Driven by `.onChange(of: isSyncing)` rather than
-    /// derived inline as `isSyncing ? height : 0`. Why: the StatusScreen
-    /// body re-evaluates ~4 times in the first 280ms of sync (upstream
-    /// model property updates: syncPhase, syncProgress, etc.). With
-    /// the height computed inline, each body re-eval re-evaluated the
-    /// expression and SwiftUI's animation engine appeared to be
-    /// re-targeting the .smooth interpolation mid-flight, producing
-    /// visible jerks on the separator below the card. With explicit
-    /// @State, the height value is set once per isSyncing transition
-    /// and stays stable across body re-evals — the animation runs
-    /// uninterrupted from start to finish.
+    /// Settled height of the SyncPhaseChecklist after the animation
+    /// completes. The DURING-animation height comes from
+    /// `currentChecklistHeight(at:)` driven by TimelineView so we can
+    /// bypass SwiftUI's animation engine entirely (it was producing
+    /// inconsistent results — sometimes elastic + stutter, sometimes
+    /// snap-no-elastic, depending on how the .animation modifier
+    /// scope interacted with body re-evals from upstream model
+    /// changes during sync start). With TimelineView driving spring
+    /// physics frame-by-frame, the height is a deterministic function
+    /// of (now - animationStartTime) and re-evaluations of the body
+    /// can't perturb it.
     @State private var checklistFrameHeight: CGFloat = 0
+    /// Set when an animation begins; cleared when it completes. The
+    /// TimelineView samples (now - animationStartTime) to compute
+    /// the current spring-eased height between
+    /// animationFromHeight and animationToHeight.
+    @State private var checklistAnimationStart: Date? = nil
+    @State private var checklistAnimationFrom: CGFloat = 0
+    @State private var checklistAnimationTo: CGFloat = 0
     /// Filter chip on the journal-tail card. ON by default — routine
     /// no-op syncs are noise. `@AppStorage` so the user's choice
     /// survives tab navigation and relaunch.
@@ -530,20 +536,10 @@ public struct StatusScreen: View {
             // banners are no-ops (SwiftUI only plays transitions
             // inside an animated context).
             .cairnBannerAnimation(value: bannerVisibilityKey)
-            // Body-level animation watching `checklistFrameHeight`
-            // (@State, stable across body re-evals).
-            //
-            // `.interpolatingSpring(stiffness: 180, damping: 18)`
-            // — higher damping (was 14) brings overshoot down to
-            // ~5%, so the user sees a single subtle elastic
-            // overshoot rather than multi-bounce wobble. The
-            // earlier .bouncy / lower-damping configurations
-            // produced visible oscillation that the user
-            // perceived as stutter — each peak/trough on the thin
-            // separator below the card read as a jerky
-            // correction. Lightly-elastic + monotonic-ish settling
-            // should give the "feel" without the wobble.
-            .animation(reduceMotion ? .none : .interpolatingSpring(stiffness: 180, damping: 18), value: checklistFrameHeight)
+            // No body-level layout animation — the syncCard's
+            // checklist height is driven by a TimelineView at
+            // 60fps via spring physics, so SwiftUI's animation
+            // engine never touches it.
         }
         .background(t.bg)
         .sheet(item: $journalRawJSONEntry) { entry in
@@ -568,17 +564,27 @@ public struct StatusScreen: View {
                 StatusBodyDiagnostic.noteSyncStarted()
                 StatusBodyDiagnostic.noteReduceMotion(reduceMotion)
                 #endif
-                // Plain @State mutation — body-level
-                // `.animation(.bouncy, value: checklistFrameHeight)`
-                // catches it and runs the elastic animation across
-                // the layout cascade.
+                // Kick off the TimelineView-driven spring animation:
+                // capture from/to, mark start time, set the settled
+                // target. The TimelineView un-pauses (its `paused:`
+                // condition becomes false) and starts firing 60fps.
+                checklistAnimationFrom = checklistFrameHeight
+                checklistAnimationTo = Self.checklistHeight
                 checklistFrameHeight = Self.checklistHeight
+                checklistAnimationStart = reduceMotion ? nil : Date()
                 #if DEBUG
                 StatusBodyDiagnostic.noteHeightTarget(checklistFrameHeight)
                 #endif
                 Task { @MainActor in
-                    // 60ms delay just lets the layout grow visibly
-                    // begin before content starts fading in.
+                    // After the spring settles, clear animationStart
+                    // so the TimelineView pauses (no per-frame work
+                    // when the layout is stable).
+                    try? await Task.sleep(for: .seconds(Self.checklistAnimationDuration))
+                    checklistAnimationStart = nil
+                }
+                Task { @MainActor in
+                    // Brief delay before content fades in so the layout
+                    // grow has visibly begun.
                     try? await Task.sleep(for: .milliseconds(60))
                     if isSyncing {
                         withAnimation(reduceMotion ? .none : .easeInOut(duration: 0.14)) {
@@ -593,7 +599,14 @@ public struct StatusScreen: View {
                 withAnimation(reduceMotion ? .none : .easeInOut(duration: 0.14)) {
                     checklistVisible = false
                 }
+                checklistAnimationFrom = checklistFrameHeight
+                checklistAnimationTo = 0
                 checklistFrameHeight = 0
+                checklistAnimationStart = reduceMotion ? nil : Date()
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(Self.checklistAnimationDuration))
+                    checklistAnimationStart = nil
+                }
             }
         }
     }
@@ -1099,23 +1112,29 @@ public struct StatusScreen: View {
                 // isSyncing)`. Content opacity stage stays the same:
                 // checklistVisible lags isSyncing by ~280ms so
                 // content draws don't compete with layout draws.
-                SyncPhaseChecklist(phase: syncPhase)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .frame(height: checklistFrameHeight, alignment: .top)
-                    .clipped()
-                    .opacity(checklistVisible ? 1 : 0)
-                    #if DEBUG && canImport(UIKit)
-                    // TimelineView-driven height sampler. GeometryReader
-                    // captures only the SwiftUI layout target (final
-                    // value), not intermediate animation states —
-                    // CoreAnimation handles spring interpolation below
-                    // the layer SwiftUI's state change pipeline observes.
-                    // TimelineView fires every animation frame and reads
-                    // the layer's *presentation layer* via UIView
-                    // introspection so we see the actual rendered
-                    // height as the animation interpolates.
-                    .background(SyncPhaseFrameSampler())
-                    #endif
+                // TimelineView drives height via spring physics
+                // applied frame-by-frame. Bypasses SwiftUI's animation
+                // engine entirely — height is a deterministic
+                // function of elapsed time since
+                // `checklistAnimationStart`, so concurrent body
+                // re-evaluations from upstream model changes (syncPhase,
+                // syncProgress, etc.) can't perturb the curve. The
+                // `paused:` parameter halts CPU when no animation is
+                // in flight.
+                TimelineView(.animation(minimumInterval: 1.0/60.0, paused: checklistAnimationStart == nil)) { context in
+                    let h = currentChecklistHeight(at: context.date)
+                    SyncPhaseChecklist(phase: syncPhase)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .frame(height: h, alignment: .top)
+                        .clipped()
+                        .opacity(checklistVisible ? 1 : 0)
+                        #if DEBUG
+                        .onAppear { StatusBodyDiagnostic.noteRenderedHeight(h) }
+                        .onChange(of: h, initial: false) { _, new in
+                            StatusBodyDiagnostic.noteRenderedHeight(new)
+                        }
+                        #endif
+                }
                 if quarantineCount > 0 {
                     quarantineLine
                 }
@@ -1586,6 +1605,35 @@ public struct StatusScreen: View {
     /// frame. Tuning: bump if the checklist visibly clips at the
     /// bottom; reduce if there's a visible gap.
     private static let checklistHeight: CGFloat = 64
+
+    /// Total wall-clock duration of the checklist height animation
+    /// (spring expand or collapse). 0.5s gives the spring time for
+    /// one visible overshoot + settle without dragging on.
+    private static let checklistAnimationDuration: TimeInterval = 0.5
+
+    /// Damped-spring height curve. Returns the interpolated height
+    /// at the given moment. Once `checklistAnimationDuration` has
+    /// elapsed since the animation start, returns the final value
+    /// directly. Spring physics: lightly underdamped → ~5% overshoot,
+    /// single visible elastic peak, settle by end of duration.
+    @MainActor
+    private func currentChecklistHeight(at now: Date) -> CGFloat {
+        guard let start = checklistAnimationStart else {
+            return checklistFrameHeight
+        }
+        let elapsed = now.timeIntervalSince(start)
+        if elapsed >= Self.checklistAnimationDuration {
+            return checklistAnimationTo
+        }
+        let t = elapsed / Self.checklistAnimationDuration
+        // Damped spring: 1 - exp(-decay*t) * cos(omega*t).
+        // decay 6, omega 9.5 → first peak at t≈0.33 with ~6% overshoot,
+        // fully settled by t=1.
+        let decay: Double = 6.0
+        let omega: Double = 9.5
+        let progress = 1 - exp(-decay * t) * cos(omega * t)
+        return checklistAnimationFrom + (checklistAnimationTo - checklistAnimationFrom) * progress
+    }
 
     private static let collapsedJournalTailLimit: Int = 8
 
