@@ -23,6 +23,18 @@ public protocol MutableSecretStore: SecretStore {
     /// per-server partition key. Pass `nil` for either field to leave
     /// it unchanged; pass empty string to clear individually.
     func setUserIdentity(id: String?, email: String?) throws
+    /// Read the per-key activation timestamp map. Each entry is
+    /// `<apiKeyFingerprint>: <Date the key first verified>`. Filtering
+    /// the runs/journal UI by `entries.where { $0.timestamp >= map[fp] }`
+    /// gives the user "this key sees only what this key has done"
+    /// without partitioning data per key. Returns an empty map for
+    /// upgrade installs — `AppDependencies` seeds the current key with
+    /// `.distantPast` on first read so existing history is preserved.
+    func keyActivationMap() throws -> [String: Date]
+    /// Persist the per-key activation timestamp map. Replaces the full
+    /// map on every write — caller is expected to merge before calling
+    /// (the typical pattern: read, insert one entry, write back).
+    func setKeyActivationMap(_ map: [String: Date]) throws
     /// Remove every secret this store manages. Idempotent — safe to
     /// call on sign-out even if one secret was already missing.
     func clear() throws
@@ -97,17 +109,24 @@ public struct KeychainSecretStore: MutableSecretStore, Sendable {
     /// `kSecAttrAccount` for the cached Immich user email. Same
     /// treatment as `userIdAccount`.
     public let userEmailAccount: String
+    /// `kSecAttrAccount` for the per-key activation-timestamp map.
+    /// Stored as JSON `{ "<fingerprint>": <unixSeconds>, ... }`. Empty
+    /// or missing on installs that predate per-key activation tracking;
+    /// `AppDependencies` seeds the current key on bootstrap.
+    public let keyActivationsAccount: String
 
     public init(service: String = "app.cairn.immich",
                 urlAccount: String = "server-url",
                 keyAccount: String = "api-key",
                 userIdAccount: String = "user-id",
-                userEmailAccount: String = "user-email") {
+                userEmailAccount: String = "user-email",
+                keyActivationsAccount: String = "key-activations") {
         self.service = service
         self.urlAccount = urlAccount
         self.keyAccount = keyAccount
         self.userIdAccount = userIdAccount
         self.userEmailAccount = userEmailAccount
+        self.keyActivationsAccount = keyActivationsAccount
     }
 
     // MARK: - SecretStore
@@ -155,11 +174,48 @@ public struct KeychainSecretStore: MutableSecretStore, Sendable {
         }
     }
 
+    public func keyActivationMap() throws -> [String: Date] {
+        guard let raw = try readOptionalString(account: keyActivationsAccount) else {
+            return [:]
+        }
+        guard let data = raw.data(using: .utf8) else {
+            // Item exists but isn't UTF-8 — same defensive posture as
+            // `unexpectedItemFormat` elsewhere. Treat as empty rather
+            // than throwing so a corrupt slot doesn't brick onboarding.
+            return [:]
+        }
+        let raw2 = (try? JSONDecoder().decode([String: Double].self, from: data)) ?? [:]
+        var out: [String: Date] = [:]
+        out.reserveCapacity(raw2.count)
+        for (fp, secs) in raw2 {
+            out[fp] = Date(timeIntervalSince1970: secs)
+        }
+        return out
+    }
+
+    public func setKeyActivationMap(_ map: [String: Date]) throws {
+        if map.isEmpty {
+            try delete(account: keyActivationsAccount)
+            return
+        }
+        var encodable: [String: Double] = [:]
+        encodable.reserveCapacity(map.count)
+        for (fp, date) in map {
+            encodable[fp] = date.timeIntervalSince1970
+        }
+        let data = try JSONEncoder().encode(encodable)
+        guard let json = String(data: data, encoding: .utf8) else {
+            throw KeychainError.unexpectedItemFormat
+        }
+        try writeString(json, account: keyActivationsAccount)
+    }
+
     public func clear() throws {
         try delete(account: urlAccount)
         try delete(account: keyAccount)
         try delete(account: userIdAccount)
         try delete(account: userEmailAccount)
+        try delete(account: keyActivationsAccount)
     }
 
     // MARK: - Keychain primitives

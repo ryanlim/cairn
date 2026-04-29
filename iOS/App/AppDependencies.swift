@@ -3,6 +3,7 @@ import SwiftUI
 import SwiftData
 import Photos
 import os
+import CryptoKit
 import CairnCore
 import CairnIOSCore
 
@@ -41,6 +42,15 @@ final class AppDependencies {
     // MARK: - Per-server stores (nil until activateServer runs)
 
     private(set) var currentPartitionKey: ServerPartitionKey?
+    /// Timestamp the *current* API key was first verified for this
+    /// (URL, userId) account on this device. Read from the per-key
+    /// activation map in Keychain at bootstrap and at every successful
+    /// `verifyServer` call. Drives the runs/journal-tail UI filter so
+    /// rotating to a new key starts a fresh-looking history (the journal
+    /// file itself is intact). `.distantPast` for upgrade installs that
+    /// predate per-key activation tracking — preserves their existing
+    /// history. `nil` until `activateServer` has run.
+    private(set) var currentKeyActivatedAt: Date?
     private(set) var serverContainer: ModelContainer?
     private(set) var everSeenStore: SwiftDataEverSeenStore?
     private(set) var exclusionStore: SwiftDataExclusionStore?
@@ -359,6 +369,20 @@ final class AppDependencies {
             model.isBootstrapping = false
             return
         }
+
+        // Per-key activation timestamp — drives the runs/journal-tail
+        // filter so rotating to a new API key (still same Immich user)
+        // gives a fresh-looking history. Bootstrap path: if this key's
+        // fingerprint isn't in the map, seed with `.distantPast` so
+        // existing users upgrading to per-key activation tracking
+        // don't lose their visible history. The verifyServer path
+        // seeds with `now` for genuinely-new keys.
+        let bootFingerprint = Self.apiKeyFingerprint(apiKey)
+        self.currentKeyActivatedAt = Self.upsertKeyActivation(
+            in: secretStore,
+            fingerprint: bootFingerprint,
+            seedAt: .distantPast
+        )
 
         #if DEBUG
         if ProcessInfo.processInfo.environment["CAIRN_RESET"] == "1" {
@@ -1126,7 +1150,15 @@ final class AppDependencies {
     fileprivate func refreshJournalTail() async {
         guard let journal else { return }
         guard let recent = try? await journal.lastEntries(limit: 500) else { return }
-        model.journalTail = Array(CairnFixtures.JournalTailEntry.from(entries: recent).reversed())
+        // Per-key activation filter: hide entries that predate the
+        // current API key's first verify. Keeps the user's mental
+        // model "this key sees what this key did" consistent without
+        // destroying the on-disk journal. `.distantPast` on bootstrap
+        // upgrade installs means no filtering, so existing users see
+        // everything.
+        let cutoff = currentKeyActivatedAt ?? .distantPast
+        let filtered = recent.filter { $0.timestamp >= cutoff }
+        model.journalTail = Array(CairnFixtures.JournalTailEntry.from(entries: filtered).reversed())
     }
 
     @MainActor
@@ -1137,11 +1169,15 @@ final class AppDependencies {
             return
         }
         let entries = (try? await journal.readAll()) ?? []
-        let summaries = JournalReader.summarize(entries)
+        // Filter to entries that happened on/after this key's first
+        // verify. See `refreshJournalTail` for the rationale.
+        let cutoff = currentKeyActivatedAt ?? .distantPast
+        let visibleEntries = entries.filter { $0.timestamp >= cutoff }
+        let summaries = JournalReader.summarize(visibleEntries)
         model.runs = summaries.compactMap(CairnFixtures.RunFixture.from)
 
         var perRun: [String: [CairnFixtures.CandidateFixture]] = [:]
-        for entry in entries {
+        for entry in visibleEntries {
             guard case .planningTrash(let targets) = entry.event else { continue }
             var seen: Set<String> = Set((perRun[entry.runId] ?? []).compactMap(\.assetId))
             var bucket = perRun[entry.runId] ?? []
@@ -1413,6 +1449,47 @@ final class AppDependencies {
 
     nonisolated fileprivate static func isUsablePhotoAuth(_ status: PHAuthorizationStatus) -> Bool {
         return status == .authorized || status == .limited
+    }
+
+    /// Stable, anonymous-ish identifier for an API key. SHA256 of the
+    /// raw key bytes, hex-truncated to 16 chars (64 bits → ample
+    /// collision resistance among the small number of keys a single
+    /// user generates over a device's lifetime). Used as the map key
+    /// in `MutableSecretStore.keyActivationMap()` so we can answer
+    /// "have I seen this exact key before?" without storing the key
+    /// itself in the map. Defense-in-depth — the Keychain is already
+    /// encrypted, but a fingerprint-only map limits blast radius if
+    /// the json blob is ever logged or exfiltrated.
+    nonisolated fileprivate static func apiKeyFingerprint(_ key: String) -> String {
+        let digest = SHA256.hash(data: Data(key.utf8))
+        let hex = digest.map { String(format: "%02x", $0) }.joined()
+        return String(hex.prefix(16))
+    }
+
+    /// Read-modify-write the per-key activation map. If `fingerprint`
+    /// already has an entry, returns it unchanged (preserves history
+    /// when the user rotates back to a previously-used key). Otherwise
+    /// inserts `seedAt` and persists. Returns the activation timestamp
+    /// the caller should remember for filtering. Failures are logged
+    /// and surface as `.distantPast` so a Keychain hiccup never hides
+    /// the user's history.
+    nonisolated fileprivate static func upsertKeyActivation(
+        in store: any MutableSecretStore,
+        fingerprint: String,
+        seedAt: Date
+    ) -> Date {
+        var map = (try? store.keyActivationMap()) ?? [:]
+        if let existing = map[fingerprint] {
+            return existing
+        }
+        map[fingerprint] = seedAt
+        do {
+            try store.setKeyActivationMap(map)
+        } catch {
+            syncLog.error("[cairn.boot] failed to persist key activation map: \(String(describing: error), privacy: .public)")
+            return .distantPast
+        }
+        return seedAt
     }
 
     nonisolated fileprivate static func degradedState(for error: Swift.Error) -> StatusScreen.Degraded? {
@@ -2092,6 +2169,22 @@ final class AppDependencies {
                         }
                         let newPartitionKey = await MainActor.run { self.currentPartitionKey }
                         let partitionChanged = priorPartitionKey != newPartitionKey
+
+                        // Per-key activation timestamp. New keys (never
+                        // seen before) seed `now` so their runs/journal-
+                        // tail UI starts fresh. Returning to a previously-
+                        // used key preserves that key's prior activation
+                        // → its history is restored. Same for partition
+                        // changes (the key is logically new for the new
+                        // user too) — handled by the same upsert call
+                        // because fingerprint is per-key, not per-user.
+                        let fingerprint = AppDependencies.apiKeyFingerprint(key)
+                        let activatedAt = AppDependencies.upsertKeyActivation(
+                            in: secrets,
+                            fingerprint: fingerprint,
+                            seedAt: Date()
+                        )
+                        await MainActor.run { self.currentKeyActivatedAt = activatedAt }
 
                         let serverCount = assets.filter { !$0.isTrashed }.count
                         await MainActor.run {
