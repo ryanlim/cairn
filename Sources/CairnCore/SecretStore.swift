@@ -13,6 +13,22 @@ import Foundation
 public protocol SecretStore: Sendable {
     func serverURL() throws -> URL
     func apiKey() throws -> String
+
+    /// The Immich user UUID that the API key authenticates as. Cached
+    /// at setup-time (after the first successful `verifyServer`) and
+    /// used as the per-user discriminator in cairn's partition key
+    /// (alongside server URL). `nil` if not yet cached — callers should
+    /// degrade gracefully (defer per-user state load, show "—" stats)
+    /// rather than fail when this returns nil.
+    func userId() throws -> String?
+
+    /// The Immich user email associated with the API key. Cached
+    /// alongside `userId` at setup time; used as a human-readable label
+    /// when surfacing account info in UI (sign-out screens, multi-
+    /// account disambiguation) and for filesystem debugging.
+    /// Defensive: not the partition discriminator — `userId` is the
+    /// stable Immich primitive (survives email changes).
+    func userEmail() throws -> String?
 }
 
 public enum SecretStoreError: Error, CustomStringConvertible, Equatable {
@@ -55,6 +71,13 @@ public struct EnvSecretStore: SecretStore {
         guard !raw.isEmpty else { throw SecretStoreError.missing(name: keyVariable) }
         return raw
     }
+
+    /// CLI doesn't partition by user — the CLI is single-user-per-process
+    /// and per-server state lives in process working dir. Always returns
+    /// nil so callers fall back to URL-only partitioning, matching
+    /// pre-userId-partitioning CLI behavior.
+    public func userId() throws -> String? { nil }
+    public func userEmail() throws -> String? { nil }
 }
 
 /// Parses `KEY=VALUE` pairs from a `.env` file into process environment.

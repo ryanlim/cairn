@@ -146,6 +146,38 @@ public struct ImmichClient: Sendable {
         return try JSONDecoder().decode(ApiKeyInfo.self, from: data)
     }
 
+    // MARK: - Server identity (for per-user partitioning)
+
+    /// The Immich user the current API key authenticates as. Used as the
+    /// stable per-user discriminator in cairn's partition key — paired
+    /// with server URL, this lets multiple Immich accounts on the same
+    /// server URL get isolated journal/runs/EverSeen state on the same
+    /// device.
+    ///
+    /// `id` is the canonical Immich user UUID — stable across email and
+    /// username changes. `email` is human-readable, useful as a label
+    /// when debugging filesystem layout. Cairn caches both at setup
+    /// time and uses `id` as the partition discriminator going forward;
+    /// network access isn't required at app launch once cached.
+    public struct UserIdentity: Sendable, Codable, Equatable {
+        public let id: String
+        public let email: String
+        public let name: String?
+
+        public init(id: String, email: String, name: String? = nil) {
+            self.id = id
+            self.email = email
+            self.name = name
+        }
+    }
+
+    public func usersMe() async throws -> UserIdentity {
+        let req = try makeRequest(method: "GET", path: "users/me")
+        let (data, resp) = try await session.data(for: req)
+        try Self.expectOK(resp, data: data)
+        return try JSONDecoder().decode(UserIdentity.self, from: data)
+    }
+
     /// Permissions cairn requires for full functionality. Declared once
     /// so the UI, bootstrap check, and documentation stay in sync.
     public static let requiredPermissions: [String] = [

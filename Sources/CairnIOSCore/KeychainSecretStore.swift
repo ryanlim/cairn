@@ -18,6 +18,11 @@ public protocol MutableSecretStore: SecretStore {
     /// Persist `key` as the Immich API key. Overwrites any existing
     /// value.
     func setAPIKey(_ key: String) throws
+    /// Persist the Immich user identity (UUID + email) discovered at
+    /// setup time. Used as the per-user discriminator for cairn's
+    /// per-server partition key. Pass `nil` for either field to leave
+    /// it unchanged; pass empty string to clear individually.
+    func setUserIdentity(id: String?, email: String?) throws
     /// Remove every secret this store manages. Idempotent — safe to
     /// call on sign-out even if one secret was already missing.
     func clear() throws
@@ -84,13 +89,25 @@ public struct KeychainSecretStore: MutableSecretStore, Sendable {
     public let urlAccount: String
     /// `kSecAttrAccount` for the API key row.
     public let keyAccount: String
+    /// `kSecAttrAccount` for the cached Immich user UUID. Stored as
+    /// a string. Absent for installs that predate user-identity
+    /// caching (graceful upgrade — bootstrap will fetch and cache on
+    /// the next successful verify).
+    public let userIdAccount: String
+    /// `kSecAttrAccount` for the cached Immich user email. Same
+    /// treatment as `userIdAccount`.
+    public let userEmailAccount: String
 
     public init(service: String = "app.cairn.immich",
                 urlAccount: String = "server-url",
-                keyAccount: String = "api-key") {
+                keyAccount: String = "api-key",
+                userIdAccount: String = "user-id",
+                userEmailAccount: String = "user-email") {
         self.service = service
         self.urlAccount = urlAccount
         self.keyAccount = keyAccount
+        self.userIdAccount = userIdAccount
+        self.userEmailAccount = userEmailAccount
     }
 
     // MARK: - SecretStore
@@ -107,6 +124,14 @@ public struct KeychainSecretStore: MutableSecretStore, Sendable {
         try readString(account: keyAccount)
     }
 
+    public func userId() throws -> String? {
+        try readOptionalString(account: userIdAccount)
+    }
+
+    public func userEmail() throws -> String? {
+        try readOptionalString(account: userEmailAccount)
+    }
+
     // MARK: - Writes
 
     public func setServerURL(_ url: URL) throws {
@@ -117,9 +142,24 @@ public struct KeychainSecretStore: MutableSecretStore, Sendable {
         try writeString(key, account: keyAccount)
     }
 
+    public func setUserIdentity(id: String?, email: String?) throws {
+        if let id, !id.isEmpty {
+            try writeString(id, account: userIdAccount)
+        } else if id?.isEmpty == true {
+            try delete(account: userIdAccount)
+        }
+        if let email, !email.isEmpty {
+            try writeString(email, account: userEmailAccount)
+        } else if email?.isEmpty == true {
+            try delete(account: userEmailAccount)
+        }
+    }
+
     public func clear() throws {
         try delete(account: urlAccount)
         try delete(account: keyAccount)
+        try delete(account: userIdAccount)
+        try delete(account: userEmailAccount)
     }
 
     // MARK: - Keychain primitives
@@ -152,6 +192,18 @@ public struct KeychainSecretStore: MutableSecretStore, Sendable {
             throw SecretStoreError.missing(name: account)
         default:
             throw KeychainError.osStatus(status)
+        }
+    }
+
+    /// Like `readString` but returns nil for missing items instead of
+    /// throwing. Used for fields that aren't required (cached user
+    /// identity) — pre-userId-caching installs simply have nothing
+    /// here and we want graceful degradation, not an error.
+    private func readOptionalString(account: String) throws -> String? {
+        do {
+            return try readString(account: account)
+        } catch SecretStoreError.missing {
+            return nil
         }
     }
 

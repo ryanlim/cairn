@@ -243,8 +243,20 @@ final class AppDependencies {
 
     // MARK: - Server activation
 
-    func activateServer(url: URL, apiKey: String) throws {
-        let key = ServerPartitionKey(from: url)
+    func activateServer(url: URL, apiKey: String, userId: String? = nil) throws {
+        let key = ServerPartitionKey(from: url, userId: userId)
+
+        // One-time migration: if a previous build left a URL-only
+        // partition directory at this URL, rename it in place to the
+        // new (URL, userId) shape. Only triggers when userId is
+        // present (otherwise the legacy dirname IS the new dirname);
+        // best-effort — if rename fails (file in use, permission
+        // issue) we leave the legacy dir alone and create a fresh
+        // one, accepting state loss but avoiding a hard failure.
+        if userId != nil {
+            Self.migrateLegacyServerPartitionIfNeeded(url: url, userId: userId)
+        }
+
         let containerURL = Self.serverContainerURL(for: key)
         let container: ModelContainer = {
             if let disk = try? CairnSwiftDataContainer.makePerServer(url: containerURL) {
@@ -323,8 +335,15 @@ final class AppDependencies {
         }
 
         Self.migrateFromLegacyIfNeeded(serverURL: url)
+        // Per-user partitioning: prefer the cached userId from a
+        // previous successful verify. nil falls back to URL-only
+        // partitioning (matches pre-migration behavior). The
+        // opportunistic-fetch path runs lazily on the next sync via
+        // `refreshUserIdentityIfNeeded` — bootstrap doesn't block on
+        // network reachability.
+        let cachedUserId = try? secretStore.userId()
         do {
-            try activateServer(url: url, apiKey: apiKey)
+            try activateServer(url: url, apiKey: apiKey, userId: cachedUserId)
         } catch {
             // SwiftData container creation failed and the in-memory
             // fallback in `activateServer` already trapped, OR the
@@ -397,6 +416,15 @@ final class AppDependencies {
                 if !missing.isEmpty {
                     syncLog.info("[cairn.boot] missing permissions: \(missing.joined(separator: ", "))")
                 }
+            }
+            // Opportunistic identity refresh for legacy installs. If
+            // we activated with `userId: nil` (cache empty), fetch
+            // identity now that we have a working client. Persist;
+            // user-visible re-activation happens on next launch (we
+            // don't swap containers underneath an active sync).
+            if cachedUserId == nil, let identity = try? await client.usersMe() {
+                try? secretStore.setUserIdentity(id: identity.id, email: identity.email)
+                syncLog.notice("[cairn.boot] cached user identity: \(identity.email, privacy: .public) (\(identity.id, privacy: .public)). New partition takes effect on next launch.")
             }
         }
 
@@ -1119,8 +1147,29 @@ final class AppDependencies {
         if let cap = Self.resolveTestingAssetCap(), totalVisible > cap {
             totalVisible = cap
         }
-        let indexed = (try? await self.localHashStore.indexedCount()) ?? 0
-        model.library = model.library.with(local: totalVisible, indexed: indexed)
+        // "Indexed" is the intersection of LocalHashStore (global,
+        // shared across accounts on this device) with this account's
+        // EverSeenStore. The plain LocalHashStore count would
+        // double-display photos cairn cached for OTHER accounts on the
+        // same device — accurate for "bytes hashed on this device" but
+        // misleading as a per-account metric.
+        //
+        // When EverSeen is unavailable (server not yet activated,
+        // identity not yet cached, or transient SwiftData hiccup), we
+        // surface `indexedKnown: false` so the UI shows "—" instead
+        // of a stale count. Falling back to the global LocalHashStore
+        // count would inflate the number with photos cached for prior
+        // accounts on this device — which is exactly the "huh, why
+        // does cairn already know about all my photos on this fresh
+        // account" UX bug we're trying to avoid.
+        if let everSeen = self.everSeenStore,
+           let cached = try? await self.localHashStore.allChecksums(),
+           let observed = try? await everSeen.snapshot() {
+            let indexed = cached.intersection(observed).count
+            model.library = model.library.with(local: totalVisible, indexed: indexed, indexedKnown: true)
+        } else {
+            model.library = model.library.with(local: totalVisible, indexedKnown: false)
+        }
     }
 
     /// Capture the current status counts to disk so the next cold launch
@@ -1974,11 +2023,21 @@ final class AppDependencies {
                 let probe = ImmichClient(baseURL: url, apiKey: key)
                 do {
                     let assets = try await probe.listAllAssets()
+                    // Fetch the Immich user identity so we can partition
+                    // per-server state by (URL, userId). Best-effort: an
+                    // older Immich version that lacks /users/me, or a
+                    // transient API hiccup, leaves us in URL-only-
+                    // partition mode (graceful degradation — bootstrap
+                    // will retry on next successful sync).
+                    let identity: ImmichClient.UserIdentity? = try? await probe.usersMe()
                     if let self {
                         try? secrets.setServerURL(url)
                         try? secrets.setAPIKey(key)
+                        if let identity {
+                            try? secrets.setUserIdentity(id: identity.id, email: identity.email)
+                        }
                         try? await MainActor.run {
-                            try self.activateServer(url: url, apiKey: key)
+                            try self.activateServer(url: url, apiKey: key, userId: identity?.id)
                         }
                         let serverCount = assets.filter { !$0.isTrashed }.count
                         await MainActor.run {
@@ -2334,6 +2393,57 @@ final class AppDependencies {
         let docs = documentsDirectory().appending(path: "servers").appending(path: key.directoryName)
         try? FileManager.default.createDirectory(at: docs, withIntermediateDirectories: true)
         return docs.appending(path: "deletion-journal.jsonl")
+    }
+
+    /// One-time rename: pre-userId-partitioning installs have a per-
+    /// server directory at `<sanitizedURL>` (no user suffix). After
+    /// per-user partitioning lands, the same data should live at
+    /// `<sanitizedURL>__<userId>`. This helper detects that situation
+    /// at activation time and renames in place — so the user's existing
+    /// EverSeen, journal, runs, etc. carry forward without reset.
+    ///
+    /// Best-effort. If the rename fails (rare: file open by another
+    /// process, permissions), we log but continue — `activateServer`
+    /// will then create a fresh empty partition at the new path. State
+    /// loss in that pathological case but no hard failure.
+    private static func migrateLegacyServerPartitionIfNeeded(url: URL, userId: String?) {
+        guard let userId, !userId.isEmpty else { return }
+        let legacyKey = ServerPartitionKey(from: url, userId: nil)
+        let newKey = ServerPartitionKey(from: url, userId: userId)
+        guard legacyKey.directoryName != newKey.directoryName else { return }
+
+        let fm = FileManager.default
+        let legacyContainer = serverContainerURL(for: legacyKey)
+        let newContainer = serverContainerURL(for: newKey)
+        // SwiftData stores spawn `-shm` / `-wal` sibling files alongside
+        // the main `.store`. Move all three for a clean migration.
+        for suffix in ["", "-shm", "-wal"] {
+            let src = URL(fileURLWithPath: legacyContainer.path + suffix)
+            let dst = URL(fileURLWithPath: newContainer.path + suffix)
+            if fm.fileExists(atPath: src.path), !fm.fileExists(atPath: dst.path) {
+                do {
+                    try fm.moveItem(at: src, to: dst)
+                } catch {
+                    syncLog.error("[cairn.migrate] couldn't move \(src.lastPathComponent, privacy: .public) → \(dst.lastPathComponent, privacy: .public): \(String(describing: error), privacy: .public)")
+                }
+            }
+        }
+
+        // Journal directory rename. The legacy layout puts every per-
+        // server file under `documents/servers/<dirName>/`; we move the
+        // whole directory to the new dirName and the journal file
+        // (deletion-journal.jsonl) inside it carries forward intact.
+        let docs = documentsDirectory().appending(path: "servers")
+        let legacyJournalDir = docs.appending(path: legacyKey.directoryName)
+        let newJournalDir = docs.appending(path: newKey.directoryName)
+        if fm.fileExists(atPath: legacyJournalDir.path), !fm.fileExists(atPath: newJournalDir.path) {
+            do {
+                try fm.moveItem(at: legacyJournalDir, to: newJournalDir)
+            } catch {
+                syncLog.error("[cairn.migrate] couldn't move journal dir \(legacyJournalDir.lastPathComponent, privacy: .public) → \(newJournalDir.lastPathComponent, privacy: .public): \(String(describing: error), privacy: .public)")
+            }
+        }
+        syncLog.notice("[cairn.migrate] partition rename: \(legacyKey.directoryName, privacy: .public) → \(newKey.directoryName, privacy: .public)")
     }
 
     private static func migrateFromLegacyIfNeeded(serverURL: URL) {

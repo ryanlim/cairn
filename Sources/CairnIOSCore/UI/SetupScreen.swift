@@ -25,11 +25,13 @@ import CairnCore
 ///   4. Background refresh — explainer + "Allow" button. Skippable.
 ///   5. Safety thresholds — sliders for percent + count floor, seeded
 ///      from `CairnSettings.defaults`.
-///   6. Strictness — segmented `.strict` vs `.trusting`, copy seeded
-///      from the plan doc's "Confirmed-deletion signal (Wave 4) →
-///      User-facing messaging" section. This step exists *because* the
-///      strictness model is load-bearing for safety; it deserves a
-///      dedicated wizard step rather than being buried in Settings.
+///   6. Strictness — radio list of `.strict` / `.trusting` / `.autonomous`,
+///      copy seeded from the plan doc's "Confirmed-deletion signal
+///      (Wave 4) → User-facing messaging" section. This step exists
+///      *because* the strictness model is load-bearing for safety; it
+///      deserves a dedicated wizard step rather than being buried in
+///      Settings. Autonomous mode skips quarantine + review entirely
+///      and trusts Immich's 30-day Trash window as the only undo.
 ///   7. First dry-run — "Every scheduled run is preview-only…" copy
 ///      from HANDOFF.md, plus the CTA that hands off to the host.
 ///
@@ -603,6 +605,11 @@ public struct SetupScreen: View {
                         value: DeletionStrictness.trusting,
                         title: "Trusting",
                         subtitle: "Move any server photo to Immich's Trash when it's no longer on your device, even if iOS didn't directly confirm the deletion. Faster, but can accidentally send photos to Trash during iCloud sync hiccups or library restores."
+                    ),
+                    .init(
+                        value: DeletionStrictness.autonomous,
+                        title: "Auto",
+                        subtitle: "Skip quarantine and review entirely. Every candidate moves to Immich's Trash on the next sync — no waiting, no preview list. The only safety net is Immich's 30-day Trash window. Pick this only if you'd rather catch mistakes after the fact than pre-approve every batch."
                     ),
                 ]
             )

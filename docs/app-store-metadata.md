@@ -48,7 +48,7 @@ HOW IT WORKS
 SAFETY MODEL
 — Trash, not delete. cairn moves assets into your Immich Trash — Immich retains them for 30 days, and restore is one tap.
 — Percent cap + floor. If a single run would move more than a threshold of your matched photos to Trash, it aborts without touching the server.
-— Breadcrumbs. Every run is tagged on Immich (cairn/v1/run/<id>) so you can find it server-side.
+— Breadcrumbs. Every run is tagged on Immich (cairn/v1/run/[id]) so you can find it server-side.
 — Forensic journal. Local append-only log records every step — planned, tagged, trashed, restored, failed.
 — Exclusions. Protect specific photos from ever being flagged.
 — Indexing scope. Restrict cairn to a specific set of Photos albums. Photos outside the scope are silently ignored — never hashed, never proposed for trash. Useful if you want to manage just one album and leave synced family albums alone.

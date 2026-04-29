@@ -1179,7 +1179,12 @@ public struct StatusScreen: View {
                 // ready) → blue (the server, the destination).
                 Stat(label: "On iPhone", value: library.local.formatted(.number), sub: "current", color: t.accentInk)
                 Rectangle().fill(t.divider).frame(width: 0.5)
-                Stat(label: "Indexed", value: library.indexed.formatted(.number), sub: "SHA1 set", color: t.verifiedInk)
+                Stat(
+                    label: "Indexed",
+                    value: library.indexedKnown ? library.indexed.formatted(.number) : "—",
+                    sub: library.indexedKnown ? "SHA1 set" : "not yet calculated",
+                    color: t.verifiedInk
+                )
                 Rectangle().fill(t.divider).frame(width: 0.5)
                 Stat(label: "On server", value: library.server.formatted(.number),
                      sub: "\(library.matched.formatted(.number)) matched", color: t.infoInk)

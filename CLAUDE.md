@@ -117,6 +117,17 @@ The older `deviceAssetId` / `deviceId` scheme used by the Immich mobile app was 
 
 Our reconciliation uses a client-side **ever-seen SHA1 set** to express "delete on iPhone propagates to Immich" without touching photos that were never on the iPhone.
 
+### Per-user partitioning (Wave 5: same-server-different-user isolation)
+
+`ServerPartitionKey` is now `(URL, userId)` — the Immich user UUID partitions per-server state alongside the URL. Same-URL different-user accounts (a real testing scenario, e.g., admin + demo accounts on a self-hosted Immich) get isolated journal/runs/EverSeen/quarantine/exclusions. Without this, switching to a second account on the same URL leaked the first account's state into the second.
+
+- **Userid fetch**: `ImmichClient.usersMe()` (`GET /api/users/me`) returns the active user's UUID + email + name. Cached in Keychain alongside URL + API key (`KeychainSecretStore.setUserIdentity`). One fetch at setup; thereafter the cache is authoritative — the app boots without Immich connectivity required to pick the right partition.
+- **Email is a label, userId is the discriminator**: `userId` is the stable Immich primitive (survives email/username changes; new Immich users with the same email get a new UUID, correctly treated as different accounts). Email persists for human-readable filesystem layout and future multi-account UI.
+- **Migration**: legacy installs at the URL-only directory (`<sanitizedURL>`) are renamed in place to `<sanitizedURL>__<userId>` on the first activate-server call after the userId is cached. Best-effort — rename failure logs and continues with a fresh empty partition (state loss in that pathological case but no hard failure).
+- **Opportunistic identity fetch**: bootstrap activates with `userId: nil` if the cache is empty (legacy install). On the first successful `client.usersMe()` after bootstrap, the identity is persisted; the next launch picks it up. We don't swap containers underneath an active sync.
+- **"Indexed" stat**: `model.library.indexed` is now `LocalHashStore.allChecksums() ∩ EverSeenStore.snapshot()` for the active partition — "photos cairn knows about *for this account*." Falls back to plain `LocalHashStore.indexedCount()` when EverSeen is unavailable (transient SwiftData hiccup).
+- **What stays global**: `LocalHashStore`, `DeferredHashStore`, `LocalAssetMetadataStore`. The hash cache is content-addressed (SHA1 of bytes); sharing across accounts on the same device is a real efficiency win — no rehashing 6,500 photos when switching accounts. Asymmetric design that's worth remembering: per-(URL, user) for state derived from cairn's actions; global for content-derived caches.
+
 ### Scope-aware EverSeen (Wave 5: indexing scope)
 
 `CairnSettings.indexingScope` lets the user restrict cairn's purview to a hand-picked set of Photos albums (`.selectedAlbums(Set<PHAssetCollection.localIdentifier>)`) rather than the full library. Each `EverSeenStore` entry carries a `Set<String>` of album localIdentifiers — the selected-scope albums in which cairn most recently observed the asset. The reconciler filters `everSeenChecksums` to entries where `tags ∩ scope ≠ ∅` before computing candidates: out-of-scope photos quietly exclude themselves; legacy entries (untagged, written before scope-aware indexing) are also out of scope under restricted scope until re-observed.

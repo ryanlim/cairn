@@ -12,39 +12,63 @@ public enum CairnFixtures {
         public let server: Int
         public let matched: Int
         public let candidates: Int
+        /// `false` when `indexed` hasn't been computed yet for the
+        /// active account — UI should render "—" instead of the count.
+        /// Bootstrap before server activation (and before user identity
+        /// is cached) leaves this unset; the first successful
+        /// `refreshLibrarySizeStats` after activation flips it to true.
+        /// Without this flag, fresh-account onboarding would surface
+        /// the global LocalHashStore count (potentially populated by a
+        /// different account on this device), which reads as "we
+        /// somehow know about all your photos" — confusing.
+        public let indexedKnown: Bool
 
-        public init(local: Int, indexed: Int, server: Int, matched: Int, candidates: Int) {
+        public init(
+            local: Int,
+            indexed: Int,
+            server: Int,
+            matched: Int,
+            candidates: Int,
+            indexedKnown: Bool = true
+        ) {
             self.local = local
             self.indexed = indexed
             self.server = server
             self.matched = matched
             self.candidates = candidates
+            self.indexedKnown = indexedKnown
         }
 
         /// All-zeros library stats. Default for a real-install
         /// `CairnAppModel` before the first successful sync has populated
-        /// real counts.
-        public static let empty = LibrarySize(local: 0, indexed: 0, server: 0, matched: 0, candidates: 0)
+        /// real counts. `indexedKnown: false` so UI shows "—" rather
+        /// than a misleading "0" until the first intersection compute
+        /// happens.
+        public static let empty = LibrarySize(local: 0, indexed: 0, server: 0, matched: 0, candidates: 0, indexedKnown: false)
 
         /// Return a copy with any subset of fields overridden. Lets
         /// call sites update one dimension at a time without
         /// hand-reconstructing every field — e.g.
         /// `library = library.with(server: stats.total)` instead of
         /// the old five-line copy-construct. Missing args keep the
-        /// current value.
+        /// current value. Setting `indexed` (non-nil) auto-flips
+        /// `indexedKnown` to true since the caller is providing a real
+        /// value; pass an explicit `indexedKnown: false` to override.
         public func with(
             local: Int? = nil,
             indexed: Int? = nil,
             server: Int? = nil,
             matched: Int? = nil,
-            candidates: Int? = nil
+            candidates: Int? = nil,
+            indexedKnown: Bool? = nil
         ) -> LibrarySize {
             LibrarySize(
                 local: local ?? self.local,
                 indexed: indexed ?? self.indexed,
                 server: server ?? self.server,
                 matched: matched ?? self.matched,
-                candidates: candidates ?? self.candidates
+                candidates: candidates ?? self.candidates,
+                indexedKnown: indexedKnown ?? (indexed != nil ? true : self.indexedKnown)
             )
         }
     }
