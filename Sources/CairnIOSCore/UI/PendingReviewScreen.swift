@@ -378,6 +378,34 @@ public struct PendingReviewScreen: View {
         return !groupChecksums.isEmpty && groupChecksums.isSubset(of: selectedChecksums)
     }
 
+    /// Every checksum in `groups`, flattened. Used by per-section
+    /// Select All to know what to add to / remove from
+    /// `selectedChecksums` in one tap.
+    private func sectionChecksums(_ groups: [PendingReviewGroup]) -> Set<String> {
+        Set(groups.flatMap { $0.versions.map(\.checksum.base64) })
+    }
+
+    private func isSectionFullySelected(_ groups: [PendingReviewGroup]) -> Bool {
+        let cks = sectionChecksums(groups)
+        return !cks.isEmpty && cks.isSubset(of: selectedChecksums)
+    }
+
+    /// Toggle selection for a whole section. Enters selection mode on
+    /// first tap if the user wasn't already in it. If every checksum
+    /// in the section is selected, removes them; otherwise adds them.
+    /// Doesn't touch checksums in other sections — distinct from
+    /// `toggleSelectAll` which spans every group.
+    private func toggleSectionSelection(_ groups: [PendingReviewGroup]) {
+        let cks = sectionChecksums(groups)
+        guard !cks.isEmpty else { return }
+        if !selectionMode { selectionMode = true }
+        if cks.isSubset(of: selectedChecksums) {
+            selectedChecksums.subtract(cks)
+        } else {
+            selectedChecksums.formUnion(cks)
+        }
+    }
+
     // MARK: - Bulk action bar
 
     private var bulkActionBar: some View {
@@ -527,14 +555,37 @@ public struct PendingReviewScreen: View {
 
     // MARK: - Sections
 
+    /// Per-section "Select all" affordance rendered in the trailing
+    /// slot of each `KeylineSection`. Toggles selection of every
+    /// checksum in the supplied groups. Hidden when the section is
+    /// empty (no rows to select). Enters selection mode on first tap
+    /// if not already active — same affordance as the trailing
+    /// "Select" button on the header, scoped to one section.
+    @ViewBuilder
+    private func sectionSelectAllButton(for groups: [PendingReviewGroup]) -> some View {
+        if !groups.isEmpty {
+            let isSelected = isSectionFullySelected(groups)
+            Button(action: { toggleSectionSelection(groups) }) {
+                Text(isSelected ? "Deselect all" : "Select all")
+                    .font(.system(size: 11, weight: .semibold))
+                    .tracking(0.4)
+                    .foregroundStyle(t.accent)
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
     private var heldSection: some View {
         Group {
             KeylineSection("Aging out") {
-                Text("\(heldGroups.count)")
-                    .font(.system(size: 11, weight: .semibold))
-                    .tracking(0.99)
-                    .foregroundStyle(t.textMuted)
-                    .monospacedDigit()
+                HStack(spacing: 12) {
+                    sectionSelectAllButton(for: heldGroups)
+                    Text("\(heldGroups.count)")
+                        .font(.system(size: 11, weight: .semibold))
+                        .tracking(0.99)
+                        .foregroundStyle(t.textMuted)
+                        .monospacedDigit()
+                }
             }
             CairnCard {
                 VStack(spacing: 0) {
@@ -553,11 +604,14 @@ public struct PendingReviewScreen: View {
     private var unconfirmedSection: some View {
         Group {
             KeylineSection("Unconfirmed") {
-                Text("\(unconfirmedGroups.count)")
-                    .font(.system(size: 11, weight: .semibold))
-                    .tracking(0.99)
-                    .foregroundStyle(t.textMuted)
-                    .monospacedDigit()
+                HStack(spacing: 12) {
+                    sectionSelectAllButton(for: unconfirmedGroups)
+                    Text("\(unconfirmedGroups.count)")
+                        .font(.system(size: 11, weight: .semibold))
+                        .tracking(0.99)
+                        .foregroundStyle(t.textMuted)
+                        .monospacedDigit()
+                }
             }
             Callout(.info, icon: "questionmark.circle") {
                 (Text("These weren't caught by the deletion log — they may have left your library before ") + .cairnWord + Text(" was watching. Review each one before trashing."))
