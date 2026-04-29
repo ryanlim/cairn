@@ -2090,10 +2090,41 @@ final class AppDependencies {
                       let confirmed = await self.confirmedDeletedStore,
                       let everSeen = await self.everSeenStore else { return }
                 let cks = Set(checksums.map { Checksum(base64: $0) })
+                // Resolve source localIdentifiers BEFORE we mutate
+                // anything — both maps live on the in-memory
+                // reconciliation snapshot, which we'll prune below.
+                // Need them to wipe `LocalAssetMetadataStore` rows so
+                // the orphan reconciler can't re-surface these assets
+                // on the next sync via filename + creationDate match.
+                let sourceLocalIds: Set<String> = await MainActor.run {
+                    guard let existing = self.model.reconciliation else { return [] }
+                    var ids: Set<String> = []
+                    for c in cks {
+                        if let id = existing.sourceLocalIdentifiersByChecksum[c] {
+                            ids.insert(id)
+                        }
+                        if let id = existing.inferredOrphanLocalIdentifiers[c] {
+                            ids.insert(id)
+                        }
+                    }
+                    return ids
+                }
+                let metadataStore = await MainActor.run { self.localAssetMetadataStore }
                 do {
                     try await confirmed.remove(cks)
                     try await everSeen.remove(cks)
                     try? await self.deletionSourceStore?.remove(cks)
+                    // Without this, the orphan reconciler at
+                    // `OrphanReconciler.match` finds the asset on the
+                    // next sync — `everSeen` no longer contains the
+                    // checksum (we just removed), but the metadata row
+                    // still satisfies the filename + creationDate +
+                    // absent-localId filters → it reappears as an
+                    // "unconfirmed" entry in PendingReview, contradicting
+                    // dismiss's "removes from the pending list" copy.
+                    if !sourceLocalIds.isEmpty {
+                        try? await metadataStore.remove(sourceLocalIds)
+                    }
                     await MainActor.run {
                         guard let existing = self.model.reconciliation else { return }
                         let prunedOrphanMap = existing.inferredOrphanLocalIdentifiers.filter { !cks.contains($0.key) }
