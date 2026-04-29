@@ -1806,6 +1806,7 @@ final class AppDependencies {
                             let current = self.model.library
                             self.model.library = current.with(
                                 server: max(0, current.server - trashedCount),
+                                matched: max(0, current.matched - trashedCount),
                                 candidates: max(0, current.candidates - trashedCount)
                             )
                         }
@@ -1889,7 +1890,14 @@ final class AppDependencies {
                         await self.refreshExcludedChecksums()
                         // Prune the in-memory reconciliation so the
                         // restored checksums don't keep showing up as
-                        // candidates until the next sync.
+                        // candidates until the next sync. Also nudge
+                        // `model.library.server` and `.matched` upward
+                        // by the count Immich actually restored — same
+                        // pattern `approvePending` uses to drop server
+                        // count on trash. Without this, the Status
+                        // page's counters lag a sync behind every
+                        // restore (visible in demos).
+                        let restoredServerCount = summary.restoredAssetIds.count
                         await MainActor.run {
                             guard let existing = self.model.reconciliation else { return }
                             self.model.reconciliation = .init(
@@ -1903,6 +1911,13 @@ final class AppDependencies {
                                 firstObservedAnchors: existing.firstObservedAnchors,
                                 sourceLocalIdentifiersByChecksum: existing.sourceLocalIdentifiersByChecksum.filter { !cks.contains($0.key) }
                             )
+                            if restoredServerCount > 0 {
+                                let current = self.model.library
+                                self.model.library = current.with(
+                                    server: current.server + restoredServerCount,
+                                    matched: current.matched + restoredServerCount
+                                )
+                            }
                         }
                     }
 
@@ -2010,7 +2025,10 @@ final class AppDependencies {
                         self.model.inferredOrphanCount = prunedOrphanMap.count
                         if trashedCount > 0 {
                             let current = self.model.library
-                            self.model.library = current.with(server: max(0, current.server - trashedCount))
+                            self.model.library = current.with(
+                                server: max(0, current.server - trashedCount),
+                                matched: max(0, current.matched - trashedCount)
+                            )
                         }
                     }
                     await self.persistSnapshotFromModel()
