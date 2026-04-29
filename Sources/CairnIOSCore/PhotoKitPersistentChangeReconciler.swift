@@ -398,6 +398,15 @@ public final class PhotoKitPersistentChangeReconciler {
             throw Error.notAuthorized(status)
         }
 
+        // Prune deferred-queue entries that are no longer cairn's
+        // concern — out-of-scope after a scope toggle, or removed from
+        // the limited-Photos selection. Without this, the queue drain's
+        // budget-limited liveness check (which only inspects the first
+        // N items per drain) leaves the user staring at a "deferred-N"
+        // count that never goes down. Runs before any sync work so the
+        // engine sees an accurate queue.
+        try? await pruneStaleDeferredEntries()
+
         // Try incremental first. Fall back to full enumeration on any of:
         //   - no saved token yet → `.firstRun`
         //   - token unarchive fails (e.g. OS upgrade changed the format) →
@@ -961,6 +970,54 @@ public final class PhotoKitPersistentChangeReconciler {
         )
     }
 
+    /// Sweep the deferred queue for entries that PhotoKit can no
+    /// longer resolve (asset deleted while queued, removed from the
+    /// limited-Photos selection) or that are out of the user's
+    /// `IndexingScope`. Removes them so the user-visible
+    /// "not yet indexed" count reflects what cairn can actually
+    /// retry, not stale queue residue from a prior session or wider
+    /// scope.
+    ///
+    /// Single PhotoKit fetch + one queue mutation; safe to call at the
+    /// start of every `runDeletionScan`.
+    private func pruneStaleDeferredEntries() async throws {
+        guard let deferredStore else { return }
+        let queue = try await deferredStore.snapshot()
+        guard !queue.isEmpty else { return }
+        let queueIds = Set(queue.map(\.localIdentifier))
+
+        // Pass 1: scope filter. `.fullLibrary` skips this entirely —
+        // every queued id is in scope by definition.
+        var stale: Set<String> = []
+        if let membership = await Self.resolveScopeMembership(scope) {
+            stale = queueIds.subtracting(membership.localIds)
+        }
+
+        // Pass 2: liveness check for what survived the scope filter.
+        // Catches limited-Photos deselection (id was in the selection
+        // when queued; user removed it) and asset-deleted-while-queued.
+        let toCheck = queueIds.subtracting(stale)
+        if !toCheck.isEmpty {
+            let opts = PHFetchOptions()
+            // Live Photo motion videos live in `.hidden`; include so
+            // we don't false-positive them as missing.
+            opts.includeHiddenAssets = true
+            opts.includeAssetSourceTypes = [.typeUserLibrary, .typeCloudShared]
+            let fetch = await Task.detached(priority: .userInitiated) {
+                PHAsset.fetchAssets(withLocalIdentifiers: Array(toCheck), options: opts)
+            }.value
+            var live: Set<String> = []
+            live.reserveCapacity(fetch.count)
+            fetch.enumerateObjects { asset, _, _ in live.insert(asset.localIdentifier) }
+            stale.formUnion(toCheck.subtracting(live))
+        }
+
+        if !stale.isEmpty {
+            try await deferredStore.remove(stale)
+            Self.reconLog.notice("[cairn.recon] pruned \(stale.count, privacy: .public) stale deferred entries (out-of-scope or no-longer-in-PhotoKit)")
+        }
+    }
+
     /// Off-main wrapper around `PhotoKitScopeEnumerator.membershipMap`.
     /// `nil` for `.fullLibrary` (caller falls back to legacy untagged
     /// path); a populated map for `.selectedAlbums(...)`. Always
@@ -1071,6 +1128,10 @@ public final class PhotoKitPersistentChangeReconciler {
         guard status == .authorized || status == .limited else {
             throw Error.notAuthorized(status)
         }
+        // Same prune as runDeletionScan — keep the user-visible queue
+        // count honest when "Hash deferred now" runs without a full
+        // sync first.
+        try? await pruneStaleDeferredEntries()
         let drained = try await drainInternal(softLimitMode: .unlimited, budget: .max)
         return Result(
             newlyConfirmedDeleted: [],
