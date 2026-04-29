@@ -272,6 +272,63 @@ struct JournalReaderTests {
         #expect(map.isEmpty)
     }
 
+    @Test("a checksum trashed then restored via cairn drops out of the index")
+    func recentlyTrashedRestoredViaCairn() {
+        // Worked scenario: user trashes 4 photos, then restores all 4
+        // via cairn's restore action. Banner should no longer flag
+        // them as "still in Immich trash" — they're back on Immich
+        // as live assets.
+        let target = JournalEntry.TrashTarget(
+            assetId: "asset-1",
+            checksum: "ck1",
+            livePhotoVideoId: nil
+        )
+        let es = [
+            entry("R1", "2026-04-20T11:59:00Z", .runStarted(dryRun: false, candidateCount: 1, assetsInPurview: 100)),
+            entry("R1", "2026-04-20T11:59:30Z", .planningTrash(targets: [target])),
+            entry("R1", "2026-04-20T12:00:00Z", .trashSucceeded(assetIds: ["asset-1"], durationMs: nil)),
+            entry("R2", "2026-04-22T09:00:00Z", .restoreSucceeded(fromRunId: "R1", assetIds: ["asset-1"], durationMs: nil)),
+        ]
+        let now = date("2026-04-25T00:00:00Z")
+        let map = JournalReader.recentlyTrashedChecksums(in: es, withinDays: 30, now: now)
+        #expect(map.isEmpty)
+    }
+
+    @Test("partial restore: only the restored subset drops out, the rest remain")
+    func recentlyTrashedPartialRestore() {
+        let t1 = JournalEntry.TrashTarget(assetId: "a1", checksum: "ck1", livePhotoVideoId: nil)
+        let t2 = JournalEntry.TrashTarget(assetId: "a2", checksum: "ck2", livePhotoVideoId: nil)
+        let es = [
+            entry("R1", "2026-04-20T11:59:30Z", .planningTrash(targets: [t1, t2])),
+            entry("R1", "2026-04-20T12:00:00Z", .trashSucceeded(assetIds: ["a1", "a2"], durationMs: nil)),
+            entry("R2", "2026-04-22T09:00:00Z", .restoreSucceeded(fromRunId: "R1", assetIds: ["a1"], durationMs: nil)),
+        ]
+        let now = date("2026-04-25T00:00:00Z")
+        let map = JournalReader.recentlyTrashedChecksums(in: es, withinDays: 30, now: now)
+        #expect(map.count == 1)
+        #expect(map[Checksum(base64: "ck2")] != nil)
+        #expect(map[Checksum(base64: "ck1")] == nil)
+    }
+
+    @Test("trash → restore → re-trash leaves the checksum flagged as trashed under the newer run")
+    func recentlyTrashedRestoreThenReTrash() {
+        let target = JournalEntry.TrashTarget(assetId: "a1", checksum: "ck1", livePhotoVideoId: nil)
+        let target2 = JournalEntry.TrashTarget(assetId: "a1-v2", checksum: "ck1", livePhotoVideoId: nil)
+        let reTrashedAt = date("2026-04-23T12:00:00Z")
+        let es = [
+            entry("R1", "2026-04-20T11:59:30Z", .planningTrash(targets: [target])),
+            entry("R1", "2026-04-20T12:00:00Z", .trashSucceeded(assetIds: ["a1"], durationMs: nil)),
+            entry("R2", "2026-04-22T09:00:00Z", .restoreSucceeded(fromRunId: "R1", assetIds: ["a1"], durationMs: nil)),
+            entry("R3", "2026-04-23T11:59:30Z", .planningTrash(targets: [target2])),
+            JournalEntry(timestamp: reTrashedAt, runId: "R3", event: .trashSucceeded(assetIds: ["a1-v2"], durationMs: nil)),
+        ]
+        let now = date("2026-04-25T00:00:00Z")
+        let map = JournalReader.recentlyTrashedChecksums(in: es, withinDays: 30, now: now)
+        let record = map[Checksum(base64: "ck1")]
+        #expect(record?.runId == "R3")
+        #expect(record?.trashedAt == reTrashedAt)
+    }
+
     @Test("Live Photo motion video paired ID resolves through planningTrash")
     func recentlyTrashedLivePhotoPair() {
         // The trashSucceeded event lists both the still and the paired

@@ -90,6 +90,13 @@ public enum JournalReader {
     /// checksum was trashed twice — the most recent record wins, since
     /// that's the one whose 30-day clock is currently ticking on Immich.
     ///
+    /// `.restoreSucceeded(fromRunId:assetIds:)` events undo trashes:
+    /// the checksum is back on Immich (no longer in trash), so we drop
+    /// it from the result. Without this, restoring 4 photos via cairn
+    /// leaves them flagged as "trashed in Immich" forever — and the
+    /// next sync that re-observes them locally fires the
+    /// "restored-after-cairn-trash" banner spuriously.
+    ///
     /// `withinDays` defaults to 30 to match Immich's hard-delete window.
     /// After the server actually purges the asset, the warning is moot
     /// (the photo is gone server-side; nothing the user can do).
@@ -114,19 +121,31 @@ public enum JournalReader {
             }
         }
 
-        // Walk `.trashSucceeded` events in chronological order so
-        // newer-wins falls out naturally — later iterations overwrite
-        // any earlier record for the same checksum.
+        // Walk terminal trash/restore events in chronological order.
+        // Each trashSucceeded inserts; each restoreSucceeded removes.
+        // Last write wins, which gives the right answer for any
+        // trash → restore → re-trash sequence (final state = trashed)
+        // and for the common trash → restore (final state = absent).
         let sorted = entries.sorted { $0.timestamp < $1.timestamp }
         var out: [Checksum: TrashedRecord] = [:]
         for entry in sorted {
-            guard case .trashSucceeded(let assetIds, _) = entry.event else { continue }
-            guard entry.timestamp >= cutoff else { continue }
-            guard let plan = planByRun[entry.runId] else { continue }
-            let record = TrashedRecord(runId: entry.runId, trashedAt: entry.timestamp)
-            for assetId in assetIds {
-                guard let raw = plan[assetId] else { continue }
-                out[Checksum(base64: raw)] = record
+            switch entry.event {
+            case .trashSucceeded(let assetIds, _):
+                guard entry.timestamp >= cutoff else { continue }
+                guard let plan = planByRun[entry.runId] else { continue }
+                let record = TrashedRecord(runId: entry.runId, trashedAt: entry.timestamp)
+                for assetId in assetIds {
+                    guard let raw = plan[assetId] else { continue }
+                    out[Checksum(base64: raw)] = record
+                }
+            case .restoreSucceeded(let fromRunId, let assetIds, _):
+                guard let plan = planByRun[fromRunId] else { continue }
+                for assetId in assetIds {
+                    guard let raw = plan[assetId] else { continue }
+                    out.removeValue(forKey: Checksum(base64: raw))
+                }
+            default:
+                continue
             }
         }
         return out
