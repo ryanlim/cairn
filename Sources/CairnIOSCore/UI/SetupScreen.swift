@@ -81,6 +81,21 @@ public struct SetupScreen: View {
         }
     }
 
+    /// Outcome of the Photos permission prompt. `.full` is the unrestricted
+    /// authorization PhotoKit calls `.authorized`; `.limited` is the
+    /// system-level "Selected Photos" mode where PhotoKit transparently
+    /// scopes fetches to the user's chosen subset; `.denied` covers
+    /// `.denied` and `.restricted` (cairn can't enumerate at all).
+    ///
+    /// Both `.full` and `.limited` advance the wizard. The Photos step
+    /// surfaces an inline note when `.limited` so the user knows their
+    /// effective scope and the limited-mode safety guard.
+    public enum PhotoAuthOutcome: Sendable, Equatable {
+        case full
+        case limited
+        case denied
+    }
+
     // MARK: - Inputs
 
     @Binding public var serverUrl: String
@@ -88,7 +103,7 @@ public struct SetupScreen: View {
     @Binding public var settings: CairnSettings
 
     public let onVerifyServer: @Sendable (String, String) async -> ServerVerifyResult
-    public let onRequestPhotosAccess: @Sendable () async -> Bool
+    public let onRequestPhotosAccess: @Sendable () async -> PhotoAuthOutcome
     public let onRequestBackgroundRefresh: @Sendable () async -> Bool
     public let onComplete: () -> Void
 
@@ -101,7 +116,7 @@ public struct SetupScreen: View {
         apiKey: Binding<String>,
         settings: Binding<CairnSettings>,
         onVerifyServer: @escaping @Sendable (String, String) async -> ServerVerifyResult,
-        onRequestPhotosAccess: @escaping @Sendable () async -> Bool,
+        onRequestPhotosAccess: @escaping @Sendable () async -> PhotoAuthOutcome,
         onRequestBackgroundRefresh: @escaping @Sendable () async -> Bool,
         onComplete: @escaping () -> Void,
         initialStep: Step = .welcome
@@ -133,10 +148,20 @@ public struct SetupScreen: View {
 
     // Photos / background steps — record outcome so the user can see
     // they completed (or skipped) the step before continuing.
-    @State private var photosGranted: Bool = false
+    @State private var photoAuth: PhotoAuthOutcome? = nil
     @State private var photosRequesting: Bool = false
     @State private var backgroundGranted: Bool = false
     @State private var backgroundRequesting: Bool = false
+
+    /// Either `.full` or `.limited` is enough to advance the wizard —
+    /// the engine works with whatever PhotoKit exposes; the limited-mode
+    /// safety guard lives at the reconciler layer.
+    private var photosGranted: Bool {
+        switch photoAuth {
+        case .full, .limited: return true
+        case .denied, .none:  return false
+        }
+    }
 
     // MARK: - Body
 
@@ -359,9 +384,8 @@ public struct SetupScreen: View {
 
     private var photosStep: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Headline + body — verbatim from `screens/setup.jsx` step 1.
-            stepHeadline("Grant full Photos access.")
-            stepBlurb(Text.cairnWord + Text(" needs to enumerate your whole library to know what's no longer there. It reads each photo once to compute a SHA1 fingerprint — the same identifier Immich uses. Bytes are hashed in memory and discarded; only the fingerprints leave your iPhone, and only to your own Immich server."))
+            stepHeadline("Grant Photos access.")
+            stepBlurb(Text.cairnWord + Text(" reads each photo once to compute a SHA1 fingerprint — the same identifier Immich uses. Bytes are hashed in memory and discarded; only the fingerprints leave your iPhone, and only to your own Immich server."))
 
             CairnCard {
                 HStack(alignment: .top, spacing: 12) {
@@ -370,11 +394,10 @@ public struct SetupScreen: View {
                         .foregroundStyle(t.textBody)
                         .padding(.top, 1)
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Full library access")
+                        Text("Full or limited access")
                             .font(.system(size: 14, weight: .medium))
                             .foregroundStyle(t.textBody)
-                        // Verbatim from `screens/setup.jsx` step 1.
-                        (Text("Limited access won't work: ") + .cairnWord + Text(" must distinguish photos you deleted from photos it hasn't indexed yet."))
+                        (Text.cairnWord + Text(" works with either. Full access lets it manage your whole library; with limited access it manages only the photos you select in the system picker."))
                             .font(.system(size: 12.5))
                             .foregroundStyle(t.textMuted)
                             .lineSpacing(2)
@@ -387,17 +410,51 @@ public struct SetupScreen: View {
             .padding(.horizontal, -20)
             .padding(.bottom, 16)
 
-            if photosGranted {
+            switch photoAuth {
+            case .full:
                 Callout(.verified, icon: "checkmark.circle") {
                     Text("Full access granted.").fontWeight(.semibold)
                 }
-            } else {
+            case .limited:
+                VStack(alignment: .leading, spacing: 10) {
+                    Callout(.verified, icon: "checkmark.circle") {
+                        Text("Limited access granted.").fontWeight(.semibold)
+                    }
+                    // The limited-mode safety guard at the reconciler
+                    // layer requires a PhotoKit `deletedLocalIdentifiers`
+                    // event to propagate a deletion to Immich. Surface
+                    // the implication so the user isn't surprised when
+                    // toggling the system "Selected Photos" picker
+                    // doesn't immediately mass-trash on Immich.
+                    Callout(.pending, icon: "info.circle") {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Heads up about limited access.").fontWeight(.semibold)
+                            (Text.cairnWord + Text(" only manages the photos you've shared. To keep you safe from accidental deletions, only photos you actively trash in Photos.app will propagate to Immich — changing your Selected Photos selection won't. You can switch to full access anytime in iOS Settings."))
+                                .font(.system(size: 12.5))
+                                .lineSpacing(2)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+            case .denied, .none:
                 primaryButton(
-                    title: photosRequesting ? "Requesting…" : "Allow Full Access",
+                    title: photosRequesting ? "Requesting…" : "Allow Photos access",
                     tone: .primary,
                     disabled: photosRequesting,
                     action: requestPhotos
                 )
+                if photoAuth == .denied {
+                    Callout(.pending, icon: "exclamationmark.triangle") {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Access not granted.").fontWeight(.semibold)
+                            (Text.cairnWord + Text(" needs at least limited Photos access to find deleted photos. Open iOS Settings → ") + Text.cairnWord + Text(" → Photos to grant access."))
+                                .font(.system(size: 12.5))
+                                .lineSpacing(2)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    .padding(.top, 10)
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -406,9 +463,9 @@ public struct SetupScreen: View {
     private func requestPhotos() {
         photosRequesting = true
         Task {
-            let granted = await onRequestPhotosAccess()
+            let outcome = await onRequestPhotosAccess()
             await MainActor.run {
-                self.photosGranted = granted
+                self.photoAuth = outcome
                 self.photosRequesting = false
             }
         }
@@ -862,7 +919,7 @@ private struct SetupPreviewHarness: View {
             onVerifyServer: { _, _ in
                 .init(success: true, assetCount: 1_204, errorMessage: nil)
             },
-            onRequestPhotosAccess: { true },
+            onRequestPhotosAccess: { .full },
             onRequestBackgroundRefresh: { true },
             onComplete: { },
             initialStep: initialStep

@@ -548,8 +548,12 @@ public struct CairnAppActions: Sendable {
     /// from a transient network blip.
     public var retryConnection: @Sendable () async -> Void
 
-    /// Setup wizard step: request iOS Photos `.authorized` access.
-    public var requestPhotosAccess: @Sendable () async -> Bool
+    /// Setup wizard step: request iOS Photos access. Returns the
+    /// outcome (`.full`, `.limited`, or `.denied`) rather than a plain
+    /// Bool because the wizard renders different copy for `.limited`
+    /// and the engine layer applies a safety guard when the user picks
+    /// limited Selected Photos.
+    public var requestPhotosAccess: @Sendable () async -> SetupScreen.PhotoAuthOutcome
 
     /// Setup wizard step: request Background App Refresh.
     public var requestBackgroundRefresh: @Sendable () async -> Bool
@@ -630,7 +634,7 @@ public struct CairnAppActions: Sendable {
             SetupScreen.ServerVerifyResult(success: true, assetCount: 0, errorMessage: nil)
         },
         retryConnection: @escaping @Sendable () async -> Void = {},
-        requestPhotosAccess: @escaping @Sendable () async -> Bool = { true },
+        requestPhotosAccess: @escaping @Sendable () async -> SetupScreen.PhotoAuthOutcome = { .full },
         requestBackgroundRefresh: @escaping @Sendable () async -> Bool = { true },
         resetIndex: @escaping @Sendable () async -> Void = {},
         clearJournal: @escaping @Sendable () async -> Void = {},

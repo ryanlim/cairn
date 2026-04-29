@@ -65,6 +65,8 @@ final class AppDependencies {
             ? Int64(ceilingMB!) * 1024 * 1024
             : nil
 
+        let isLimitedAccess = PHPhotoLibrary.authorizationStatus(for: .readWrite) == .limited
+        let activeScope = model.settings.indexingScope
         return PhotoKitPersistentChangeReconciler(
             hashStore: localHash,
             confirmedDeleted: confirmed,
@@ -77,6 +79,8 @@ final class AppDependencies {
             maxAssets: Self.resolveTestingAssetCap(),
             maxICloudBytesPerAsset: bytesLimit,
             hardCeilingBytes: ceilingBytes,
+            requireExplicitDeletionEvent: isLimitedAccess,
+            scope: activeScope,
             onHashProgress: { [weak self] done, total, newChecksums in
                 // Fetch all MainActor-isolated state in one hop.
                 struct Snapshot {
@@ -500,7 +504,7 @@ final class AppDependencies {
     /// for background refresh.
     private func registerPhotoLibraryObserver() {
         guard photoLibraryBridge == nil else { return }
-        guard PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized else { return }
+        guard Self.isUsablePhotoAuth(PHPhotoLibrary.authorizationStatus(for: .readWrite)) else { return }
 
         // Build the tracked fetch synchronously here on MainActor.
         // `changeDetails(for:)` requires a fetch result against which
@@ -857,6 +861,19 @@ final class AppDependencies {
             selectedAlbumScope = albumIds
         }
 
+        // Limited Photo Access guard: when iOS is exposing only the
+        // user's selected subset, force `.strict` regardless of the
+        // user's stored preference. Combined with the reconciler-side
+        // `requireExplicitDeletionEvent` flag, this means selection
+        // changes that vanish photos from PhotoKit go to pendingReview
+        // instead of trash. The user's original strictness setting is
+        // preserved in `CairnSettings`; if they switch back to full
+        // access later, normal behavior resumes.
+        let limitedAccess = PHPhotoLibrary.authorizationStatus(for: .readWrite) == .limited
+        let effectiveStrictness: DeletionStrictness = limitedAccess
+            ? .strict
+            : settings.deletionStrictness
+
         var result = ReconciliationEngine.compute(.init(
             serverAssets: serverAssets,
             currentLocalChecksums: extendedLocal,
@@ -865,7 +882,7 @@ final class AppDependencies {
             confirmedDeletedAt: confirmedMap,
             now: Date(),
             quarantineDays: settings.quarantineDays,
-            strictness: settings.deletionStrictness,
+            strictness: effectiveStrictness,
             everSeenAlbumTags: everSeenAlbumTags,
             selectedAlbumScope: selectedAlbumScope
         ))
@@ -1139,20 +1156,43 @@ final class AppDependencies {
 
     @MainActor
     fileprivate func refreshLibrarySizeStats() async {
-        let opts = PHFetchOptions()
-        opts.includeHiddenAssets = false
-        opts.includeAssetSourceTypes = [.typeUserLibrary]
-        let fetch = PHAsset.fetchAssets(with: opts)
-        var totalVisible = fetch.count
-        if let cap = Self.resolveTestingAssetCap(), totalVisible > cap {
-            totalVisible = cap
+        // Resolve scope membership once. `.selectedAlbums(...)` rescopes
+        // both the "Phone" count and the "Indexed" intersection so the
+        // numbers reflect the user's chosen managed slice rather than
+        // the full device library. `.fullLibrary` keeps legacy semantics.
+        let activeScope = model.settings.indexingScope
+        let membership: PhotoKitScopeEnumerator.Membership? = await Task.detached(priority: .userInitiated) {
+            PhotoKitScopeEnumerator.membershipMap(for: activeScope)
+        }.value
+
+        let totalVisible: Int
+        if let membership {
+            // `.selectedAlbums(...)` — count is the union of localIds
+            // across selected albums. `Phone` reads as "photos cairn
+            // can manage right now," consistent with the engine's
+            // scope filter.
+            var n = membership.localIds.count
+            if let cap = Self.resolveTestingAssetCap(), n > cap { n = cap }
+            totalVisible = n
+        } else {
+            let opts = PHFetchOptions()
+            opts.includeHiddenAssets = false
+            opts.includeAssetSourceTypes = [.typeUserLibrary]
+            let fetch = PHAsset.fetchAssets(with: opts)
+            var n = fetch.count
+            if let cap = Self.resolveTestingAssetCap(), n > cap { n = cap }
+            totalVisible = n
         }
+
         // "Indexed" is the intersection of LocalHashStore (global,
         // shared across accounts on this device) with this account's
-        // EverSeenStore. The plain LocalHashStore count would
-        // double-display photos cairn cached for OTHER accounts on the
-        // same device — accurate for "bytes hashed on this device" but
-        // misleading as a per-account metric.
+        // EverSeenStore — and, when scope is restricted, additionally
+        // intersected with the SHA1 set backing in-scope localIds. The
+        // plain LocalHashStore count would double-display photos cairn
+        // cached for OTHER accounts on the same device, and the
+        // unscoped intersection would inflate to "everything cairn has
+        // ever observed on this account" even when the user has
+        // limited cairn's purview to a small album set.
         //
         // When EverSeen is unavailable (server not yet activated,
         // identity not yet cached, or transient SwiftData hiccup), we
@@ -1165,8 +1205,16 @@ final class AppDependencies {
         if let everSeen = self.everSeenStore,
            let cached = try? await self.localHashStore.allChecksums(),
            let observed = try? await everSeen.snapshot() {
-            let indexed = cached.intersection(observed).count
-            model.library = model.library.with(local: totalVisible, indexed: indexed, indexedKnown: true)
+            var indexed = cached.intersection(observed)
+            if let membership {
+                let scopeChecksumMap = (try? await self.localHashStore.entries(forIdentifiers: membership.localIds)) ?? [:]
+                var inScopeChecksums: Set<Checksum> = []
+                for (_, entry) in scopeChecksumMap {
+                    inScopeChecksums.formUnion(entry.checksums)
+                }
+                indexed.formIntersection(inScopeChecksums)
+            }
+            model.library = model.library.with(local: totalVisible, indexed: indexed.count, indexedKnown: true)
         } else {
             model.library = model.library.with(local: totalVisible, indexedKnown: false)
         }
@@ -1353,16 +1401,18 @@ final class AppDependencies {
         }
     }
 
-    /// User-facing error copy for a non-`.authorized` Photos auth status.
-    /// `.limited` is split out from `.denied`/`.restricted` because Limited
-    /// Photo Access would silently make most of the library look "missing"
-    /// to reconciliation — the message has to name that, not just say
-    /// "needs Full Photos access."
+    /// User-facing error copy for a Photos auth status that blocks
+    /// sync. cairn now accepts `.limited` (PhotoKit transparently scopes
+    /// fetches to the user's selection, and the reconciler applies a
+    /// `requireExplicitDeletionEvent` guard so selection changes don't
+    /// look like deletions). `.denied`, `.restricted`, and
+    /// `.notDetermined` still block — this message is for those.
     nonisolated fileprivate static func photosAuthMessage(for status: PHAuthorizationStatus) -> String {
-        if status == .limited {
-            return "cairn can\u{2019}t run with Limited Photo Access \u{2014} pictures outside your limited selection look missing to cairn and would be flagged as deletions. Open Settings \u{2192} cairn \u{2192} Photos and pick All Photos."
-        }
-        return "cairn needs Full Photos access to find deleted photos. Open Settings \u{2192} cairn \u{2192} Photos and pick All Photos."
+        return "cairn needs Photos access to find deleted photos. Open Settings \u{2192} cairn \u{2192} Photos and grant access (full or limited)."
+    }
+
+    nonisolated fileprivate static func isUsablePhotoAuth(_ status: PHAuthorizationStatus) -> Bool {
+        return status == .authorized || status == .limited
     }
 
     nonisolated fileprivate static func degradedState(for error: Swift.Error) -> StatusScreen.Degraded? {
@@ -1492,14 +1542,14 @@ final class AppDependencies {
                 } else {
                     effectiveStatus = photoStatus
                 }
-                if effectiveStatus == .authorized {
+                if Self.isUsablePhotoAuth(effectiveStatus) {
                     // Photos was just (or is now) granted. The bootstrap-
                     // time observer registration silently skipped if auth
                     // wasn't granted yet, so register here to catch the
                     // post-grant case.
                     await MainActor.run { self.registerPhotoLibraryObserver() }
                 }
-                guard effectiveStatus == .authorized else {
+                guard Self.isUsablePhotoAuth(effectiveStatus) else {
                     let message = AppDependencies.photosAuthMessage(for: effectiveStatus)
                     await MainActor.run {
                         self.model.lastError = message
@@ -2106,7 +2156,11 @@ final class AppDependencies {
             },
             requestPhotosAccess: {
                 let status = await PHPhotoLibrary.requestAuthorization(for: .readWrite)
-                return status == .authorized
+                switch status {
+                case .authorized: return .full
+                case .limited:    return .limited
+                default:          return .denied
+                }
             },
             requestBackgroundRefresh: {
                 await MainActor.run { UIApplication.shared.backgroundRefreshStatus == .available }
@@ -2329,7 +2383,7 @@ final class AppDependencies {
             forceDrainDeferred: { [weak self] in
                 guard let self else { return }
                 let photoStatus = await MainActor.run { PHPhotoLibrary.authorizationStatus(for: .readWrite) }
-                guard photoStatus == .authorized else {
+                guard Self.isUsablePhotoAuth(photoStatus) else {
                     let message = AppDependencies.photosAuthMessage(for: photoStatus)
                     await MainActor.run {
                         self.model.lastError = message

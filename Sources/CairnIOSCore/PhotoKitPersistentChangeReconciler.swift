@@ -253,6 +253,38 @@ public final class PhotoKitPersistentChangeReconciler {
     /// processes everything it's allowed to.
     private let foregroundDrainBudget: Int
 
+    /// When true, only checksums confirmed via the PhotoKit
+    /// `deletedLocalIdentifiers` event are stamped into
+    /// `ConfirmedDeletedStore`. The orphan-sweep portion of `trulyAbsent`
+    /// is intentionally NOT stamped — those checksums fall back to the
+    /// diff-only path, which `.strict` strictness in the engine routes
+    /// to pendingReview rather than trash.
+    ///
+    /// Set by `AppDependencies` when Photos auth is `.limited`. Selection
+    /// changes in the system "Selected Photos" picker make assets vanish
+    /// from PhotoKit fetches identically to deletions; without this gate,
+    /// the orphan sweep would stamp those vanishings as confirmed and
+    /// quarantine-then-trash them on Immich. The gate trades a small
+    /// safety-net regression (real deletions outside the persistent-
+    /// change window may not auto-propagate; user can still review them
+    /// in PendingReview) for correctness against selection-change
+    /// false positives.
+    private let requireExplicitDeletionEvent: Bool
+
+    /// What slice of the user's library cairn is allowed to enumerate /
+    /// hash / observe. `.fullLibrary` preserves legacy v1 behavior
+    /// (full-library `PHAsset.fetchAssets` walk, untagged
+    /// `everSeen.union` writes, no scope filter); `.selectedAlbums(...)`
+    /// restricts enumeration to a per-album loop, tags `EverSeenStore`
+    /// writes with current album membership, and the engine's scope
+    /// filter excludes anything that isn't in the user's selected set.
+    ///
+    /// Source of truth: `CairnSettings.indexingScope` at
+    /// `persistentChangeReconciler` build time. The reconciler is rebuilt
+    /// per access in `AppDependencies`, so a scope toggle takes effect
+    /// on the next sync without an in-flight cancellation.
+    private let scope: IndexingScope
+
     /// Wall-clock ceiling per asset in foreground mode. Small-looking
     /// assets can still stall on network hiccups or background
     /// throttling, so we race the hash against this timer and cancel
@@ -327,6 +359,8 @@ public final class PhotoKitPersistentChangeReconciler {
         maxICloudBytesPerAsset: Int64? = 100 * 1024 * 1024,
         hardCeilingBytes: Int64? = nil,
         foregroundDrainBudget: Int = 25,
+        requireExplicitDeletionEvent: Bool = false,
+        scope: IndexingScope = .fullLibrary,
         onHashProgress: @escaping @Sendable (Int, Int, Set<Checksum>) async -> Void = { _, _, _ in },
         clock: @escaping @Sendable () -> Date = { Date() }
     ) {
@@ -342,6 +376,8 @@ public final class PhotoKitPersistentChangeReconciler {
         self.maxICloudBytesPerAsset = maxICloudBytesPerAsset
         self.hardCeilingBytes = hardCeilingBytes
         self.foregroundDrainBudget = foregroundDrainBudget
+        self.requireExplicitDeletionEvent = requireExplicitDeletionEvent
+        self.scope = scope
         self.onHashProgress = onHashProgress
         self.clock = clock
     }
@@ -354,7 +390,11 @@ public final class PhotoKitPersistentChangeReconciler {
     /// iCloud downloads blocking the UI.
     public func runDeletionScan(skipDrain: Bool = false) async throws -> Result {
         let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
-        guard status == .authorized else {
+        // `.limited` is acceptable: PhotoKit transparently fetches only
+        // the user's selected subset, which cairn treats as the effective
+        // library. Correctness against selection-change vanishings is
+        // handled separately via `requireExplicitDeletionEvent`.
+        guard status == .authorized || status == .limited else {
             throw Error.notAuthorized(status)
         }
 
@@ -408,7 +448,7 @@ public final class PhotoKitPersistentChangeReconciler {
             try Self.collectIncrementalChanges(since: token)
         }.value
         var insertedIds = collected.insertedIds
-        let updatedIds = collected.updatedIds
+        var updatedIds = collected.updatedIds
         let deletedIds = collected.deletedIds
         let events = collected.events
 
@@ -443,6 +483,24 @@ public final class PhotoKitPersistentChangeReconciler {
             if !blockedInserts.isEmpty {
                 insertedIds.subtract(blockedInserts)
                 Self.reconLog.notice("[cairn.recon] skipped \(blockedInserts.count, privacy: .public) insert candidates already in deferred queue — drain owns retry")
+            }
+        }
+
+        // Resolve scope membership once for this incremental pass. Used
+        // to filter insert/update events (out-of-scope ids skip hashing)
+        // and to tag the EverSeen writes. Deletion events flow through
+        // unchanged — out-of-scope deletions still stamp ConfirmedDeleted
+        // so they can auto-propagate when scope re-expands later.
+        let membership = await Self.resolveScopeMembership(scope)
+        if let membership {
+            let preInserts = insertedIds.count
+            let preUpdates = updatedIds.count
+            insertedIds.formIntersection(membership.localIds)
+            updatedIds.formIntersection(membership.localIds)
+            let droppedInserts = preInserts - insertedIds.count
+            let droppedUpdates = preUpdates - updatedIds.count
+            if droppedInserts + droppedUpdates > 0 {
+                Self.reconLog.notice("[cairn.recon] scope filter: dropped \(droppedInserts, privacy: .public) inserts + \(droppedUpdates, privacy: .public) updates outside selected albums")
             }
         }
 
@@ -550,7 +608,10 @@ public final class PhotoKitPersistentChangeReconciler {
             }
         }
         if !addedChecksums.isEmpty {
-            try await everSeen.union(addedChecksums)
+            try await writeObservedToEverSeen(
+                checksumsByID: insertedBatch.checksumsByID,
+                membership: membership
+            )
         }
 
         let updatedBatch = try await hashAssets(ids: staleUpdates)
@@ -574,7 +635,10 @@ public final class PhotoKitPersistentChangeReconciler {
             }
         }
         if !updatedChecksums.isEmpty {
-            try await everSeen.union(updatedChecksums)
+            try await writeObservedToEverSeen(
+                checksumsByID: updatedBatch.checksumsByID,
+                membership: membership
+            )
         }
 
         // Capture pre-mutation state so `unconfirmedByRestoration` reports
@@ -678,17 +742,31 @@ public final class PhotoKitPersistentChangeReconciler {
         // two sets are disjoint by construction.
         let confirmedFromPhotoKitCount = trulyAbsent.intersection(preOrphanRemoved).count
         let confirmedFromOrphanSweepCount = trulyAbsent.subtracting(preOrphanRemoved).count
-        if !trulyAbsent.isEmpty {
-            try await confirmedDeleted.union(trulyAbsent, at: now)
+        // Limited Photo Access: only stamp checksums that arrived via a
+        // PhotoKit `deletedLocalIdentifiers` event. Orphan-sweep finds in
+        // limited mode are likely selection-change false positives —
+        // photos still exist on the device, the user just deselected
+        // them — and stamping ConfirmedDeleted would queue them for
+        // trash on Immich. Out-of-scope photos still flow through the
+        // diff path; `.strict` strictness in the engine routes them to
+        // pendingReview where the user can confirm or exclude.
+        let stampable: Set<Checksum>
+        if requireExplicitDeletionEvent {
+            stampable = trulyAbsent.intersection(preOrphanRemoved)
+        } else {
+            stampable = trulyAbsent
+        }
+        if !stampable.isEmpty {
+            try await confirmedDeleted.union(stampable, at: now)
             // Persist the source-id mapping for the truly-absent
             // checksums so later syncs can still group quarantined
             // entries with inferred orphans by their shared origin
-            // localIdentifier. Scoped to `trulyAbsent` (not the wider
+            // localIdentifier. Scoped to `stampable` (not the wider
             // `sourceLocalIdentifierByChecksum`) because anything still
             // present locally hasn't been retired and shouldn't poison
             // the persistent store with a stale mapping.
             if let deletionSource {
-                let toRecord = sourceLocalIdentifierByChecksum.filter { trulyAbsent.contains($0.key) }
+                let toRecord = sourceLocalIdentifierByChecksum.filter { stampable.contains($0.key) }
                 if !toRecord.isEmpty {
                     try await deletionSource.record(toRecord)
                 }
@@ -883,6 +961,55 @@ public final class PhotoKitPersistentChangeReconciler {
         )
     }
 
+    /// Off-main wrapper around `PhotoKitScopeEnumerator.membershipMap`.
+    /// `nil` for `.fullLibrary` (caller falls back to legacy untagged
+    /// path); a populated map for `.selectedAlbums(...)`. Always
+    /// detached so the per-album `PHAsset.fetchAssets(in:)` walk
+    /// doesn't stall the main thread.
+    nonisolated static func resolveScopeMembership(
+        _ scope: IndexingScope
+    ) async -> PhotoKitScopeEnumerator.Membership? {
+        return await Task.detached(priority: .userInitiated) {
+            PhotoKitScopeEnumerator.membershipMap(for: scope)
+        }.value
+    }
+
+    /// Write hashed observations into `EverSeenStore`, picking the
+    /// tagged or untagged write path based on the scope-membership map.
+    /// Centralized so every enumeration site (full enum, incremental
+    /// inserts, incremental updates) routes through one place.
+    ///
+    ///   - `nil` membership → `.fullLibrary` mode → untagged
+    ///     `everSeen.union(...)` (preserves legacy semantics; existing
+    ///     tags are not cleared, since the engine ignores tags in full-
+    ///     library mode anyway).
+    ///   - non-`nil` membership → `.selectedAlbums(...)` mode → tagged
+    ///     `everSeen.recordObserved([Checksum: Set<albumId>])` so the
+    ///     engine's `tags ∩ scope` filter has fresh ground truth.
+    private func writeObservedToEverSeen(
+        checksumsByID: [String: Set<Checksum>],
+        membership: PhotoKitScopeEnumerator.Membership?
+    ) async throws {
+        if let membership {
+            var tagsByChecksum: [Checksum: Set<String>] = [:]
+            for (localId, checksums) in checksumsByID {
+                let albums = membership.localIdToAlbums[localId] ?? []
+                for c in checksums {
+                    tagsByChecksum[c, default: []].formUnion(albums)
+                }
+            }
+            if !tagsByChecksum.isEmpty {
+                try await everSeen.recordObserved(tagsByChecksum)
+            }
+        } else {
+            var allChecksums: Set<Checksum> = []
+            for (_, cs) in checksumsByID { allChecksums.formUnion(cs) }
+            if !allChecksums.isEmpty {
+                try await everSeen.union(allChecksums)
+            }
+        }
+    }
+
     /// Off-main wrapper for `PHAsset.fetchAssets` + `enumerateObjects`.
     /// Same reasoning as `collectIncrementalChanges`: enumerating 6k+
     /// assets on the main thread is a perceptible UI stall during sync.
@@ -941,7 +1068,7 @@ public final class PhotoKitPersistentChangeReconciler {
     @discardableResult
     public func drainDeferred() async throws -> Result {
         let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
-        guard status == .authorized else {
+        guard status == .authorized || status == .limited else {
             throw Error.notAuthorized(status)
         }
         let drained = try await drainInternal(softLimitMode: .unlimited, budget: .max)
@@ -1106,14 +1233,16 @@ public final class PhotoKitPersistentChangeReconciler {
             reportProgressWithTotal: assetsToHash.count
         )
 
-        // Union freshly-hashed checksums into ever-seen — matches the
+        // Write freshly-hashed checksums into ever-seen — matches the
         // insert/update paths. Without this, a queued item that finally
-        // hashes wouldn't enter the reconciliation surface.
-        var fresh: Set<Checksum> = []
-        for (_, cks) in batch.checksumsByID { fresh.formUnion(cks) }
-        if !fresh.isEmpty {
-            try? await everSeen.union(fresh)
-        }
+        // hashes wouldn't enter the reconciliation surface. Tagged with
+        // current scope membership so `.selectedAlbums(...)` mode keeps
+        // album tags fresh as deferred items finally drain.
+        let drainMembership = await Self.resolveScopeMembership(scope)
+        try? await writeObservedToEverSeen(
+            checksumsByID: batch.checksumsByID,
+            membership: drainMembership
+        )
         return (batch, batch.checksumsByID.count)
     }
 
@@ -1132,21 +1261,29 @@ public final class PhotoKitPersistentChangeReconciler {
         // scan rather than lost to the gap.
         let baselineToken = PHPhotoLibrary.shared().currentChangeToken
 
-        // Enumerate the full library, hashing per-asset, rebuilding the
-        // local hash cache from scratch. We don't union into
-        // confirmed-deleted here — a full enumeration is a resync, not a
-        // positive deletion signal. `hashAllCurrentAssets` persists each
-        // asset's checksums into `hashStore` as it goes (resume-friendly)
-        // and seeds the edit-retirement anchor for ids it hashes for the
-        // first time.
-        let batch = try await hashAllCurrentAssets()
+        // Resolve scope membership once for this scan. `nil` for
+        // `.fullLibrary` (legacy untagged path); a populated map for
+        // `.selectedAlbums(...)` that drives both the asset fetch in
+        // `hashAllCurrentAssets` and the per-checksum tag write into
+        // `EverSeenStore` below.
+        let membership = await Self.resolveScopeMembership(scope)
+
+        // Enumerate the (possibly scoped) library, hashing per-asset,
+        // rebuilding the local hash cache from scratch. We don't union
+        // into confirmed-deleted here — a full enumeration is a resync,
+        // not a positive deletion signal. `hashAllCurrentAssets`
+        // persists each asset's checksums into `hashStore` as it goes
+        // (resume-friendly) and seeds the edit-retirement anchor for
+        // ids it hashes for the first time.
+        let batch = try await hashAllCurrentAssets(membership: membership)
         var allChecksums: Set<Checksum> = []
         for (_, checksums) in batch.checksumsByID {
             allChecksums.formUnion(checksums)
         }
-        if !allChecksums.isEmpty {
-            try await everSeen.union(allChecksums)
-        }
+        try await writeObservedToEverSeen(
+            checksumsByID: batch.checksumsByID,
+            membership: membership
+        )
 
         let now = clock()
         try await tokens.save(.init(
@@ -1183,7 +1320,9 @@ public final class PhotoKitPersistentChangeReconciler {
     /// pre-field rows, tests that don't wire it) also re-hash so we
     /// err toward correctness. The incremental path picks up any
     /// edits that happened between cancellation and resume.
-    private func hashAllCurrentAssets() async throws -> HashBatchResult {
+    private func hashAllCurrentAssets(
+        membership: PhotoKitScopeEnumerator.Membership? = nil
+    ) async throws -> HashBatchResult {
         let options = PHFetchOptions()
         options.includeHiddenAssets = false
         options.includeAssetSourceTypes = [.typeUserLibrary]
@@ -1200,7 +1339,27 @@ public final class PhotoKitPersistentChangeReconciler {
             NSSortDescriptor(key: "creationDate", ascending: false),
         ]
 
-        let fetchResult = PHAsset.fetchAssets(with: options)
+        // Scope-aware enumeration: when a membership map is provided
+        // (`.selectedAlbums(...)` mode), fetch only those localIds
+        // rather than walking the full library. The fetch is via
+        // `withLocalIdentifiers` so PhotoKit returns a `PHFetchResult`
+        // we can sort + cap consistently with the full-library path.
+        let fetchResult: PHFetchResult<PHAsset>
+        if let membership {
+            if membership.localIds.isEmpty {
+                // Empty selection (or every selected album was deleted
+                // since the user picked it). Short-circuit: no assets to
+                // hash, no edits to retire, nothing to observe. The
+                // engine will still produce zero candidates correctly.
+                return HashBatchResult.empty
+            }
+            fetchResult = PHAsset.fetchAssets(
+                withLocalIdentifiers: Array(membership.localIds),
+                options: options
+            )
+        } else {
+            fetchResult = PHAsset.fetchAssets(with: options)
+        }
         var assets: [PHAsset] = []
         assets.reserveCapacity(fetchResult.count)
         fetchResult.enumerateObjects { asset, _, _ in assets.append(asset) }
@@ -1885,6 +2044,8 @@ public final class PhotoKitPersistentChangeReconciler {
         var deferredEmpty: Int = 0
         var aboveHardCeiling: Int = 0
         var aboveHardCeilingBytes: Int64 = 0
+
+        static let empty = HashBatchResult()
     }
 
     // MARK: - Orphan cleanup
