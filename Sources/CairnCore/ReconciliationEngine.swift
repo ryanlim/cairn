@@ -52,6 +52,17 @@ public struct ReconciliationInput: Sendable {
     /// full-library mode.
     public let selectedAlbumScope: Set<String>?
 
+    /// When the user excluded each checksum. Used to detect "recycled"
+    /// exclusions: an excluded checksum whose `confirmedDeletedAt`
+    /// post-dates its `addedAt` means the user added the photo back to
+    /// the phone after restoring, then deleted it again — overriding
+    /// their original "preserve on Immich" intent. The engine routes
+    /// these into `recycledExclusionCandidates` for explicit user
+    /// review rather than silently keeping them excluded. `nil` (the
+    /// default) disables detection — every excluded checksum stays
+    /// excluded regardless of new confirmed-delete signals.
+    public let excludedAtByChecksum: [Checksum: Date]?
+
     public init(
         serverAssets: [ServerAsset],
         currentLocalChecksums: Set<Checksum>,
@@ -62,7 +73,8 @@ public struct ReconciliationInput: Sendable {
         quarantineDays: Int = 14,
         strictness: DeletionStrictness = .trusting,
         everSeenAlbumTags: [Checksum: Set<String>]? = nil,
-        selectedAlbumScope: Set<String>? = nil
+        selectedAlbumScope: Set<String>? = nil,
+        excludedAtByChecksum: [Checksum: Date]? = nil
     ) {
         self.serverAssets = serverAssets
         self.currentLocalChecksums = currentLocalChecksums
@@ -74,6 +86,7 @@ public struct ReconciliationInput: Sendable {
         self.strictness = strictness
         self.everSeenAlbumTags = everSeenAlbumTags
         self.selectedAlbumScope = selectedAlbumScope
+        self.excludedAtByChecksum = excludedAtByChecksum
     }
 }
 
@@ -105,6 +118,16 @@ public struct ReconciliationOutput: Sendable, Equatable {
     /// holdbacks so the UI can render "eligible in N days" instead of a
     /// generic "pending" label.
     public let heldByQuarantineCandidates: [ServerAsset]
+    /// Excluded checksums the user appears to have re-deleted on the
+    /// phone after restoring them via cairn — `confirmedDeletedAt`
+    /// post-dates the exclusion's `addedAt`. Surfaced for explicit user
+    /// review (Status banner → PendingReview) rather than silently
+    /// trashed: the user originally said "preserve on Immich," and that
+    /// preference shouldn't be reversed without confirmation. Approving
+    /// here clears the exclusion and proceeds to trash; dismissing
+    /// keeps the exclusion (and stamps a fresh `addedAt` so the same
+    /// signal doesn't re-fire next sync).
+    public let recycledExclusionCandidates: [ServerAsset]
 
     public init(
         deleteCandidates: [ServerAsset],
@@ -112,7 +135,8 @@ public struct ReconciliationOutput: Sendable, Equatable {
         assetsInEverSeen: Int,
         excludedCandidateCount: Int = 0,
         pendingReviewCandidates: [ServerAsset] = [],
-        heldByQuarantineCandidates: [ServerAsset] = []
+        heldByQuarantineCandidates: [ServerAsset] = [],
+        recycledExclusionCandidates: [ServerAsset] = []
     ) {
         self.deleteCandidates = deleteCandidates
         self.newlyObservedChecksums = newlyObservedChecksums
@@ -120,6 +144,7 @@ public struct ReconciliationOutput: Sendable, Equatable {
         self.excludedCandidateCount = excludedCandidateCount
         self.pendingReviewCandidates = pendingReviewCandidates
         self.heldByQuarantineCandidates = heldByQuarantineCandidates
+        self.recycledExclusionCandidates = recycledExclusionCandidates
     }
 
     /// Move every `deleteCandidate` into `pendingReviewCandidates`. Used
@@ -137,7 +162,8 @@ public struct ReconciliationOutput: Sendable, Equatable {
             assetsInEverSeen: assetsInEverSeen,
             excludedCandidateCount: excludedCandidateCount,
             pendingReviewCandidates: deleteCandidates + pendingReviewCandidates,
-            heldByQuarantineCandidates: heldByQuarantineCandidates
+            heldByQuarantineCandidates: heldByQuarantineCandidates,
+            recycledExclusionCandidates: recycledExclusionCandidates
         )
     }
 }
@@ -185,9 +211,35 @@ public enum ReconciliationEngine {
                 && !input.currentLocalChecksums.contains(asset.checksum)
         }
 
-        // Pass 2: drop excluded checksums.
+        // Pass 2a: detect "recycled" exclusions — checksums the user
+        // excluded (typically via "restore via cairn" → auto-exclude),
+        // but which a later confirmed-delete signal post-dates. The
+        // user effectively re-cycled the photo: restored, re-added to
+        // the phone, then deleted again. Their original "preserve on
+        // Immich" preference is contradicted by the new explicit
+        // delete; surface for review rather than silently keeping
+        // the exclusion.
+        let recycledChecksums: Set<Checksum>
+        if let excludedAt = input.excludedAtByChecksum {
+            var recycled = Set<Checksum>()
+            for ck in input.excludedChecksums {
+                guard let added = excludedAt[ck],
+                      let confirmed = input.confirmedDeletedAt[ck],
+                      confirmed > added else { continue }
+                recycled.insert(ck)
+            }
+            recycledChecksums = recycled
+        } else {
+            recycledChecksums = []
+        }
+
+        let recycledCandidates = wouldBeCandidates.filter { recycledChecksums.contains($0.checksum) }
+
+        // Pass 2b: drop excluded checksums (including the recycled
+        // ones — those flow into their own bucket and aren't
+        // double-counted in delete/pending pipelines).
         let postExclusion = wouldBeCandidates.filter { !input.excludedChecksums.contains($0.checksum) }
-        let excludedCount = wouldBeCandidates.count - postExclusion.count
+        let excludedCount = wouldBeCandidates.count - postExclusion.count - recycledCandidates.count
 
         // Pass 3: partition the confirmed-deleted map into in-quarantine vs
         // past-quarantine. `quarantineDays <= 0` collapses everything to
@@ -247,7 +299,8 @@ public enum ReconciliationEngine {
             assetsInEverSeen: inEverSeen,
             excludedCandidateCount: excludedCount,
             pendingReviewCandidates: pending,
-            heldByQuarantineCandidates: held
+            heldByQuarantineCandidates: held,
+            recycledExclusionCandidates: recycledCandidates
         )
     }
 }

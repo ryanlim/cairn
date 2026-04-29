@@ -377,8 +377,17 @@ public struct CairnAppRoot: View {
                 // them here double-counts every held item, which
                 // surfaced as "Pending review: 2" on Status while
                 // the screen itself shows 1. Use the superset
-                // alone.
-                pendingReviewCount: model.reconciliation?.pendingReviewCandidates.count ?? 0,
+                // alone, plus recycled-exclusion candidates which
+                // are routed into pending review separately (see
+                // `case .pendingReview` below).
+                pendingReviewCount: {
+                    let r = model.reconciliation
+                    let pending = r?.pendingReviewCandidates ?? []
+                    let pendingChecksums = Set(pending.map(\.checksum))
+                    let recycledExtra = (r?.recycledExclusionCandidates ?? [])
+                        .filter { !pendingChecksums.contains($0.checksum) }
+                    return pending.count + recycledExtra.count
+                }(),
                 quarantineCount: quarantineCountForStatus,
                 earliestQuarantineEligible: earliestQuarantineEligible,
                 deletionBacklog: backlogCount,
@@ -598,8 +607,20 @@ public struct CairnAppRoot: View {
         case .pendingReview:
             let heldAssets = model.reconciliation?.heldByQuarantineCandidates ?? []
             let heldChecksumSet = Set(heldAssets.map(\.checksum))
-            let unconfirmedAssets = (model.reconciliation?.pendingReviewCandidates ?? [])
+            // Recycled-exclusion candidates fold into the unconfirmed
+            // bucket: the user previously excluded these (typically via
+            // restore-via-cairn auto-exclude) but a fresh confirmed-
+            // delete signal post-dates the exclusion. Surfacing them in
+            // the standard review flow lets the user trash (which
+            // clears the exclusion automatically — see
+            // AppDependencies.approvePending) or re-exclude (which
+            // bumps `addedAt`, breaking the cycle-detection condition).
+            let recycled = model.reconciliation?.recycledExclusionCandidates ?? []
+            let unconfirmedFromEngine = (model.reconciliation?.pendingReviewCandidates ?? [])
                 .filter { !heldChecksumSet.contains($0.checksum) }
+            let unconfirmedSet = Set(unconfirmedFromEngine.map(\.checksum))
+            let unconfirmedAssets = unconfirmedFromEngine
+                + recycled.filter { !heldChecksumSet.contains($0.checksum) && !unconfirmedSet.contains($0.checksum) }
             PendingReviewScreen(
                 heldAssets: heldAssets,
                 unconfirmedAssets: unconfirmedAssets,

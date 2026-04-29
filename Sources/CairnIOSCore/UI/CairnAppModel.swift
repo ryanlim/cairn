@@ -133,6 +133,13 @@ public final class CairnAppModel {
         /// that one is a narrower orphan-only map used by
         /// `approvePending` for metadata cleanup.
         public let sourceLocalIdentifiersByChecksum: [Checksum: String]
+        /// Server assets the user excluded (typically via "restore via
+        /// cairn" auto-exclusion) that have a fresh confirmed-delete
+        /// stamp post-dating the exclusion. Surfaced for explicit
+        /// review — approving here clears the exclusion and trashes;
+        /// dismissing keeps the exclusion. Empty when there are no
+        /// recycled exclusions to review.
+        public let recycledExclusionCandidates: [ServerAsset]
 
         public init(
             deleteCandidates: [ServerAsset],
@@ -143,7 +150,8 @@ public final class CairnAppModel {
             computedAt: Date = Date(),
             inferredOrphanLocalIdentifiers: [Checksum: String] = [:],
             firstObservedAnchors: Set<Checksum> = [],
-            sourceLocalIdentifiersByChecksum: [Checksum: String] = [:]
+            sourceLocalIdentifiersByChecksum: [Checksum: String] = [:],
+            recycledExclusionCandidates: [ServerAsset] = []
         ) {
             self.deleteCandidates = deleteCandidates
             self.pendingReviewCandidates = pendingReviewCandidates
@@ -154,6 +162,7 @@ public final class CairnAppModel {
             self.inferredOrphanLocalIdentifiers = inferredOrphanLocalIdentifiers
             self.firstObservedAnchors = firstObservedAnchors
             self.sourceLocalIdentifiersByChecksum = sourceLocalIdentifiersByChecksum
+            self.recycledExclusionCandidates = recycledExclusionCandidates
         }
     }
 

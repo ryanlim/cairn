@@ -551,4 +551,127 @@ struct ReconciliationEngineTests {
         ))
         #expect(output.deleteCandidates.isEmpty)
     }
+
+    // MARK: - Recycled exclusions
+
+    @Test("recycled exclusion: excluded checksum with later confirmedDeletedAt routes to recycledExclusionCandidates")
+    func recycledExclusionRoutesToBucket() {
+        // User excluded "B" at T=10; later (T=20) PhotoKit confirmed
+        // "B" was deleted again. The user's original "preserve on
+        // Immich" intent has been contradicted by the new explicit
+        // delete; surface for review rather than silently keeping.
+        let excludedAt: [Checksum: Date] = [
+            Checksum(base64: "B"): Date(timeIntervalSince1970: 10),
+        ]
+        let confirmedAt: [Checksum: Date] = [
+            Checksum(base64: "B"): Date(timeIntervalSince1970: 20),
+        ]
+        let output = ReconciliationEngine.compute(.init(
+            serverAssets: [asset("s1", "A"), asset("s2", "B")],
+            currentLocalChecksums: [],
+            everSeenChecksums: checksums("A", "B"),
+            excludedChecksums: checksums("B"),
+            confirmedDeletedAt: confirmedAt,
+            now: Date(timeIntervalSince1970: 1_000_000),
+            quarantineDays: 0,
+            excludedAtByChecksum: excludedAt
+        ))
+        #expect(output.recycledExclusionCandidates.map(\.id) == ["s2"])
+        #expect(output.deleteCandidates.map(\.id) == ["s1"])
+        // Recycled aren't double-counted in the excluded count —
+        // they're being surfaced, not silently filtered.
+        #expect(output.excludedCandidateCount == 0)
+    }
+
+    @Test("recycled exclusion: confirmed-delete predates exclusion → stays excluded, not recycled")
+    func notRecycledIfConfirmedBeforeExcluded() {
+        // User deleted "B", saw it as a confirmed-delete signal at T=10,
+        // restored via cairn (which inserts the exclusion at T=20).
+        // The exclusion is newer than the confirm — original intent
+        // intact, no cycle to surface.
+        let excludedAt: [Checksum: Date] = [
+            Checksum(base64: "B"): Date(timeIntervalSince1970: 20),
+        ]
+        let confirmedAt: [Checksum: Date] = [
+            Checksum(base64: "B"): Date(timeIntervalSince1970: 10),
+        ]
+        let output = ReconciliationEngine.compute(.init(
+            serverAssets: [asset("s2", "B")],
+            currentLocalChecksums: [],
+            everSeenChecksums: checksums("B"),
+            excludedChecksums: checksums("B"),
+            confirmedDeletedAt: confirmedAt,
+            now: Date(timeIntervalSince1970: 1_000_000),
+            quarantineDays: 0,
+            excludedAtByChecksum: excludedAt
+        ))
+        #expect(output.recycledExclusionCandidates.isEmpty)
+        #expect(output.deleteCandidates.isEmpty)
+        #expect(output.excludedCandidateCount == 1)
+    }
+
+    @Test("recycled exclusion: nil excludedAtByChecksum disables detection (legacy callers preserved)")
+    func nilExcludedAtDisablesRecycling() {
+        let confirmedAt: [Checksum: Date] = [
+            Checksum(base64: "B"): Date(timeIntervalSince1970: 20),
+        ]
+        let output = ReconciliationEngine.compute(.init(
+            serverAssets: [asset("s2", "B")],
+            currentLocalChecksums: [],
+            everSeenChecksums: checksums("B"),
+            excludedChecksums: checksums("B"),
+            confirmedDeletedAt: confirmedAt,
+            now: Date(timeIntervalSince1970: 1_000_000),
+            quarantineDays: 0,
+            excludedAtByChecksum: nil
+        ))
+        #expect(output.recycledExclusionCandidates.isEmpty)
+        #expect(output.excludedCandidateCount == 1)
+    }
+
+    @Test("recycled exclusion: missing confirmedDeletedAt entry → not recycled (never re-deleted)")
+    func notRecycledWithoutConfirmDelete() {
+        let excludedAt: [Checksum: Date] = [
+            Checksum(base64: "B"): Date(timeIntervalSince1970: 10),
+        ]
+        let output = ReconciliationEngine.compute(.init(
+            serverAssets: [asset("s2", "B")],
+            currentLocalChecksums: [],
+            everSeenChecksums: checksums("B"),
+            excludedChecksums: checksums("B"),
+            confirmedDeletedAt: [:],
+            now: Date(timeIntervalSince1970: 1_000_000),
+            quarantineDays: 0,
+            excludedAtByChecksum: excludedAt
+        ))
+        #expect(output.recycledExclusionCandidates.isEmpty)
+        #expect(output.excludedCandidateCount == 1)
+    }
+
+    @Test("recycled exclusion: partial — some excluded re-deleted, others not")
+    func recycledPartial() {
+        // B is recycled (excluded then re-deleted); C stays excluded
+        // (confirm predates the exclusion); D is a normal candidate.
+        let excludedAt: [Checksum: Date] = [
+            Checksum(base64: "B"): Date(timeIntervalSince1970: 10),
+            Checksum(base64: "C"): Date(timeIntervalSince1970: 50),
+        ]
+        let confirmedAt: [Checksum: Date] = [
+            Checksum(base64: "B"): Date(timeIntervalSince1970: 20),
+            Checksum(base64: "C"): Date(timeIntervalSince1970: 30),
+        ]
+        let output = ReconciliationEngine.compute(.init(
+            serverAssets: [asset("sB", "B"), asset("sC", "C"), asset("sD", "D")],
+            currentLocalChecksums: [],
+            everSeenChecksums: checksums("B", "C", "D"),
+            excludedChecksums: checksums("B", "C"),
+            confirmedDeletedAt: confirmedAt,
+            now: Date(timeIntervalSince1970: 1_000_000),
+            quarantineDays: 0,
+            excludedAtByChecksum: excludedAt
+        ))
+        #expect(output.recycledExclusionCandidates.map(\.id) == ["sB"])
+        #expect(output.deleteCandidates.map(\.id) == ["sD"])
+        #expect(output.excludedCandidateCount == 1) // C stays filtered
+    }
 }

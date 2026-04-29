@@ -802,7 +802,9 @@ final class AppDependencies {
 
         let t2 = Date()
         let everSeenSet = try await everSeen.snapshot()
-        let exclusionSet = Set(try await exclusions.snapshot().keys)
+        let exclusionSnapshot = try await exclusions.snapshot()
+        let exclusionSet = Set(exclusionSnapshot.keys)
+        let exclusionAddedAt = exclusionSnapshot.mapValues(\.addedAt)
         let confirmedMap = try await confirmed.snapshot()
 
         // Edit-retirement: union the firstObserved SHA1s for every
@@ -908,7 +910,8 @@ final class AppDependencies {
             quarantineDays: settings.quarantineDays,
             strictness: effectiveStrictness,
             everSeenAlbumTags: everSeenAlbumTags,
-            selectedAlbumScope: selectedAlbumScope
+            selectedAlbumScope: selectedAlbumScope,
+            excludedAtByChecksum: exclusionAddedAt
         ))
 
         // Token-expiry safety gate. A full re-enumeration triggered by an
@@ -1026,7 +1029,8 @@ final class AppDependencies {
             quarantineDays: settings.quarantineDays,
             inferredOrphanLocalIdentifiers: inferredOrphanLocalIds,
             firstObservedAnchors: editRetirementHeld,
-            sourceLocalIdentifiersByChecksum: mergedSourceIds
+            sourceLocalIdentifiersByChecksum: mergedSourceIds,
+            recycledExclusionCandidates: result.recycledExclusionCandidates
         )
         model.library = liveLibrary
         model.lastScanBurstCount = burst
@@ -1915,7 +1919,8 @@ final class AppDependencies {
                                 computedAt: existing.computedAt,
                                 inferredOrphanLocalIdentifiers: existing.inferredOrphanLocalIdentifiers.filter { !cks.contains($0.key) },
                                 firstObservedAnchors: existing.firstObservedAnchors,
-                                sourceLocalIdentifiersByChecksum: existing.sourceLocalIdentifiersByChecksum.filter { !cks.contains($0.key) }
+                                sourceLocalIdentifiersByChecksum: existing.sourceLocalIdentifiersByChecksum.filter { !cks.contains($0.key) },
+                                recycledExclusionCandidates: existing.recycledExclusionCandidates.filter { !cks.contains($0.checksum) }
                             )
                             if restoredServerCount > 0 {
                                 let current = self.model.library
@@ -1985,8 +1990,19 @@ final class AppDependencies {
                       let journal = await self.journal,
                       let live = await self.model.reconciliation else { return }
                 let wanted = Set(checksums)
-                let candidates = (live.pendingReviewCandidates + live.heldByQuarantineCandidates)
-                    .filter { wanted.contains($0.checksum.base64) }
+                // Recycled-exclusion candidates flow through the same
+                // approve path so the user can trash them inline; the
+                // exclusion is cleared post-trash below. heldBy- is
+                // already a subset of pendingReview, but recycled is
+                // a disjoint bucket — include it explicitly.
+                let candidatePool = live.pendingReviewCandidates
+                    + live.heldByQuarantineCandidates
+                    + live.recycledExclusionCandidates
+                var seen = Set<String>()
+                let candidates = candidatePool.filter { asset in
+                    guard wanted.contains(asset.checksum.base64) else { return false }
+                    return seen.insert(asset.id).inserted
+                }
                 guard !candidates.isEmpty else { return }
                 // Capture the orphan→localId mapping for the candidates
                 // we're about to trash. After a successful trash the
@@ -2011,6 +2027,34 @@ final class AppDependencies {
                     }
                     let cks = Set(wanted.map { Checksum(base64: $0) })
                     try? await self.deletionSourceStore?.remove(cks)
+                    // Idempotent exclusion cleanup. Approving a recycled-
+                    // exclusion candidate (excluded earlier — typically
+                    // via restore-via-cairn — and re-deleted on the
+                    // phone) needs its exclusion entry removed so the
+                    // checksum can flow through future syncs as a normal
+                    // candidate. For non-excluded approved checksums
+                    // this is a no-op. Mirrors `restore`'s symmetric
+                    // exclusion *insert* in spirit: actions that contradict
+                    // a prior exclusion clear it here.
+                    if let exclusions = await self.exclusionStore {
+                        let preExclusionSet = (try? await exclusions.snapshot()) ?? [:]
+                        let cleared = cks.intersection(preExclusionSet.keys)
+                        if !cleared.isEmpty {
+                            try? await exclusions.remove(cleared)
+                            await self.refreshExcludedChecksums()
+                            // Forensic trail so the journal records why
+                            // the exclusions were cleared. Reuses the
+                            // approve run's runId for grouping.
+                            try? await journal.append(.init(
+                                timestamp: Date(),
+                                runId: runId,
+                                event: .assetsExcluded(
+                                    checksums: cleared.map(\.base64),
+                                    fromRunId: runId
+                                )
+                            ))
+                        }
+                    }
                     await MainActor.run {
                         guard let existing = self.model.reconciliation else { return }
                         let prunedOrphanMap = existing.inferredOrphanLocalIdentifiers
@@ -2026,7 +2070,8 @@ final class AppDependencies {
                             computedAt: existing.computedAt,
                             inferredOrphanLocalIdentifiers: prunedOrphanMap,
                             firstObservedAnchors: existing.firstObservedAnchors,
-                            sourceLocalIdentifiersByChecksum: prunedSourceIds
+                            sourceLocalIdentifiersByChecksum: prunedSourceIds,
+                            recycledExclusionCandidates: existing.recycledExclusionCandidates.filter { !wanted.contains($0.checksum.base64) }
                         )
                         self.model.inferredOrphanCount = prunedOrphanMap.count
                         if trashedCount > 0 {
@@ -2097,7 +2142,8 @@ final class AppDependencies {
                             computedAt: existing.computedAt,
                             inferredOrphanLocalIdentifiers: prunedOrphanMap,
                             firstObservedAnchors: existing.firstObservedAnchors,
-                            sourceLocalIdentifiersByChecksum: prunedSourceIds
+                            sourceLocalIdentifiersByChecksum: prunedSourceIds,
+                            recycledExclusionCandidates: existing.recycledExclusionCandidates.filter { !cks.contains($0.checksum) }
                         )
                         self.model.inferredOrphanCount = prunedOrphanMap.count
                     }
@@ -2162,7 +2208,8 @@ final class AppDependencies {
                             computedAt: existing.computedAt,
                             inferredOrphanLocalIdentifiers: prunedOrphanMap,
                             firstObservedAnchors: existing.firstObservedAnchors,
-                            sourceLocalIdentifiersByChecksum: prunedSourceIds
+                            sourceLocalIdentifiersByChecksum: prunedSourceIds,
+                            recycledExclusionCandidates: existing.recycledExclusionCandidates.filter { !cks.contains($0.checksum) }
                         )
                         self.model.inferredOrphanCount = prunedOrphanMap.count
                     }
@@ -2356,7 +2403,8 @@ final class AppDependencies {
                             computedAt: existing.computedAt,
                             inferredOrphanLocalIdentifiers: prunedOrphanMap,
                             firstObservedAnchors: existing.firstObservedAnchors,
-                            sourceLocalIdentifiersByChecksum: prunedSourceIds
+                            sourceLocalIdentifiersByChecksum: prunedSourceIds,
+                            recycledExclusionCandidates: existing.recycledExclusionCandidates.filter { !cks.contains($0.checksum) }
                         )
                         self.model.inferredOrphanCount = prunedOrphanMap.count
                         self.model.lastScanBurstCount = 0
