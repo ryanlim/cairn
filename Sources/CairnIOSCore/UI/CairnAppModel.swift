@@ -553,7 +553,21 @@ public struct CairnAppActions: Sendable {
     /// Bool because the wizard renders different copy for `.limited`
     /// and the engine layer applies a safety guard when the user picks
     /// limited Selected Photos.
+    ///
+    /// Also handles the "user previously denied" case: PhotoKit's
+    /// `requestAuthorization` won't re-prompt for `.denied` /
+    /// `.restricted`, so this closure deep-links to iOS Settings via
+    /// `UIApplication.openSettingsURLString` instead. The user grants
+    /// (or doesn't) in Settings and `currentPhotoAuthStatus` re-polls
+    /// when the app foregrounds.
     public var requestPhotosAccess: @Sendable () async -> SetupScreen.PhotoAuthOutcome
+
+    /// Read the current Photos auth status without showing any prompt.
+    /// Returns `nil` for `.notDetermined` (the user hasn't been asked
+    /// yet) and a concrete outcome otherwise. Used by the Photos
+    /// onboarding step to pre-fill state on appear and to re-check
+    /// after the user returns from iOS Settings.
+    public var currentPhotoAuthStatus: @Sendable () async -> SetupScreen.PhotoAuthOutcome?
 
     /// Setup wizard step: request Background App Refresh.
     public var requestBackgroundRefresh: @Sendable () async -> Bool
@@ -635,6 +649,7 @@ public struct CairnAppActions: Sendable {
         },
         retryConnection: @escaping @Sendable () async -> Void = {},
         requestPhotosAccess: @escaping @Sendable () async -> SetupScreen.PhotoAuthOutcome = { .full },
+        currentPhotoAuthStatus: @escaping @Sendable () async -> SetupScreen.PhotoAuthOutcome? = { nil },
         requestBackgroundRefresh: @escaping @Sendable () async -> Bool = { true },
         resetIndex: @escaping @Sendable () async -> Void = {},
         clearJournal: @escaping @Sendable () async -> Void = {},
@@ -662,6 +677,7 @@ public struct CairnAppActions: Sendable {
         self.verifyServer = verifyServer
         self.retryConnection = retryConnection
         self.requestPhotosAccess = requestPhotosAccess
+        self.currentPhotoAuthStatus = currentPhotoAuthStatus
         self.requestBackgroundRefresh = requestBackgroundRefresh
         self.resetIndex = resetIndex
         self.clearJournal = clearJournal

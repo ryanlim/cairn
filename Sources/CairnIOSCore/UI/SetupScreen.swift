@@ -104,6 +104,11 @@ public struct SetupScreen: View {
 
     public let onVerifyServer: @Sendable (String, String) async -> ServerVerifyResult
     public let onRequestPhotosAccess: @Sendable () async -> PhotoAuthOutcome
+    /// Read current Photos auth status without prompting. Used to
+    /// pre-fill the photos step on appear and to re-poll after the
+    /// user grants in iOS Settings and returns to the app. Returns
+    /// `nil` for `.notDetermined` (no decision yet).
+    public let onPollPhotoAuthStatus: @Sendable () async -> PhotoAuthOutcome?
     public let onRequestBackgroundRefresh: @Sendable () async -> Bool
     public let onComplete: () -> Void
 
@@ -117,6 +122,7 @@ public struct SetupScreen: View {
         settings: Binding<CairnSettings>,
         onVerifyServer: @escaping @Sendable (String, String) async -> ServerVerifyResult,
         onRequestPhotosAccess: @escaping @Sendable () async -> PhotoAuthOutcome,
+        onPollPhotoAuthStatus: @escaping @Sendable () async -> PhotoAuthOutcome? = { nil },
         onRequestBackgroundRefresh: @escaping @Sendable () async -> Bool,
         onComplete: @escaping () -> Void,
         initialStep: Step = .welcome
@@ -126,6 +132,7 @@ public struct SetupScreen: View {
         self._settings = settings
         self.onVerifyServer = onVerifyServer
         self.onRequestPhotosAccess = onRequestPhotosAccess
+        self.onPollPhotoAuthStatus = onPollPhotoAuthStatus
         self.onRequestBackgroundRefresh = onRequestBackgroundRefresh
         self.onComplete = onComplete
         self.initialStep = initialStep
@@ -135,6 +142,7 @@ public struct SetupScreen: View {
 
     @Environment(\.cairnTokens) private var t
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
     @State private var step: Step = .welcome
 
     // Server step
@@ -437,8 +445,14 @@ public struct SetupScreen: View {
                     }
                 }
             case .denied, .none:
+                // When status is already `.denied`, the system won't
+                // re-prompt — the request closure will deep-link to
+                // iOS Settings instead. Reflect that in the button copy
+                // so the user knows what's about to happen.
                 primaryButton(
-                    title: photosRequesting ? "Requesting…" : "Allow Photos access",
+                    title: photosRequesting
+                        ? "Requesting…"
+                        : (photoAuth == .denied ? "Open Photos in iOS Settings" : "Allow Photos access"),
                     tone: .primary,
                     disabled: photosRequesting,
                     action: requestPhotos
@@ -447,7 +461,7 @@ public struct SetupScreen: View {
                     Callout(.pending, icon: "exclamationmark.triangle") {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("Access not granted.").fontWeight(.semibold)
-                            (Text.cairnWord + Text(" needs at least limited Photos access to find deleted photos. Open iOS Settings → ") + Text.cairnWord + Text(" → Photos to grant access."))
+                            (Text.cairnWord + Text(" needs at least limited Photos access to find deleted photos. Tap above to open iOS Settings and grant access — this screen will update when you return."))
                                 .font(.system(size: 12.5))
                                 .lineSpacing(2)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -458,6 +472,28 @@ public struct SetupScreen: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .task(id: step) {
+            // Pre-poll the system Photos auth status when this step
+            // first appears so an existing decision (denied or
+            // already-granted) is reflected without requiring a tap.
+            // Keying the task on `step` re-runs it whenever the user
+            // navigates back to the photos step.
+            guard step == .photos else { return }
+            if let polled = await onPollPhotoAuthStatus() {
+                await MainActor.run { self.photoAuth = polled }
+            }
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            // User may have just returned from iOS Settings after
+            // granting/changing access. Re-poll so the UI catches up
+            // without a manual tap.
+            guard newPhase == .active, step == .photos else { return }
+            Task {
+                if let polled = await onPollPhotoAuthStatus() {
+                    await MainActor.run { self.photoAuth = polled }
+                }
+            }
+        }
     }
 
     private func requestPhotos() {

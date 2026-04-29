@@ -211,6 +211,9 @@ public struct CairnAppRoot: View {
             onRequestPhotosAccess: {
                 await model.actions.requestPhotosAccess()
             },
+            onPollPhotoAuthStatus: {
+                await model.actions.currentPhotoAuthStatus()
+            },
             onRequestBackgroundRefresh: {
                 await model.actions.requestBackgroundRefresh()
             },

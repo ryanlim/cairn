@@ -2248,11 +2248,38 @@ final class AppDependencies {
                 await self?.checkServerHealth()
             },
             requestPhotosAccess: {
+                // PhotoKit's `requestAuthorization` only shows the
+                // system prompt for `.notDetermined`. Once the user
+                // has denied, it returns `.denied` immediately — the
+                // user has to change the setting in iOS Settings.
+                // Pre-check status and deep-link there so the
+                // onboarding button does something useful.
+                let prior = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+                if prior == .denied || prior == .restricted {
+                    await MainActor.run {
+                        if let url = URL(string: UIApplication.openSettingsURLString) {
+                            UIApplication.shared.open(url)
+                        }
+                    }
+                    return .denied
+                }
                 let status = await PHPhotoLibrary.requestAuthorization(for: .readWrite)
                 switch status {
                 case .authorized: return .full
                 case .limited:    return .limited
                 default:          return .denied
+                }
+            },
+            currentPhotoAuthStatus: {
+                // No prompt — pure read. SetupScreen calls this on
+                // step appear and on app foreground to reflect the
+                // user's actual decision (or lack of one).
+                let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+                switch status {
+                case .notDetermined: return nil
+                case .authorized:    return .full
+                case .limited:       return .limited
+                default:             return .denied
                 }
             },
             requestBackgroundRefresh: {
