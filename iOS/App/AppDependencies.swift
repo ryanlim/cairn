@@ -2036,9 +2036,13 @@ final class AppDependencies {
                         if let identity {
                             try? secrets.setUserIdentity(id: identity.id, email: identity.email)
                         }
+                        let priorPartitionKey = await MainActor.run { self.currentPartitionKey }
                         try? await MainActor.run {
                             try self.activateServer(url: url, apiKey: key, userId: identity?.id)
                         }
+                        let newPartitionKey = await MainActor.run { self.currentPartitionKey }
+                        let partitionChanged = priorPartitionKey != newPartitionKey
+
                         let serverCount = assets.filter { !$0.isTrashed }.count
                         await MainActor.run {
                             self.model.serverHost = url.host() ?? url.absoluteString
@@ -2046,6 +2050,28 @@ final class AppDependencies {
                             self.model.apiKey = key
                             self.model.apiKeyMasked = AppDependencies.mask(key)
                             self.model.library = self.model.library.with(server: serverCount)
+
+                            // When the user verifies into a *different*
+                            // partition (typically: same URL, different
+                            // user account on a re-onboard or replay-
+                            // onboarding flow), the model still holds the
+                            // prior partition's runs / journal / indexed
+                            // / reconciliation / etc. Clear the transient
+                            // bits that don't have a refresh helper so
+                            // the post-onboarding UI doesn't render
+                            // Account A's data while standing on Account
+                            // B's stores. Refresh helpers below repopulate
+                            // the rest from the newly-activated partition.
+                            if partitionChanged {
+                                self.model.reconciliation = nil
+                                self.model.lastScanBurstCount = 0
+                                self.model.inferredOrphanCount = 0
+                                self.model.lastScanWasTokenExpiryFullEnum = false
+                                self.model.restoredAfterCairnTrash = [:]
+                                self.model.lastCheckedAt = nil
+                                self.model.lastError = nil
+                                self.serverChecksumSet = nil
+                            }
                         }
 
                         if let tokenStore = await self.tokenStore {
@@ -2053,6 +2079,12 @@ final class AppDependencies {
                             await MainActor.run { self.model.hasCompletedInitialScan = tokenExists }
                         }
                         await self.refreshExcludedChecksums()
+                        if partitionChanged {
+                            await self.refreshQuarantineCount()
+                            await self.refreshJournalTail()
+                            await self.refreshRunsList()
+                            await self.refreshLibrarySizeStats()
+                        }
 
                         await MainActor.run {
                             self.rewireActions()
