@@ -1220,37 +1220,43 @@ final class AppDependencies {
             totalVisible = n
         }
 
-        // "Indexed" is the intersection of LocalHashStore (global,
-        // shared across accounts on this device) with this account's
-        // EverSeenStore — and, when scope is restricted, additionally
-        // intersected with the SHA1 set backing in-scope localIds. The
-        // plain LocalHashStore count would double-display photos cairn
-        // cached for OTHER accounts on the same device, and the
-        // unscoped intersection would inflate to "everything cairn has
-        // ever observed on this account" even when the user has
-        // limited cairn's purview to a small album set.
+        // "Indexed" counts **PHAssets** (localIdentifiers), not raw
+        // SHA1 checksums. A Live Photo is one PHAsset that produces
+        // two SHA1s (still + paired motion), and counting checksums
+        // would double-count those rows; counting PHAssets matches
+        // the "On iPhone" stat unit-for-unit so they're directly
+        // comparable.
+        //
+        // Per-account scoping: LocalHashStore is global (content-
+        // addressed cache shared across accounts on this device).
+        // The per-account filter is "this localId's checksums
+        // intersect the active account's EverSeen" — that excludes
+        // localIds cached for OTHER accounts whose checksums never
+        // entered this account's view. Without it the count would
+        // inflate when a user switches accounts on the same device.
+        //
+        // Per-scope filter: when scope is restricted to selected
+        // albums, additionally require the localId to be in the
+        // scope membership map. Out-of-scope localIds drop out.
         //
         // When EverSeen is unavailable (server not yet activated,
-        // identity not yet cached, or transient SwiftData hiccup), we
+        // identity not yet cached, or transient SwiftData hiccup),
         // surface `indexedKnown: false` so the UI shows "—" instead
-        // of a stale count. Falling back to the global LocalHashStore
-        // count would inflate the number with photos cached for prior
-        // accounts on this device — which is exactly the "huh, why
-        // does cairn already know about all my photos on this fresh
-        // account" UX bug we're trying to avoid.
+        // of a stale count.
         if let everSeen = self.everSeenStore,
-           let cached = try? await self.localHashStore.allChecksums(),
+           let entries = try? await self.localHashStore.snapshot(),
            let observed = try? await everSeen.snapshot() {
-            var indexed = cached.intersection(observed)
-            if let membership {
-                let scopeChecksumMap = (try? await self.localHashStore.entries(forIdentifiers: membership.localIds)) ?? [:]
-                var inScopeChecksums: Set<Checksum> = []
-                for (_, entry) in scopeChecksumMap {
-                    inScopeChecksums.formUnion(entry.checksums)
-                }
-                indexed.formIntersection(inScopeChecksums)
+            var indexedAssets = 0
+            for (localId, checksums) in entries {
+                // Per-account filter — at least one of this localId's
+                // checksums must be in the active account's EverSeen.
+                guard !checksums.intersection(observed).isEmpty else { continue }
+                // Per-scope filter — when restricted, require the
+                // localId to belong to a selected album.
+                if let membership, !membership.localIds.contains(localId) { continue }
+                indexedAssets += 1
             }
-            model.library = model.library.with(local: totalVisible, indexed: indexed.count, indexedKnown: true)
+            model.library = model.library.with(local: totalVisible, indexed: indexedAssets, indexedKnown: true)
         } else {
             model.library = model.library.with(local: totalVisible, indexedKnown: false)
         }
