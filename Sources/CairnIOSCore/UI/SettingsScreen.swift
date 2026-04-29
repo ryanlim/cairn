@@ -40,7 +40,9 @@ public struct SettingsScreen: View {
     public let connectionStatus: ConnectionStatus
     public let onOpenExcluded: () -> Void
     public let onResetIndex: () -> Void
+    public let onResetIndexAllAccounts: () -> Void
     public let onClearJournal: () -> Void
+    public let onClearJournalAllKeys: () -> Void
     public let onSignOut: () -> Void
     public let onRescanLibrary: () -> Void
     public let deferredQueue: CairnAppModel.DeferredQueueSummary
@@ -88,7 +90,9 @@ public struct SettingsScreen: View {
         connectionStatus: ConnectionStatus,
         onOpenExcluded: @escaping () -> Void = {},
         onResetIndex: @escaping () -> Void = {},
+        onResetIndexAllAccounts: @escaping () -> Void = {},
         onClearJournal: @escaping () -> Void = {},
+        onClearJournalAllKeys: @escaping () -> Void = {},
         onSignOut: @escaping () -> Void = {},
         onRescanLibrary: @escaping () -> Void = {},
         deferredQueue: CairnAppModel.DeferredQueueSummary = .empty,
@@ -109,7 +113,9 @@ public struct SettingsScreen: View {
         self.connectionStatus = connectionStatus
         self.onOpenExcluded = onOpenExcluded
         self.onResetIndex = onResetIndex
+        self.onResetIndexAllAccounts = onResetIndexAllAccounts
         self.onClearJournal = onClearJournal
+        self.onClearJournalAllKeys = onClearJournalAllKeys
         self.onSignOut = onSignOut
         self.onRescanLibrary = onRescanLibrary
         self.deferredQueue = deferredQueue
@@ -161,10 +167,11 @@ public struct SettingsScreen: View {
             isPresented: $pendingResetIndex,
             actions: {
                 Button("Cancel", role: .cancel) {}
-                Button("Reset", role: .destructive) { onResetIndex() }
+                Button("This account", role: .destructive) { onResetIndex() }
+                Button("All accounts on this device", role: .destructive) { onResetIndexAllAccounts() }
             },
             message: {
-                Text("Clears the SHA1 cache, change-tracking baseline, ever-seen set, and quarantine state. Your exclusions and credentials are kept. The next sync re-hashes your whole library.")
+                Text("This account: clears the SHA1 cache, change-tracking baseline, ever-seen set, and quarantine state for the active Immich account. Exclusions and credentials are kept; the next sync re-hashes your library.\n\nAll accounts: also wipes every other (URL, user) partition cairn has cached on this device. Use after a shared/dev-device cleanup.")
             }
         )
         .alert(
@@ -183,10 +190,11 @@ public struct SettingsScreen: View {
             isPresented: $pendingClearJournal,
             actions: {
                 Button("Cancel", role: .cancel) {}
-                Button("Delete JSONL", role: .destructive) { onClearJournal() }
+                Button("This key", role: .destructive) { onClearJournal() }
+                Button("All keys (delete file)", role: .destructive) { onClearJournalAllKeys() }
             },
             message: {
-                Text("Deletes deletion-journal.jsonl from disk. Past runs disappear from the Runs tab and the journal tail on Status. Indexing state, exclusions, and credentials are kept.")
+                Text("This key: hides existing runs from the active API key's view. Other keys on this account still see their own history if you rotate back. The on-disk journal is preserved.\n\nAll keys: deletes deletion-journal.jsonl from disk. Past runs disappear from every key's view, permanently.")
             }
         )
         .alert(

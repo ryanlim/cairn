@@ -575,9 +575,26 @@ public struct CairnAppActions: Sendable {
     /// Settings → Danger zone. Each is a destructive op the host wires
     /// to its real teardown logic (rebuild ever-seen, delete journal,
     /// clear keychain).
-    public var resetIndex:    @Sendable () async -> Void
-    public var clearJournal:  @Sendable () async -> Void
-    public var signOut:       @Sendable () async -> Void
+    ///
+    /// `resetIndex` clears the *current* (URL, userId) partition's
+    /// engine state plus the global content-addressed caches. The
+    /// `…AllAccounts` variant additionally walks every other on-disk
+    /// partition directory and removes it, plus resets the per-key
+    /// activation map. Use the all-accounts form for "nuke everything
+    /// cairn has cached on this device" — e.g., wiping a shared
+    /// development device or the demo install.
+    ///
+    /// `clearJournal` is per-key by default: it bumps the current
+    /// API key's `activatedAt` to now in the keychain map, hiding
+    /// existing journal entries from this key's runs/journal-tail UI.
+    /// Other keys' views and the on-disk journal are preserved. The
+    /// `…AllKeys` variant is the legacy behavior — physically deletes
+    /// the journal file.
+    public var resetIndex:             @Sendable () async -> Void
+    public var resetIndexAllAccounts:  @Sendable () async -> Void
+    public var clearJournal:           @Sendable () async -> Void
+    public var clearJournalAllKeys:    @Sendable () async -> Void
+    public var signOut:                @Sendable () async -> Void
 
     /// Settings → Library. Clears the persistent-change token + the
     /// deferred-hash queue so the next sync re-enumerates the library
@@ -652,7 +669,9 @@ public struct CairnAppActions: Sendable {
         currentPhotoAuthStatus: @escaping @Sendable () async -> SetupScreen.PhotoAuthOutcome? = { nil },
         requestBackgroundRefresh: @escaping @Sendable () async -> Bool = { true },
         resetIndex: @escaping @Sendable () async -> Void = {},
+        resetIndexAllAccounts: @escaping @Sendable () async -> Void = {},
         clearJournal: @escaping @Sendable () async -> Void = {},
+        clearJournalAllKeys: @escaping @Sendable () async -> Void = {},
         signOut: @escaping @Sendable () async -> Void = {},
         rescanLibrary: @escaping @Sendable () async -> Void = {},
         persistSettings: @escaping @Sendable (CairnSettings) async -> Void = { _ in },
@@ -680,7 +699,9 @@ public struct CairnAppActions: Sendable {
         self.currentPhotoAuthStatus = currentPhotoAuthStatus
         self.requestBackgroundRefresh = requestBackgroundRefresh
         self.resetIndex = resetIndex
+        self.resetIndexAllAccounts = resetIndexAllAccounts
         self.clearJournal = clearJournal
+        self.clearJournalAllKeys = clearJournalAllKeys
         self.signOut = signOut
         self.rescanLibrary = rescanLibrary
         self.persistSettings = persistSettings

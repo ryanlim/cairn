@@ -1396,6 +1396,110 @@ final class AppDependencies {
         model.deferredQueue = .init(count: actionable, aboveCeiling: aboveCeiling, totalKnownBytes: bytes)
     }
 
+    /// Empty every backing store the index touches: per-(URL, userId)
+    /// engine state (ever-seen, confirmed-deleted, change-token, edit
+    /// retirement, deletion source, status snapshot) plus the global
+    /// content-addressed caches (local hash store, deferred queue,
+    /// metadata store). Returns aggregated failures so the caller can
+    /// surface a partial-success message rather than silently dropping
+    /// errors. Shared between `resetIndex` (this account only) and
+    /// `resetIndexAllAccounts` (which adds disk-level partition cleanup
+    /// on top).
+    @MainActor
+    fileprivate func clearCurrentPartitionStores() async -> [(label: String, error: Swift.Error)] {
+        let lh = self.localHashStore
+        let dh = self.deferredHashStore
+        let eh = self.everSeenStore
+        let cd = self.confirmedDeletedStore
+        let tk = self.tokenStore
+        let er = self.editRetirementStore
+        let ds = self.deletionSourceStore
+        let mdStore = self.localAssetMetadataStore
+        let ss = self.statusSnapshotStore
+
+        // Aggregate failures so a single store's hiccup doesn't leave
+        // the user with partial-but-silent state. The metadata store
+        // is the input to the orphan matcher; clearing the index
+        // without it would leave stale rows that could resurrect
+        // ghost orphans.
+        var ops: [(label: String, body: @Sendable () async throws -> Void)] = [
+            ("local hash cache", { try await lh.clear() }),
+            ("deferred queue", { try await dh.clear() }),
+            ("metadata store", { try await mdStore.clear() }),
+        ]
+        if let eh { ops.append(("ever-seen store", { try await eh.clear() })) }
+        if let cd { ops.append(("confirmed-deleted store", { try await cd.clear() })) }
+        if let tk { ops.append(("change-token store", { try await tk.clear() })) }
+        if let er { ops.append(("edit-retirement store", { try await er.clear() })) }
+        if let ds { ops.append(("deletion-source store", { try await ds.clear() })) }
+        if let ss { ops.append(("status snapshot store", { try await ss.clear() })) }
+        return await Self.aggregateClears(ops)
+    }
+
+    /// Reset every transient `model` field that derives from the
+    /// engine state we just cleared. Doesn't touch credentials,
+    /// settings, or excluded entries — those survive a reset by design.
+    /// Shared between `resetIndex` and `resetIndexAllAccounts`.
+    @MainActor
+    fileprivate func resetModelAfterIndexClear() {
+        self.model.reconciliation = nil
+        self.model.library = .empty
+        self.model.lastScanBurstCount = 0
+        self.model.inferredOrphanCount = 0
+        self.model.lastScanWasTokenExpiryFullEnum = false
+        self.model.restoredAfterCairnTrash = [:]
+        self.model.syncProgress = nil
+        self.model.hasCompletedInitialScan = false
+        self.model.didAutoSyncThisSession = false
+        self.model.deferredQueue = .empty
+        self.model.journalTail = []
+        self.model.runs = []
+        self.model.runAssets = [:]
+        self.model.lastCheckedAt = nil
+    }
+
+    /// Walk every per-(URL, userId) partition directory under
+    /// `Application Support/servers/` and `Documents/servers/`, remove
+    /// each one EXCEPT the current partition's. The current
+    /// partition's SwiftData container is open against those files;
+    /// deleting underneath it would crash. Caller is expected to have
+    /// already cleared the current partition's stores via
+    /// `clearCurrentPartitionStores()` so the in-memory state matches.
+    nonisolated fileprivate static func removeOtherPartitionsOnDisk(except currentKey: ServerPartitionKey?) {
+        let fm = FileManager.default
+        let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let serversDir = appSupport.appending(path: "servers")
+        let docsServersDir = documentsDirectory().appending(path: "servers")
+        let currentName = currentKey?.directoryName
+
+        // SwiftData containers and their `-shm` / `-wal` siblings live
+        // in `Application Support/servers/`. Match by name prefix so
+        // we catch all three files for each non-current partition.
+        if let entries = try? fm.contentsOfDirectory(at: serversDir, includingPropertiesForKeys: nil) {
+            for e in entries {
+                let name = e.lastPathComponent
+                if let cur = currentName,
+                   name == "\(cur).store" || name == "\(cur).store-shm" || name == "\(cur).store-wal" {
+                    continue
+                }
+                do { try fm.removeItem(at: e) } catch {
+                    syncLog.error("[cairn.reset.all] couldn't remove \(name, privacy: .public): \(String(describing: error), privacy: .public)")
+                }
+            }
+        }
+
+        // Journal directories live in `Documents/servers/<dirName>/`.
+        if let entries = try? fm.contentsOfDirectory(at: docsServersDir, includingPropertiesForKeys: nil) {
+            for e in entries {
+                let name = e.lastPathComponent
+                if let cur = currentName, name == cur { continue }
+                do { try fm.removeItem(at: e) } catch {
+                    syncLog.error("[cairn.reset.all] couldn't remove journal dir \(name, privacy: .public): \(String(describing: error), privacy: .public)")
+                }
+            }
+        }
+    }
+
     fileprivate func refreshExcludedChecksums() async {
         guard let exclusionStore else {
             await MainActor.run { self.model.excludedChecksums = [] }
@@ -2287,45 +2391,13 @@ final class AppDependencies {
             },
             resetIndex: { [weak self] in
                 guard let self else { return }
-                let (lh, dh, eh, cd, tk, er, ds, mdStore, ss) = await MainActor.run {
-                    (self.localHashStore, self.deferredHashStore, self.everSeenStore, self.confirmedDeletedStore, self.tokenStore, self.editRetirementStore, self.deletionSourceStore, self.localAssetMetadataStore, self.statusSnapshotStore)
-                }
-                // Aggregate failures so a single store's hiccup
-                // doesn't leave the user with partial-but-silent
-                // state. The metadata store is the input to the
-                // orphan matcher; clearing the index without it would
-                // leave stale rows that could resurrect ghost orphans.
-                var ops: [(label: String, body: @Sendable () async throws -> Void)] = [
-                    ("local hash cache", { try await lh.clear() }),
-                    ("deferred queue", { try await dh.clear() }),
-                    ("metadata store", { try await mdStore.clear() }),
-                ]
-                if let eh { ops.append(("ever-seen store", { try await eh.clear() })) }
-                if let cd { ops.append(("confirmed-deleted store", { try await cd.clear() })) }
-                if let tk { ops.append(("change-token store", { try await tk.clear() })) }
-                if let er { ops.append(("edit-retirement store", { try await er.clear() })) }
-                if let ds { ops.append(("deletion-source store", { try await ds.clear() })) }
-                if let ss { ops.append(("status snapshot store", { try await ss.clear() })) }
-                let failures = await Self.aggregateClears(ops)
+                let failures = await self.clearCurrentPartitionStores()
                 if !failures.isEmpty {
                     let detail = failures.map { "\($0.label): \(Self.describeSyncError($0.error))" }.joined(separator: "; ")
                     syncLog.error("[cairn.reset] partial failure: \(detail, privacy: .public)")
                 }
                 await MainActor.run {
-                    self.model.reconciliation = nil
-                    self.model.library = .empty
-                    self.model.lastScanBurstCount = 0
-                    self.model.inferredOrphanCount = 0
-                    self.model.lastScanWasTokenExpiryFullEnum = false
-                    self.model.restoredAfterCairnTrash = [:]
-                    self.model.syncProgress = nil
-                    self.model.hasCompletedInitialScan = false
-                    self.model.didAutoSyncThisSession = false
-                    self.model.deferredQueue = .empty
-                    self.model.journalTail = []
-                    self.model.runs = []
-                    self.model.runAssets = [:]
-                    self.model.lastCheckedAt = nil
+                    self.resetModelAfterIndexClear()
                     if failures.isEmpty {
                         self.showStatusToast(.indexReset)
                     } else {
@@ -2333,7 +2405,62 @@ final class AppDependencies {
                     }
                 }
             },
+            resetIndexAllAccounts: { [weak self] in
+                guard let self else { return }
+                // Step 1: clear the current partition's stores + global
+                // caches via the same path `resetIndex` uses.
+                let failures = await self.clearCurrentPartitionStores()
+                if !failures.isEmpty {
+                    let detail = failures.map { "\($0.label): \(Self.describeSyncError($0.error))" }.joined(separator: "; ")
+                    syncLog.error("[cairn.reset.all] partial failure: \(detail, privacy: .public)")
+                }
+
+                // Step 2: rm -rf every per-(URL, userId) partition dir
+                // on disk EXCEPT the current one (its container is
+                // open against those files; deleting underneath an
+                // open SwiftData container is unsafe). The current
+                // partition was already emptied via .clear() in
+                // step 1.
+                let currentKey = await MainActor.run { self.currentPartitionKey }
+                Self.removeOtherPartitionsOnDisk(except: currentKey)
+
+                // Step 3: reset the per-key activation map. After
+                // nuking everything cairn knew, the only meaningful
+                // entry is the current key starting now.
+                let key = await MainActor.run { self.model.apiKey }
+                let fp = AppDependencies.apiKeyFingerprint(key)
+                let now = Date()
+                try? secrets.setKeyActivationMap([fp: now])
+                await MainActor.run { self.currentKeyActivatedAt = now }
+
+                await MainActor.run {
+                    self.resetModelAfterIndexClear()
+                    if failures.isEmpty {
+                        self.showStatusToast(.indexReset)
+                    } else {
+                        self.model.lastError = Self.summarizeClearFailures(action: "Reset all accounts", failures)
+                    }
+                }
+            },
             clearJournal: { [weak self] in
+                guard let self else { return }
+                // Per-key: bump the current key's `activatedAt` to
+                // now in the keychain map. Existing journal entries
+                // are filtered out of this key's runs/journal-tail
+                // UI on next refresh; the on-disk journal file and
+                // other keys' activation timestamps are preserved.
+                let key = await MainActor.run { self.model.apiKey }
+                let fp = AppDependencies.apiKeyFingerprint(key)
+                var map = (try? secrets.keyActivationMap()) ?? [:]
+                let now = Date()
+                map[fp] = now
+                try? secrets.setKeyActivationMap(map)
+                await MainActor.run { self.currentKeyActivatedAt = now }
+                await self.refreshRunsList()
+                await self.refreshJournalTail()
+                await MainActor.run { self.showStatusToast(.journalCleared) }
+            },
+            clearJournalAllKeys: { [weak self] in
                 guard let self else { return }
                 let journal = await MainActor.run { self.journal }
                 var deleteError: Swift.Error?
@@ -2349,10 +2476,20 @@ final class AppDependencies {
                         if !(nsError.domain == NSCocoaErrorDomain
                              && nsError.code == NSFileNoSuchFileError) {
                             deleteError = error
-                            syncLog.error("[cairn.journal] clear failed: \(Self.describeSyncError(error), privacy: .public)")
+                            syncLog.error("[cairn.journal.all] clear failed: \(Self.describeSyncError(error), privacy: .public)")
                         }
                     }
                 }
+                // Reset the activation map: the journal file is gone,
+                // so there are no per-key views worth preserving.
+                // Seed the current key with `now` so the next entries
+                // fall under this key's view.
+                let key = await MainActor.run { self.model.apiKey }
+                let fp = AppDependencies.apiKeyFingerprint(key)
+                let now = Date()
+                try? secrets.setKeyActivationMap([fp: now])
+                await MainActor.run { self.currentKeyActivatedAt = now }
+
                 await MainActor.run {
                     if let deleteError {
                         self.model.lastError = "Couldn't delete the local journal file. (\(Self.describeSyncError(deleteError)))"
@@ -2584,7 +2721,7 @@ final class AppDependencies {
 
     // MARK: - Helpers
 
-    private static func documentsDirectory() -> URL {
+    nonisolated private static func documentsDirectory() -> URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
     }
 
