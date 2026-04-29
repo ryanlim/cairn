@@ -2986,6 +2986,17 @@ final class AppDependencies {
         let args = ProcessInfo.processInfo.arguments
         let wantsOnboarding = args.contains("-CAIRN_SCREENSHOT_ONBOARDING")
         let wantsDark = args.contains("-CAIRN_SCREENSHOT_DARK")
+        // Demo-stage selector: 0..5 produce stages of the trash/restore
+        // walkthrough on a 25-photo limited-scope album. Used to record
+        // a workflow screencast/screenshots without touching a real
+        // Immich. Falls through to the App-Store-marketing fixtures
+        // when the arg is absent.
+        let demoStage: Int? = {
+            guard let idx = args.firstIndex(of: "-CAIRN_DEMO_STAGE"),
+                  idx + 1 < args.count,
+                  let n = Int(args[idx + 1]) else { return nil }
+            return n
+        }()
 
         model.actions = CairnAppActions()
         model.didAutoSyncThisSession = true
@@ -3004,6 +3015,12 @@ final class AppDependencies {
 
         model.needsOnboarding = false
         model.hasCompletedInitialScan = true
+
+        if let stage = demoStage {
+            seedDemoStage(stage, into: model)
+            return
+        }
+
         model.library = CairnFixtures.medium
         model.runs = CairnFixtures.runs
         model.journalTail = CairnFixtures.journalTail
@@ -3024,6 +3041,118 @@ final class AppDependencies {
             confirmedDeletedAt: confirmedAt,
             quarantineDays: 14
         )
+    }
+
+    /// Pose model state for one of the six trash/restore walkthrough
+    /// stages used to record the demo. Each stage is a snapshot — the
+    /// UI test that captures it lands on the right tab and snapshots.
+    /// No real backend; no real PhotoKit.
+    ///
+    /// Reference numbers throughout: 25-photo album, 5 deleted from
+    /// device, 2 of those restored on Immich. Library counts trace:
+    ///
+    ///   Stage 0 (initial)            — 25 / 25 / 25 / 25
+    ///   Stage 1 (post-device-delete) — 20 / 20 / 25 / 25  · 5 quarantined
+    ///   Stage 2 (PendingReview)      — same model, navigated
+    ///   Stage 3 (post-approve trash) — 20 / 20 / 20 / 20
+    ///   Stage 4 (Runs)               — same model, navigated
+    ///   Stage 5 (post-restore 2)     — 20 / 20 / 22 / 22
+    private static func seedDemoStage(_ stage: Int, into model: CairnAppModel) {
+        let demoCandidates = Array(CairnFixtures.candidates.prefix(5))
+        let trashRunId = "2026-04-29T10:00:00Z-DEMO0429"
+        let restoreRunStartedAt = ISO8601DateFormatter().date(from: "2026-04-29T10:00:00Z") ?? Date()
+
+        switch stage {
+        case 0:
+            // Fresh post-onboarding sync. 25 photos in the album,
+            // 25 on Immich, all match. Nothing pending.
+            model.library = CairnFixtures.LibrarySize(
+                local: 25, indexed: 25, server: 25, matched: 25, candidates: 0
+            )
+            model.runs = []
+            model.journalTail = []
+            model.reconciliation = nil
+
+        case 1, 2:
+            // After deleting 5 from the iPhone. cairn detected via
+            // PhotoKit, stamped ConfirmedDeleted, sync surfaced them
+            // as held-by-quarantine. With quarantineDays: 0 (or via
+            // approve-from-pending-review) they'd promote; we pose
+            // them in the held bucket so the demo can also show the
+            // bypass-via-approve flow on the next stage.
+            model.library = CairnFixtures.LibrarySize(
+                local: 20, indexed: 20, server: 25, matched: 25, candidates: 5
+            )
+            let confirmedAt: [Checksum: Date] = Dictionary(
+                uniqueKeysWithValues: demoCandidates.enumerated().compactMap { idx, c in
+                    c.checksum.map {
+                        (Checksum(base64: $0), Date(timeIntervalSinceNow: -TimeInterval(idx) * 60))
+                    }
+                }
+            )
+            model.reconciliation = .init(
+                deleteCandidates: [],
+                pendingReviewCandidates: [],
+                heldByQuarantineCandidates: demoCandidates.map(\.asServerAsset),
+                confirmedDeletedAt: confirmedAt,
+                quarantineDays: 14
+            )
+            model.quarantineCount = demoCandidates.count
+            model.runs = []
+            model.journalTail = []
+
+        case 3, 4:
+            // Right after the user tapped "Move to Trash" on the 5
+            // quarantined items. Server count dropped, candidates
+            // cleared, the trash run is now in `model.runs`.
+            model.library = CairnFixtures.LibrarySize(
+                local: 20, indexed: 20, server: 20, matched: 20, candidates: 0
+            )
+            model.reconciliation = nil
+            let trashRun = CairnFixtures.RunFixture(
+                id: trashRunId,
+                startedAt: restoreRunStartedAt,
+                durationMs: 4_120,
+                trashed: 5,
+                restored: 0,
+                dryRun: false,
+                status: .complete,
+                tag: "cairn/v1/run/\(trashRunId)",
+                notes: "5 trashed"
+            )
+            model.runs = [trashRun]
+            model.runAssets = [trashRunId: demoCandidates]
+
+        case 5:
+            // After restoring 2 of the 5 via Runs → tap-run → restore.
+            // Immich un-trashed those 2 → server bumped 20→22. The
+            // approvePending / restore commits keep matched in
+            // lockstep with server. Run shows `2 restored`.
+            model.library = CairnFixtures.LibrarySize(
+                local: 20, indexed: 20, server: 22, matched: 22, candidates: 0
+            )
+            model.reconciliation = nil
+            let trashRun = CairnFixtures.RunFixture(
+                id: trashRunId,
+                startedAt: restoreRunStartedAt,
+                durationMs: 4_120,
+                trashed: 5,
+                restored: 2,
+                dryRun: false,
+                status: .complete,
+                tag: "cairn/v1/run/\(trashRunId)",
+                notes: "5 trashed · 2 restored from this run"
+            )
+            model.runs = [trashRun]
+            model.runAssets = [trashRunId: demoCandidates]
+
+        default:
+            // Out-of-range stage — fall through to the App-Store
+            // fixture set so the test still produces a screenshot.
+            model.library = CairnFixtures.medium
+            model.runs = CairnFixtures.runs
+            model.journalTail = CairnFixtures.journalTail
+        }
     }
     #endif
 }

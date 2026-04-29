@@ -81,6 +81,40 @@ final class ScreenshotsUITests: XCTestCase {
         capture(.statusJournal, name: "06-StatusJournal-Dark", darkMode: true)
     }
 
+    // MARK: - Demo walkthrough (light only)
+    //
+    // Six stages of the trash/restore flow on a 25-photo limited-scope
+    // album, captured for the Reddit/marketing demo recording. Each
+    // launches the app with `-CAIRN_DEMO_STAGE N` so
+    // `seedFromFixtures` poses the model state for that stage; the
+    // test then navigates to the right tab and snapshots. Light mode
+    // only — these are for embedded demo media, not the App Store
+    // gallery, so the dark pair would just double the capture time.
+
+    func testDemo01InitialStatus() throws {
+        captureDemo(stage: 0, screen: .status, name: "demo-01-Status-Initial")
+    }
+
+    func testDemo02StatusAfterDelete() throws {
+        captureDemo(stage: 1, screen: .status, name: "demo-02-Status-AfterDelete")
+    }
+
+    func testDemo03PendingReview() throws {
+        captureDemo(stage: 2, screen: .pendingReview, name: "demo-03-PendingReview")
+    }
+
+    func testDemo04StatusAfterApprove() throws {
+        captureDemo(stage: 3, screen: .status, name: "demo-04-Status-AfterApprove")
+    }
+
+    func testDemo05RunsAfterApprove() throws {
+        captureDemo(stage: 4, screen: .runs, name: "demo-05-Runs-AfterApprove")
+    }
+
+    func testDemo06StatusAfterRestore() throws {
+        captureDemo(stage: 5, screen: .status, name: "demo-06-Status-AfterRestore")
+    }
+
     // MARK: - State enum + dispatch
 
     private enum State {
@@ -125,6 +159,39 @@ final class ScreenshotsUITests: XCTestCase {
             // banding/separators/hero work shows up in App Store
             // marketing.
             scrollUntilVisible(app, label: "Latest journal", maxSwipes: 6)
+        }
+        snapshot(name)
+    }
+
+    /// Demo-specific capture. Mirrors `capture(_:name:darkMode:)` but
+    /// passes the demo-stage launch arg and only navigates among the
+    /// three screens used in the walkthrough (Status, PendingReview,
+    /// Runs).
+    private func captureDemo(stage: Int, screen: State, name: String) {
+        let app = XCUIApplication()
+        setupSnapshot(app)
+        app.launchArguments += [
+            "-CAIRN_SCREENSHOT_MODE", "1",
+            "-CAIRN_DEMO_STAGE", String(stage),
+        ]
+        app.launch()
+
+        switch screen {
+        case .status:
+            waitForMainTabs(app)
+        case .pendingReview:
+            waitForMainTabs(app)
+            let callout = app.buttons["status.openPendingReview"]
+            XCTAssertTrue(callout.waitForExistence(timeout: 3), "Pending-review entry not found on Status (demo stage \(stage))")
+            callout.tap()
+            _ = app.staticTexts["Pending review"].waitForExistence(timeout: 3)
+        case .runs:
+            waitForMainTabs(app)
+            app.buttons["Runs"].tap()
+            _ = app.staticTexts.firstMatch.waitForExistence(timeout: 3)
+        case .settings, .onboarding, .statusJournal:
+            // Not used by the demo. Keep the switch exhaustive.
+            waitForMainTabs(app)
         }
         snapshot(name)
     }
