@@ -1833,7 +1833,79 @@ final class AppDependencies {
                 let orch = RestoreOrchestrator(writer: client, journal: journal)
                 let scope: Set<String>? = assetIds.isEmpty ? nil : Set(assetIds)
                 do {
-                    _ = try await orch.restore(fromRunId: runId, assetIds: scope)
+                    let summary = try await orch.restore(fromRunId: runId, assetIds: scope)
+
+                    // Local-state cleanup that the orchestrator (which
+                    // is platform-agnostic and lives in CairnCore)
+                    // can't do: clear ConfirmedDeletedStore for the
+                    // restored checksums and add them to ExclusionStore.
+                    // Without this, the next sync re-flags these as
+                    // deletion candidates because:
+                    //   - the photo is still missing locally (restore
+                    //     puts it back on Immich, not on the device)
+                    //   - ConfirmedDeleted still holds the original
+                    //     "deleted at T" stamp → past-quarantine →
+                    //     `deleteCandidates` → re-trashed
+                    // The user's "restore" intent semantically matches
+                    // exclude — "preserve this asset on Immich." Mirrors
+                    // the cleanup that `excludePending` does.
+                    let entries = (try? await journal.readAll()) ?? []
+                    var planningTargets: [JournalEntry.TrashTarget] = []
+                    for entry in entries where entry.runId == runId {
+                        if case .planningTrash(let targets) = entry.event {
+                            planningTargets = targets
+                        }
+                    }
+                    let restoredIdSet = Set(summary.restoredAssetIds)
+                    let restoredChecksumStrings = planningTargets
+                        .filter { restoredIdSet.contains($0.assetId) }
+                        .map(\.checksum)
+                    let cks = Set(restoredChecksumStrings.map { Checksum(base64: $0) })
+
+                    if !cks.isEmpty {
+                        try? await self.confirmedDeletedStore?.remove(cks)
+                        try? await self.deletionSourceStore?.remove(cks)
+                        if let exclusions = await self.exclusionStore {
+                            let now = Date()
+                            let exclusionEntries: [Checksum: ExclusionMetadata] = Dictionary(
+                                uniqueKeysWithValues: cks.map {
+                                    ($0, ExclusionMetadata(addedAt: now, fromRunId: runId, reason: "restored-from-run"))
+                                }
+                            )
+                            try? await exclusions.insert(exclusionEntries)
+                            // Forensic symmetry with `excludePending`:
+                            // record the implicit exclusion in the
+                            // journal so a later reader can see why
+                            // these checksums became excluded.
+                            try? await journal.append(.init(
+                                timestamp: now,
+                                runId: runId,
+                                event: .assetsExcluded(
+                                    checksums: restoredChecksumStrings,
+                                    fromRunId: runId
+                                )
+                            ))
+                        }
+                        await self.refreshExcludedChecksums()
+                        // Prune the in-memory reconciliation so the
+                        // restored checksums don't keep showing up as
+                        // candidates until the next sync.
+                        await MainActor.run {
+                            guard let existing = self.model.reconciliation else { return }
+                            self.model.reconciliation = .init(
+                                deleteCandidates: existing.deleteCandidates.filter { !cks.contains($0.checksum) },
+                                pendingReviewCandidates: existing.pendingReviewCandidates.filter { !cks.contains($0.checksum) },
+                                heldByQuarantineCandidates: existing.heldByQuarantineCandidates.filter { !cks.contains($0.checksum) },
+                                confirmedDeletedAt: existing.confirmedDeletedAt.filter { !cks.contains($0.key) },
+                                quarantineDays: existing.quarantineDays,
+                                computedAt: existing.computedAt,
+                                inferredOrphanLocalIdentifiers: existing.inferredOrphanLocalIdentifiers.filter { !cks.contains($0.key) },
+                                firstObservedAnchors: existing.firstObservedAnchors,
+                                sourceLocalIdentifiersByChecksum: existing.sourceLocalIdentifiersByChecksum.filter { !cks.contains($0.key) }
+                            )
+                        }
+                    }
+
                     await self.refreshRunsList()
                     await self.refreshJournalTail()
                 } catch {
