@@ -466,6 +466,7 @@ public struct CairnAppRoot: View {
         case "runs":
             RunsScreen(
                 runs: model.runs,
+                now: Date(),
                 onOpenRun: { run in
                     presentRunDetail(for: run)
                 },
