@@ -956,7 +956,15 @@ public struct StatusScreen: View {
                     expandedHeight: Self.checklistHeight,
                     reduceMotion: reduceMotion
                 )
-                if quarantineCount > 0 {
+                // Renders whenever there's anything to review — items
+                // held by the quarantine clock OR unconfirmed
+                // candidates with no positive-signal stamp (the
+                // .strict / .limited-Photos case where the orphan
+                // sweep is gagged). Earlier this was gated on
+                // `quarantineCount > 0` only, which meant an
+                // unconfirmed-only backlog was invisible from Status
+                // and the user had no entry point to PendingReview.
+                if pendingReviewCount > 0 {
                     quarantineLine
                 }
 
@@ -1039,23 +1047,37 @@ public struct StatusScreen: View {
     }
 
     private var quarantineLine: some View {
-        Button(action: onOpenPendingReview) {
+        // Three display modes depending on what's actually in the
+        // pendingReview bucket:
+        //   - Held only (the original case): "N in quarantine"
+        //   - Mixed held + unconfirmed: "N awaiting review · K in quarantine"
+        //   - Unconfirmed only: "N awaiting review"
+        // The icon switches from clock (held — there's a countdown
+        // to render) to question mark (unconfirmed — no countdown,
+        // user input required).
+        let isUnconfirmedOnly = quarantineCount == 0 && pendingReviewCount > 0
+        let iconName = isUnconfirmedOnly ? "questionmark.circle" : "clock"
+        return Button(action: onOpenPendingReview) {
             HStack(spacing: 12) {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Image(systemName: "clock")
+                    Image(systemName: iconName)
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(t.pendingInk)
-                    Text("\(quarantineCount)")
+                    Text("\(pendingReviewCount)")
                         .font(.system(size: 28, weight: .semibold).monospacedDigit())
                         .foregroundStyle(t.pendingInk)
-                    Text("in quarantine")
+                    Text(isUnconfirmedOnly ? "awaiting review" : "in quarantine")
                         .font(.system(size: 14, weight: .medium))
                         .foregroundStyle(t.pendingInk)
                 }
                 Spacer()
                 VStack(alignment: .trailing, spacing: 2) {
-                    if let earliest = earliestQuarantineEligible {
+                    if !isUnconfirmedOnly, let earliest = earliestQuarantineEligible {
                         Text("next in \(Self.relativeDay(earliest))")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(t.textMuted)
+                    } else if quarantineCount > 0 && quarantineCount < pendingReviewCount {
+                        Text("\(quarantineCount) in quarantine")
                             .font(.system(size: 11, weight: .medium))
                             .foregroundStyle(t.textMuted)
                     }
