@@ -217,6 +217,9 @@ public struct CairnAppRoot: View {
             onRequestBackgroundRefresh: {
                 await model.actions.requestBackgroundRefresh()
             },
+            onLoadRecentServers: {
+                await model.actions.recentServers()
+            },
             onComplete: {
                 model.activeTab = .status
                 model.needsOnboarding = false
@@ -497,6 +500,7 @@ public struct CairnAppRoot: View {
                 onResetIndexAllAccounts: { Task { await model.actions.resetIndexAllAccounts() } },
                 onClearJournal: { Task { await model.actions.clearJournal() } },
                 onClearJournalAllKeys: { Task { await model.actions.clearJournalAllKeys() } },
+                onClearRecentServers: { Task { await model.actions.clearRecentServers() } },
                 onSignOut: { Task { await model.actions.signOut() } },
                 onRescanLibrary: { Task { await model.actions.rescanLibrary() } },
                 deferredQueue: model.deferredQueue,

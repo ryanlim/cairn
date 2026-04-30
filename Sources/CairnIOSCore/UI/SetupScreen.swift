@@ -110,6 +110,10 @@ public struct SetupScreen: View {
     /// `nil` for `.notDetermined` (no decision yet).
     public let onPollPhotoAuthStatus: @Sendable () async -> PhotoAuthOutcome?
     public let onRequestBackgroundRefresh: @Sendable () async -> Bool
+    /// Fetches the keychain-backed recent-servers list, sorted by
+    /// `lastUsedAt` descending. Drives the URL field's autocomplete.
+    /// Default = `[]` so previews and tests don't need a host wiring.
+    public let onLoadRecentServers: @Sendable () async -> [RecentServerEntry]
     public let onComplete: () -> Void
 
     /// The step the wizard should open on. Defaults to `.welcome`;
@@ -124,6 +128,7 @@ public struct SetupScreen: View {
         onRequestPhotosAccess: @escaping @Sendable () async -> PhotoAuthOutcome,
         onPollPhotoAuthStatus: @escaping @Sendable () async -> PhotoAuthOutcome? = { nil },
         onRequestBackgroundRefresh: @escaping @Sendable () async -> Bool,
+        onLoadRecentServers: @escaping @Sendable () async -> [RecentServerEntry] = { [] },
         onComplete: @escaping () -> Void,
         initialStep: Step = .welcome
     ) {
@@ -134,6 +139,7 @@ public struct SetupScreen: View {
         self.onRequestPhotosAccess = onRequestPhotosAccess
         self.onPollPhotoAuthStatus = onPollPhotoAuthStatus
         self.onRequestBackgroundRefresh = onRequestBackgroundRefresh
+        self.onLoadRecentServers = onLoadRecentServers
         self.onComplete = onComplete
         self.initialStep = initialStep
     }
@@ -153,6 +159,10 @@ public struct SetupScreen: View {
     /// focus — subsequent focus/unfocus cycles (e.g. dismissing the
     /// keyboard and tapping back) leave the user's typed input alone.
     @State private var serverUrlWasCleared: Bool = false
+    /// Snapshot of the keychain-backed recent-servers list, loaded on
+    /// the server step's appear. Stays in memory for the rest of the
+    /// onboarding flow — small, capped at `RecentServerEntry.maxRetained`.
+    @State private var recentServers: [RecentServerEntry] = []
 
     // Photos / background steps — record outcome so the user can see
     // they completed (or skipped) the step before continuing.
@@ -190,6 +200,13 @@ public struct SetupScreen: View {
         }
         .background(t.bg)
         .onAppear { step = initialStep }
+        .task {
+            // Preload recent servers once on first mount. Cheap (Keychain
+            // read of a small JSON blob) and re-running per-step would
+            // race with the user typing. The list refreshes naturally
+            // on next launch when verifyServer success bumps an entry.
+            recentServers = await onLoadRecentServers()
+        }
     }
 
     // MARK: - Brand + stepper
@@ -308,7 +325,11 @@ public struct SetupScreen: View {
                 }
             }
             .padding(.horizontal, -20) // CairnCard adds its own 16 inset; counter our 20.
-            .padding(.bottom, 16)
+            .padding(.bottom, recentSuggestions.isEmpty ? 16 : 8)
+
+            recentServerSuggestions
+                .padding(.horizontal, -20)
+                .padding(.bottom, recentSuggestions.isEmpty ? 0 : 16)
 
             fieldLabel("API key")
             CairnCard {
@@ -386,6 +407,98 @@ public struct SetupScreen: View {
                 self.verifying = false
             }
         }
+    }
+
+    // MARK: - Recent-server autocomplete
+
+    /// Suggestions filtered against `serverUrl` using the textbook URL
+    /// autocomplete ranking: prefix-match on the canonicalized URL
+    /// outranks host-substring outranks anywhere-substring; recency
+    /// (`lastUsedAt` desc) breaks ties. Empty input returns the full
+    /// recents list (most-recent first) so the user sees options
+    /// before typing anything. Returns up to four — beyond that the
+    /// list crowds the URL field on small devices.
+    ///
+    /// Rationale: at this list size (cap = 10) the work is microseconds
+    /// regardless of algorithm. Substring + prefix-priority + recency
+    /// is what browser omniboxes use; fzf-style subsequence matching
+    /// is the next tier but overkill for short, exact-typed URLs.
+    /// Levenshtein/Jaro-Winkler are wrong for this domain.
+    private var recentSuggestions: [RecentServerEntry] {
+        let needle = serverUrl.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        // No input → render the full list newest-first.
+        guard !needle.isEmpty else {
+            return Array(recentServers.prefix(4))
+        }
+        struct Scored { let entry: RecentServerEntry; let rank: Int }
+        let scored: [Scored] = recentServers.compactMap { entry in
+            let canonical = RecentServerEntry.canonicalize(entry.url).lowercased()
+            // Skip entries that match exactly — re-suggesting what's
+            // already typed adds visual noise without value.
+            guard canonical != needle else { return nil }
+            if canonical.hasPrefix(needle) { return Scored(entry: entry, rank: 0) }
+            if let host = URLComponents(string: canonical)?.host,
+               host.contains(needle) {
+                return Scored(entry: entry, rank: 1)
+            }
+            if canonical.contains(needle) { return Scored(entry: entry, rank: 2) }
+            return nil
+        }
+        let sorted = scored.sorted { lhs, rhs in
+            if lhs.rank != rhs.rank { return lhs.rank < rhs.rank }
+            return lhs.entry.lastUsedAt > rhs.entry.lastUsedAt
+        }
+        return Array(sorted.prefix(4)).map(\.entry)
+    }
+
+    @ViewBuilder
+    private var recentServerSuggestions: some View {
+        if !recentSuggestions.isEmpty {
+            CairnCard {
+                VStack(spacing: 0) {
+                    ForEach(Array(recentSuggestions.enumerated()), id: \.element.url) { idx, entry in
+                        Button(action: { applySuggestion(entry) }) {
+                            HStack(spacing: 10) {
+                                Image(systemName: "clock.arrow.circlepath")
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(t.textHint)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(entry.url)
+                                        .font(.system(size: 13, design: .monospaced))
+                                        .foregroundStyle(t.textBody)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                    if let email = entry.email, !email.isEmpty {
+                                        Text(email)
+                                            .font(.system(size: 11))
+                                            .foregroundStyle(t.textHint)
+                                            .lineLimit(1)
+                                    }
+                                }
+                                Spacer()
+                                Image(systemName: "arrow.up.left")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(t.textHint)
+                            }
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 10)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        if idx < recentSuggestions.count - 1 {
+                            RowDivider()
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func applySuggestion(_ entry: RecentServerEntry) {
+        serverUrl = entry.url
+        serverUrlWasCleared = true   // suppress first-focus auto-clear
+        serverUrlFocused = false
+        verifyResult = nil
     }
 
     // MARK: - Step: Photos
