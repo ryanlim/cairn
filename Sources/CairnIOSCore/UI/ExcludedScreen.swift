@@ -222,8 +222,15 @@ private struct ExcludedRow: View {
 
                 HStack(spacing: 8) {
                     Text(kindLabel)
-                    Text("·")
-                    Text(sizeLabel)
+                    // Size is unavailable when the entry was joined
+                    // from a server-asset-only source (Immich's list
+                    // endpoint omits file size), so suppress the
+                    // "0.0 MB" placeholder rather than rendering it.
+                    // CLI-driven entries with real bytes still show.
+                    if entry.bytes > 0 {
+                        Text("·")
+                        Text(sizeLabel)
+                    }
                     if let runSuffix = runSuffix {
                         Text("·")
                         (Text("from run ")

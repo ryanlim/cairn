@@ -2836,9 +2836,12 @@ final class AppDependencies {
                       let exclusions = await self.exclusionStore else { return }
                 do {
                     let snapshot = try await exclusions.snapshot()
+                    syncLog.notice("[cairn.exclusions] clear: pre=\(snapshot.count, privacy: .public)")
                     if !snapshot.isEmpty {
                         try await exclusions.remove(Set(snapshot.keys))
                     }
+                    let postSnapshot = (try? await exclusions.snapshot()) ?? [:]
+                    syncLog.notice("[cairn.exclusions] clear: post=\(postSnapshot.count, privacy: .public)")
                     await self.refreshExcludedChecksums()
                     // Forensic note. Reuses the journal-event shape for
                     // consistency, but with a synthetic runId so the
