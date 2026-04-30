@@ -213,6 +213,14 @@ final class AppDependencies {
     /// the server fetch completes.
     private var serverChecksumSet: Set<Checksum>?
 
+    /// Cached `[Checksum: ServerAsset]` from the most recent sync.
+    /// Drives Excluded-assets screen enrichment (filename / kind /
+    /// thumbnail-id) without an extra network round-trip when the
+    /// user opens Settings → Excluded assets. Stale tolerated — the
+    /// next sync refreshes; if the asset list shifted server-side
+    /// the stale entry just shows an outdated filename for one render.
+    private var serverAssetsByChecksum: [Checksum: ServerAsset]?
+
     private(set) var thumbnailLoader: ImmichThumbnailLoader?
 
     // MARK: - Model wired into the UI
@@ -751,8 +759,16 @@ final class AppDependencies {
             // doesn't show 0 matched until the final reconciliation.
             let localChecksums = (try? await hashStoreRef.allChecksums()) ?? []
             let initialMatched = checksums.intersection(localChecksums).count
+            // Build the per-checksum lookup once. Same allocation
+            // budget as the existing `serverChecksumSet` build, just
+            // a richer payload — used to enrich the Excluded assets
+            // screen with filenames + thumbnail asset IDs.
+            var byChecksum: [Checksum: ServerAsset] = [:]
+            byChecksum.reserveCapacity(assets.count)
+            for asset in assets { byChecksum[asset.checksum] = asset }
             await MainActor.run {
                 self?.serverChecksumSet = checksums
+                self?.serverAssetsByChecksum = byChecksum
                 if let self {
                     self.model.library = self.model.library.with(server: nonTrashed, matched: initialMatched)
                 }
@@ -1543,12 +1559,62 @@ final class AppDependencies {
 
     fileprivate func refreshExcludedChecksums() async {
         guard let exclusionStore else {
-            await MainActor.run { self.model.excludedChecksums = [] }
+            await MainActor.run {
+                self.model.excludedChecksums = []
+                self.model.excludedEntries = []
+            }
             return
         }
         let snapshot = (try? await exclusionStore.snapshot()) ?? [:]
         let keys = Set(snapshot.keys.map(\.base64))
-        await MainActor.run { self.model.excludedChecksums = keys }
+
+        // Enrich each exclusion against the cached server-asset
+        // lookup so the Excluded-assets screen can render real
+        // filenames + thumbnails. When the cache hasn't been
+        // populated yet (pre-first-sync), fall back to a
+        // checksum-prefix placeholder so the user at least sees
+        // *something* — without enrichment the previous code path
+        // left `excludedEntries` permanently empty, which is what
+        // produced the "Excluded list shows nothing despite engine
+        // seeing 5" bug.
+        let assetsByChecksum = await MainActor.run { self.serverAssetsByChecksum ?? [:] }
+        let entries: [ExcludedScreenEntry] = snapshot.map { (checksum, metadata) in
+            if let server = assetsByChecksum[checksum] {
+                let name = server.originalFileName ?? "asset-\(server.id.prefix(8))"
+                let ext = (name as NSString).pathExtension.lowercased()
+                let isVideo = ["mov", "mp4", "m4v", "avi", "3gp"].contains(ext)
+                let isLivePair = server.livePhotoVideoId != nil
+                let kind: CairnFixtures.CandidateFixture.Kind =
+                    isLivePair ? .livePair : (isVideo ? .video : .photo)
+                return ExcludedScreenEntry(
+                    filename: name,
+                    bytes: 0,                       // server list endpoint omits size
+                    kind: kind,
+                    isLivePair: isLivePair,
+                    metadata: metadata,
+                    assetId: server.id
+                )
+            }
+            // Fallback: no server match (cache miss, server pruned the
+            // asset, etc). Show enough that the row is visible and
+            // uniquely identifiable, plus actionable via unexclude.
+            return ExcludedScreenEntry(
+                filename: "asset-\(checksum.base64.prefix(12))",
+                bytes: 0,
+                kind: .photo,
+                isLivePair: false,
+                metadata: metadata,
+                assetId: nil
+            )
+        }
+        // Stable order: most-recently-excluded first. Surfaces the
+        // user's most relevant action (the freshly-restored items
+        // they may want to unexclude) at the top.
+        let sorted = entries.sorted { $0.metadata.addedAt > $1.metadata.addedAt }
+        await MainActor.run {
+            self.model.excludedChecksums = keys
+            self.model.excludedEntries = sorted
+        }
     }
 
     fileprivate func refreshQuarantineCount() async {
