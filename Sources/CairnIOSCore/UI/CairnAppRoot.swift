@@ -636,6 +636,7 @@ public struct CairnAppRoot: View {
                 massOffloadCount: model.lastScanBurstCount,
                 showsMassOffloadBanner: model.lastScanLooksLikeMassOffload,
                 showsTokenExpiryBanner: model.lastScanWasTokenExpiryFullEnum,
+                recycledExclusionCount: recycled.count,
                 onBack: { model.presentedSheet = nil },
                 onApprove: { checksums in
                     Task { @MainActor in

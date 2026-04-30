@@ -39,6 +39,12 @@ public struct PendingReviewScreen: View {
     public let quarantineDays: Int
     public let massOffloadCount: Int
     public let showsMassOffloadBanner: Bool
+    /// Count of items in this list that are "recycled exclusions" —
+    /// previously excluded (typically via restore-via-cairn) and now
+    /// re-deleted on the phone. Drives an explanatory callout so the
+    /// user understands why these aren't in quarantine like normal
+    /// new deletes. Zero hides the banner.
+    public let recycledExclusionCount: Int
     /// True when the most recent scan re-enumerated the library because
     /// the persistent-change token expired. Surfaces a banner explaining
     /// that the candidates below come from diff-only detection (no
@@ -107,6 +113,7 @@ public struct PendingReviewScreen: View {
         massOffloadCount: Int = 0,
         showsMassOffloadBanner: Bool = false,
         showsTokenExpiryBanner: Bool = false,
+        recycledExclusionCount: Int = 0,
         onBack: @escaping () -> Void = {},
         onApprove: @escaping ([String]) -> Void = { _ in },
         onExclude: @escaping ([String]) -> Void = { _ in },
@@ -120,6 +127,7 @@ public struct PendingReviewScreen: View {
         self.massOffloadCount = massOffloadCount
         self.showsMassOffloadBanner = showsMassOffloadBanner
         self.showsTokenExpiryBanner = showsTokenExpiryBanner
+        self.recycledExclusionCount = recycledExclusionCount
         self.onBack = onBack
         self.onApprove = onApprove
         self.onExclude = onExclude
@@ -140,6 +148,7 @@ public struct PendingReviewScreen: View {
         massOffloadCount: Int = 0,
         showsMassOffloadBanner: Bool = false,
         showsTokenExpiryBanner: Bool = false,
+        recycledExclusionCount: Int = 0,
         onBack: @escaping () -> Void = {},
         onApprove: @escaping ([String]) -> Void = { _ in },
         onExclude: @escaping ([String]) -> Void = { _ in },
@@ -165,6 +174,7 @@ public struct PendingReviewScreen: View {
         self.massOffloadCount = massOffloadCount
         self.showsMassOffloadBanner = showsMassOffloadBanner
         self.showsTokenExpiryBanner = showsTokenExpiryBanner
+        self.recycledExclusionCount = recycledExclusionCount
         self.onBack = onBack
         self.onApprove = onApprove
         self.onExclude = onExclude
@@ -195,6 +205,12 @@ public struct PendingReviewScreen: View {
                             tokenExpiryCallout
                         } else if showsMassOffloadBanner {
                             massOffloadCallout
+                        }
+                        // Independent of the above two — recycled
+                        // exclusions are an orthogonal signal and
+                        // can co-occur with either banner.
+                        if recycledExclusionCount > 0 {
+                            recycledExclusionsCallout
                         }
                         if !selectionMode && totalVersionCount > 1 {
                             trashAllButton
@@ -530,6 +546,36 @@ public struct PendingReviewScreen: View {
         Callout(.pending, icon: "clock.arrow.circlepath") {
             (.cairnWord + Text(" was dormant long enough that the system change log expired. We re-indexed your library, but the \(totalVersionCount) candidates below are based on diff-only detection — review them before trashing."))
                 .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal, 16)
+        .padding(.bottom, 12)
+        .transition(.cairnBanner)
+    }
+
+    // MARK: - Recycled-exclusions callout
+
+    /// Surfaced when one or more items in this list are previously-
+    /// excluded checksums that the user has now deleted on the phone
+    /// again. Explains why they're showing up here instead of in
+    /// quarantine — "you told cairn to preserve these last time, but
+    /// you've now deleted them, so we want explicit confirmation
+    /// before propagating." Tapping Approve on these items clears
+    /// the exclusion and trashes them on Immich; tapping Exclude
+    /// re-affirms the original preserve intent (and bumps the
+    /// `addedAt` so they don't reappear here next sync).
+    private var recycledExclusionsCallout: some View {
+        let n = recycledExclusionCount
+        let noun = n == 1 ? "item" : "items"
+        return Callout(.info, icon: "arrow.uturn.backward.circle") {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("\(n) restored \(noun) deleted again").fontWeight(.semibold)
+                (Text("You previously restored ") + (n == 1 ? Text("this") : Text("these"))
+                    + Text(" via ") + .cairnWord
+                    + Text(" — they were marked as preserved on Immich. ")
+                    + (n == 1 ? Text("It's") : Text("They're"))
+                    + Text(" now deleted on this iPhone again. Approving will clear the exclusion and trash on Immich; excluding re-affirms the original preserve."))
+                    .opacity(0.88).fixedSize(horizontal: false, vertical: true)
+            }
         }
         .padding(.horizontal, 16)
         .padding(.bottom, 12)
