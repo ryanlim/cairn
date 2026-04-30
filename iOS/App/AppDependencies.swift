@@ -2444,13 +2444,11 @@ final class AppDependencies {
                         }
                         // Record the verified URL in the recent-servers
                         // list. Only on success, so typos and broken
-                        // hostnames don't pollute autocomplete. Email
-                        // is best-effort context — surfaces in the
-                        // suggestions menu as "URL — email" when the
-                        // user has multiple accounts on the same box.
+                        // hostnames don't pollute autocomplete. URL
+                        // alone — see `RecentServerEntry`'s doc on why
+                        // identity isn't stored here.
                         try? secrets.recordRecentServer(.init(
                             url: url.absoluteString,
-                            email: identity?.email,
                             lastUsedAt: Date()
                         ))
                         let priorPartitionKey = await MainActor.run { self.currentPartitionKey }

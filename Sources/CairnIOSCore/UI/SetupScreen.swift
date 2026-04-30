@@ -462,19 +462,11 @@ public struct SetupScreen: View {
                                 Image(systemName: "clock.arrow.circlepath")
                                     .font(.system(size: 12))
                                     .foregroundStyle(t.textHint)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(entry.url)
-                                        .font(.system(size: 13, design: .monospaced))
-                                        .foregroundStyle(t.textBody)
-                                        .lineLimit(1)
-                                        .truncationMode(.middle)
-                                    if let email = entry.email, !email.isEmpty {
-                                        Text(email)
-                                            .font(.system(size: 11))
-                                            .foregroundStyle(t.textHint)
-                                            .lineLimit(1)
-                                    }
-                                }
+                                Text(entry.url)
+                                    .font(.system(size: 13, design: .monospaced))
+                                    .foregroundStyle(t.textBody)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
                                 Spacer()
                                 Image(systemName: "arrow.up.left")
                                     .font(.system(size: 11))

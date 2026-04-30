@@ -58,15 +58,36 @@ public protocol MutableSecretStore: SecretStore {
 /// `url` is canonicalized (trailing-slash stripped, lowercased host)
 /// at insert time so deduplication works across casing/format
 /// variations the user types differently across sessions.
+///
+/// No identity (email/userId) is stored here. Two users on the same
+/// server produce one row in the autocomplete — tapping it fills the
+/// URL and the user pastes whichever API key matches the account
+/// they're signing in as. Identity context would only be load-bearing
+/// in a future cached-credentials "switch account" flow; until then
+/// it's decorative noise that misleadingly suggests one account is
+/// "the" account for this URL.
 public struct RecentServerEntry: Sendable, Codable, Equatable {
     public let url: String
-    public let email: String?
     public let lastUsedAt: Date
 
-    public init(url: String, email: String? = nil, lastUsedAt: Date = Date()) {
+    public init(url: String, lastUsedAt: Date = Date()) {
         self.url = url
-        self.email = email
         self.lastUsedAt = lastUsedAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case url
+        case lastUsedAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        // Tolerant of legacy JSON that included `email` — old payloads
+        // decode cleanly because the unknown key is ignored. No
+        // migration step needed; the next `recordRecentServer` call
+        // will rewrite the file in the new shape.
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.url = try c.decode(String.self, forKey: .url)
+        self.lastUsedAt = try c.decode(Date.self, forKey: .lastUsedAt)
     }
 
     /// Cap on the retained list. Beyond this, the oldest entry drops
@@ -282,11 +303,11 @@ public struct KeychainSecretStore: MutableSecretStore, Sendable {
         let canonical = RecentServerEntry.canonicalize(entry.url)
         var current = try recentServers()
         // Drop any matching canonicalized URL — we'll re-insert with
-        // the new lastUsedAt + email below. Comparison is case-
-        // insensitive on the canonical form.
+        // the new lastUsedAt below. Comparison is case-insensitive
+        // on the canonical form.
         current.removeAll { RecentServerEntry.canonicalize($0.url).caseInsensitiveCompare(canonical) == .orderedSame }
         current.insert(
-            RecentServerEntry(url: canonical, email: entry.email, lastUsedAt: entry.lastUsedAt),
+            RecentServerEntry(url: canonical, lastUsedAt: entry.lastUsedAt),
             at: 0
         )
         if current.count > RecentServerEntry.maxRetained {
