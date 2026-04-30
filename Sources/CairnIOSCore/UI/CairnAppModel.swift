@@ -620,6 +620,13 @@ public struct CairnAppActions: Sendable {
     public var resetIndexAllAccounts:  @Sendable () async -> Void
     public var clearJournal:           @Sendable () async -> Void
     public var clearJournalAllKeys:    @Sendable () async -> Void
+    /// Wipe every entry in `ExclusionStore` for the active partition.
+    /// Surgical — doesn't touch the index, journal, or credentials.
+    /// Use case: testing flows where prior restore-via-cairn auto-
+    /// exclusions need to be cleared without nuking the index. Also
+    /// callable from the Excluded Assets screen as a "Clear all"
+    /// alternative to per-row unexclude.
+    public var clearExclusions:        @Sendable () async -> Void
     public var signOut:                @Sendable () async -> Void
 
     /// Settings → Library. Clears the persistent-change token + the
@@ -709,6 +716,7 @@ public struct CairnAppActions: Sendable {
         resetIndexAllAccounts: @escaping @Sendable () async -> Void = {},
         clearJournal: @escaping @Sendable () async -> Void = {},
         clearJournalAllKeys: @escaping @Sendable () async -> Void = {},
+        clearExclusions: @escaping @Sendable () async -> Void = {},
         signOut: @escaping @Sendable () async -> Void = {},
         rescanLibrary: @escaping @Sendable () async -> Void = {},
         persistSettings: @escaping @Sendable (CairnSettings) async -> Void = { _ in },
@@ -741,6 +749,7 @@ public struct CairnAppActions: Sendable {
         self.resetIndexAllAccounts = resetIndexAllAccounts
         self.clearJournal = clearJournal
         self.clearJournalAllKeys = clearJournalAllKeys
+        self.clearExclusions = clearExclusions
         self.signOut = signOut
         self.rescanLibrary = rescanLibrary
         self.persistSettings = persistSettings

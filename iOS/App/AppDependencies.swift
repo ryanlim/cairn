@@ -2678,6 +2678,25 @@ final class AppDependencies {
                 // hard-nuclear path.)
                 try? secrets.clearRecentServers()
 
+                // Step 5: wipe the active partition's exclusions and
+                // reset the one-shot Limited-Photos heads-up. Both
+                // are user-explicit state that the "rebuild a corrupt
+                // index" use case wants preserved (so they're NOT
+                // touched by `resetIndex`/clearCurrentPartitionStores)
+                // — but this is the all-accounts nuclear, whose copy
+                // already promises to wipe everything cairn knew.
+                // Mid-flight: clearCurrentPartitionStores already ran
+                // in step 1, so it's safe to mutate ExclusionStore
+                // here without races against engine input reads.
+                if let exclusions = await self.exclusionStore {
+                    let snapshot = (try? await exclusions.snapshot()) ?? [:]
+                    if !snapshot.isEmpty {
+                        try? await exclusions.remove(Set(snapshot.keys))
+                    }
+                }
+                await self.refreshExcludedChecksums()
+                Self.resetLimitedPhotosNotice()
+
                 await MainActor.run {
                     self.resetModelAfterIndexClear()
                     if failures.isEmpty {
@@ -2743,6 +2762,37 @@ final class AppDependencies {
                         self.model.runs = []
                         self.model.runAssets = [:]
                         self.showStatusToast(.journalCleared)
+                    }
+                }
+            },
+            clearExclusions: { [weak self] in
+                guard let self,
+                      let exclusions = await self.exclusionStore else { return }
+                do {
+                    let snapshot = try await exclusions.snapshot()
+                    if !snapshot.isEmpty {
+                        try await exclusions.remove(Set(snapshot.keys))
+                    }
+                    await self.refreshExcludedChecksums()
+                    // Forensic note. Reuses the journal-event shape for
+                    // consistency, but with a synthetic runId so the
+                    // entry isn't grouped with a real trash/restore run.
+                    if let journal = await self.journal, !snapshot.isEmpty {
+                        let now = Date()
+                        let runId = "exclusions-cleared-\(ISO8601DateFormatter().string(from: now))"
+                        try? await journal.append(.init(
+                            timestamp: now,
+                            runId: runId,
+                            event: .assetsExcluded(
+                                checksums: snapshot.keys.map(\.base64),
+                                fromRunId: nil
+                            )
+                        ))
+                        await self.refreshJournalTail()
+                    }
+                } catch {
+                    await MainActor.run {
+                        self.model.lastError = Self.describeSyncError(error)
                     }
                 }
             },
