@@ -814,7 +814,11 @@ public struct StatusScreen: View {
                         }
                     }
                 case .limitedPhotosNotice:
-                    Callout(.info, icon: "info.circle") {
+                    // .pending matches the Settings → Permissions
+                    // explanatory callout and signals "real
+                    // degradation, not an error" — same tone as the
+                    // inferred-orphan and mass-offload heads-ups.
+                    Callout(.pending, icon: "exclamationmark.triangle") {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("Limited Photos access").fontWeight(.semibold)
                             (Text("Missed deletes will route to ") + Text("Pending review").fontWeight(.semibold) + Text(" for confirmation. See Settings → Permissions for detail."))

@@ -489,8 +489,14 @@ public struct SettingsScreen: View {
             // card as a soft-tone Callout so it reads as context, not
             // as another tap target. Hidden under `.full` and `.denied`
             // (denied has its own actionable copy elsewhere).
+            //
+            // `.pending` (amber) reads as "between informational and
+            // warning" — a real degradation the user should know
+            // about, but not an error. Same tone we use for inferred
+            // orphans, mass-offload heads-ups, and the held-by-
+            // quarantine line.
             if photoAuthStatus == .limited {
-                Callout(.info, icon: "info.circle") {
+                Callout(.pending, icon: "exclamationmark.triangle") {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Limited Photos access").fontWeight(.semibold)
                         (Text.cairnWord + Text(" can only see the photos you selected. Normal deletes still propagate, but any delete the system change-log misses (or any photo you deselect from the picked set) goes to ") + Text("Pending review").fontWeight(.semibold) + Text(" for manual confirmation instead of auto-trashing on Immich. Switch to Full Photos access for the strongest automatic safety."))
