@@ -657,6 +657,17 @@ public struct CairnAppActions: Sendable {
     /// safe to call repeatedly.
     public var recomputeScopeTags: @Sendable () async -> Void
 
+    /// Read the keychain-backed recent-servers list, sorted by
+    /// `lastUsedAt` descending. Powers the URL-field autocomplete on
+    /// onboarding (and the "switch account" UX once it lands).
+    /// Returns `[]` for installs that predate the storage.
+    public var recentServers: @Sendable () async -> [RecentServerEntry]
+
+    /// Wipe the recent-servers list. Surfaced as a Settings → Privacy
+    /// row so the user can clear the autocomplete history without
+    /// taking the heavier "Reset Index — all accounts" path.
+    public var clearRecentServers: @Sendable () async -> Void
+
     public init(
         requestSync: @escaping @Sendable () async throws -> Void = {},
         confirmTrash: @escaping @Sendable () async throws -> Void = {},
@@ -688,7 +699,9 @@ public struct CairnAppActions: Sendable {
         startOverInitialScan: @escaping @Sendable () async -> Void = {},
         forceDrainDeferred: @escaping @Sendable () async -> Void = {},
         replayOnboarding: @escaping @Sendable () async -> Void = {},
-        recomputeScopeTags: @escaping @Sendable () async -> Void = {}
+        recomputeScopeTags: @escaping @Sendable () async -> Void = {},
+        recentServers: @escaping @Sendable () async -> [RecentServerEntry] = { [] },
+        clearRecentServers: @escaping @Sendable () async -> Void = {}
     ) {
         self.requestSync = requestSync
         self.confirmTrash = confirmTrash
@@ -719,6 +732,8 @@ public struct CairnAppActions: Sendable {
         self.forceDrainDeferred = forceDrainDeferred
         self.replayOnboarding = replayOnboarding
         self.recomputeScopeTags = recomputeScopeTags
+        self.recentServers = recentServers
+        self.clearRecentServers = clearRecentServers
     }
 
     /// All-no-op closures with successful default returns. Use in previews

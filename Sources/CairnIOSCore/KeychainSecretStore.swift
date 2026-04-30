@@ -35,9 +35,60 @@ public protocol MutableSecretStore: SecretStore {
     /// map on every write — caller is expected to merge before calling
     /// (the typical pattern: read, insert one entry, write back).
     func setKeyActivationMap(_ map: [String: Date]) throws
+    /// Read the recent-servers list, sorted by `lastUsedAt` descending
+    /// (most recently used first). Returns an empty array on installs
+    /// that predate this storage. Powers onboarding's URL field
+    /// autocomplete.
+    func recentServers() throws -> [RecentServerEntry]
+    /// Upsert a recent-server entry. If an entry with a matching
+    /// canonicalized URL exists, its `lastUsedAt` is bumped and `email`
+    /// updated; otherwise a new row is inserted. The list is capped at
+    /// `RecentServerEntry.maxRetained` after the upsert (oldest dropped).
+    func recordRecentServer(_ entry: RecentServerEntry) throws
+    /// Wipe the recent-servers list without touching anything else.
+    /// Surfaced through Settings → Privacy as a less-nuclear option
+    /// than "Reset index — all accounts."
+    func clearRecentServers() throws
     /// Remove every secret this store manages. Idempotent — safe to
     /// call on sign-out even if one secret was already missing.
     func clear() throws
+}
+
+/// One entry in the recent-servers list. Stored in Keychain as JSON.
+/// `url` is canonicalized (trailing-slash stripped, lowercased host)
+/// at insert time so deduplication works across casing/format
+/// variations the user types differently across sessions.
+public struct RecentServerEntry: Sendable, Codable, Equatable {
+    public let url: String
+    public let email: String?
+    public let lastUsedAt: Date
+
+    public init(url: String, email: String? = nil, lastUsedAt: Date = Date()) {
+        self.url = url
+        self.email = email
+        self.lastUsedAt = lastUsedAt
+    }
+
+    /// Cap on the retained list. Beyond this, the oldest entry drops
+    /// on the next `recordRecentServer` call. Ten covers the realistic
+    /// "I switch between a couple homelab boxes and a backup server"
+    /// scenarios without storing arbitrary historical entries.
+    public static let maxRetained: Int = 10
+
+    /// Canonicalize a URL string for dedup: strip trailing slashes,
+    /// lowercase the scheme + host, leave path/query intact. Returns
+    /// the input unchanged if it can't parse — keeps the storage
+    /// resilient to weird inputs (the user's typo is still saved).
+    public static func canonicalize(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let comps = URLComponents(string: trimmed) else { return trimmed }
+        var c = comps
+        c.scheme = c.scheme?.lowercased()
+        c.host = c.host?.lowercased()
+        var s = c.string ?? trimmed
+        while s.hasSuffix("/") { s.removeLast() }
+        return s
+    }
 }
 
 /// Keychain-specific errors. Surfaces the raw `OSStatus` rather than
@@ -114,19 +165,25 @@ public struct KeychainSecretStore: MutableSecretStore, Sendable {
     /// or missing on installs that predate per-key activation tracking;
     /// `AppDependencies` seeds the current key on bootstrap.
     public let keyActivationsAccount: String
+    /// `kSecAttrAccount` for the recent-servers autocomplete list.
+    /// Stored as a JSON array of `RecentServerEntry`. Wipeable
+    /// independently of credentials via `clearRecentServers()`.
+    public let recentServersAccount: String
 
     public init(service: String = "app.cairn.immich",
                 urlAccount: String = "server-url",
                 keyAccount: String = "api-key",
                 userIdAccount: String = "user-id",
                 userEmailAccount: String = "user-email",
-                keyActivationsAccount: String = "key-activations") {
+                keyActivationsAccount: String = "key-activations",
+                recentServersAccount: String = "recent-servers") {
         self.service = service
         self.urlAccount = urlAccount
         self.keyAccount = keyAccount
         self.userIdAccount = userIdAccount
         self.userEmailAccount = userEmailAccount
         self.keyActivationsAccount = keyActivationsAccount
+        self.recentServersAccount = recentServersAccount
     }
 
     // MARK: - SecretStore
@@ -210,12 +267,49 @@ public struct KeychainSecretStore: MutableSecretStore, Sendable {
         try writeString(json, account: keyActivationsAccount)
     }
 
+    public func recentServers() throws -> [RecentServerEntry] {
+        guard let raw = try readOptionalString(account: recentServersAccount) else {
+            return []
+        }
+        guard let data = raw.data(using: .utf8) else {
+            return []
+        }
+        let entries = (try? JSONDecoder().decode([RecentServerEntry].self, from: data)) ?? []
+        return entries.sorted { $0.lastUsedAt > $1.lastUsedAt }
+    }
+
+    public func recordRecentServer(_ entry: RecentServerEntry) throws {
+        let canonical = RecentServerEntry.canonicalize(entry.url)
+        var current = try recentServers()
+        // Drop any matching canonicalized URL — we'll re-insert with
+        // the new lastUsedAt + email below. Comparison is case-
+        // insensitive on the canonical form.
+        current.removeAll { RecentServerEntry.canonicalize($0.url).caseInsensitiveCompare(canonical) == .orderedSame }
+        current.insert(
+            RecentServerEntry(url: canonical, email: entry.email, lastUsedAt: entry.lastUsedAt),
+            at: 0
+        )
+        if current.count > RecentServerEntry.maxRetained {
+            current = Array(current.prefix(RecentServerEntry.maxRetained))
+        }
+        let data = try JSONEncoder().encode(current)
+        guard let json = String(data: data, encoding: .utf8) else {
+            throw KeychainError.unexpectedItemFormat
+        }
+        try writeString(json, account: recentServersAccount)
+    }
+
+    public func clearRecentServers() throws {
+        try delete(account: recentServersAccount)
+    }
+
     public func clear() throws {
         try delete(account: urlAccount)
         try delete(account: keyAccount)
         try delete(account: userIdAccount)
         try delete(account: userEmailAccount)
         try delete(account: keyActivationsAccount)
+        try delete(account: recentServersAccount)
     }
 
     // MARK: - Keychain primitives

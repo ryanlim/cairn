@@ -2442,6 +2442,17 @@ final class AppDependencies {
                         if let identity {
                             try? secrets.setUserIdentity(id: identity.id, email: identity.email)
                         }
+                        // Record the verified URL in the recent-servers
+                        // list. Only on success, so typos and broken
+                        // hostnames don't pollute autocomplete. Email
+                        // is best-effort context — surfaces in the
+                        // suggestions menu as "URL — email" when the
+                        // user has multiple accounts on the same box.
+                        try? secrets.recordRecentServer(.init(
+                            url: url.absoluteString,
+                            email: identity?.email,
+                            lastUsedAt: Date()
+                        ))
                         let priorPartitionKey = await MainActor.run { self.currentPartitionKey }
                         try? await MainActor.run {
                             try self.activateServer(url: url, apiKey: key, userId: identity?.id)
@@ -2888,6 +2899,20 @@ final class AppDependencies {
             recomputeScopeTags: { [weak self] in
                 guard let self else { return }
                 await self.recomputeScopeTagsImpl()
+            },
+            recentServers: { [weak self] in
+                guard let self else { return [] }
+                let store = self.secretStore
+                return await Task.detached(priority: .userInitiated) {
+                    (try? store.recentServers()) ?? []
+                }.value
+            },
+            clearRecentServers: { [weak self] in
+                guard let self else { return }
+                let store = self.secretStore
+                await Task.detached(priority: .userInitiated) {
+                    try? store.clearRecentServers()
+                }.value
             }
         )
 
