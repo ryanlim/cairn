@@ -1595,7 +1595,10 @@ final class AppDependencies {
     /// who re-onboards on a new device or after a wipe sees the
     /// notice once on their fresh setup. Distinct from the
     /// per-account / per-key state — this is a device-level UX hint.
-    private static let limitedPhotosNoticeKey = "cairn.ui.limitedPhotosNoticeShown"
+    /// `nonisolated` because the helpers that read/write it are
+    /// `nonisolated` (called from sync paths off the main actor) and
+    /// a `let` constant string is trivially safe to read concurrently.
+    nonisolated private static let limitedPhotosNoticeKey = "cairn.ui.limitedPhotosNoticeShown"
 
     nonisolated fileprivate static func hasShownLimitedPhotosNotice() -> Bool {
         UserDefaults.standard.bool(forKey: limitedPhotosNoticeKey)
