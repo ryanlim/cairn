@@ -917,6 +917,11 @@ final class AppDependencies {
         }()
         await MainActor.run { self.model.photoAuthStatus = photoAuthOutcome }
 
+        // Diagnostic: surface the inputs and outputs of the engine
+        // call so "items in unconfirmed not held" reports can be
+        // narrowed without a rebuild. Counts only.
+        syncLog.notice("[cairn.engine] input: server=\(serverAssets.count, privacy: .public) local=\(extendedLocal.count, privacy: .public) everSeen=\(everSeenSet.count, privacy: .public) confirmed=\(confirmedMap.count, privacy: .public) excluded=\(exclusionSet.count, privacy: .public) strictness=\(String(describing: effectiveStrictness), privacy: .public) qDays=\(settings.quarantineDays, privacy: .public) scope=\(selectedAlbumScope?.count ?? -1, privacy: .public)")
+
         var result = ReconciliationEngine.compute(.init(
             serverAssets: serverAssets,
             currentLocalChecksums: extendedLocal,
@@ -930,6 +935,7 @@ final class AppDependencies {
             selectedAlbumScope: selectedAlbumScope,
             excludedAtByChecksum: exclusionAddedAt
         ))
+        syncLog.notice("[cairn.engine] output: delete=\(result.deleteCandidates.count, privacy: .public) pending=\(result.pendingReviewCandidates.count, privacy: .public) held=\(result.heldByQuarantineCandidates.count, privacy: .public) recycled=\(result.recycledExclusionCandidates.count, privacy: .public) excludedCount=\(result.excludedCandidateCount, privacy: .public)")
 
         // Token-expiry safety gate. A full re-enumeration triggered by an
         // expired (or unparseable) persistent-change token means the change
