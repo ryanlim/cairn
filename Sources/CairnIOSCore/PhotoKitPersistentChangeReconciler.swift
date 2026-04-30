@@ -765,6 +765,14 @@ public final class PhotoKitPersistentChangeReconciler {
         } else {
             stampable = trulyAbsent
         }
+        // Diagnostic: surface every count that gates stamping. Users
+        // hitting "deletes don't go to quarantine, everything's in
+        // unconfirmed" need to be able to read the failure mode from
+        // logs without re-instrumenting a build. Counts only — no
+        // checksum payloads (PII boundary).
+        Self.reconLog.notice(
+            "[cairn.recon] stamp gate: removed=\(removedChecksums.count, privacy: .public) preOrphan=\(preOrphanRemoved.count, privacy: .public) trulyAbsent=\(trulyAbsent.count, privacy: .public) stillLocal=\(stillLocal.count, privacy: .public) stampable=\(stampable.count, privacy: .public) requireExplicit=\(self.requireExplicitDeletionEvent, privacy: .public) fromPhotoKit=\(confirmedFromPhotoKitCount, privacy: .public) fromOrphan=\(confirmedFromOrphanSweepCount, privacy: .public)"
+        )
         if !stampable.isEmpty {
             try await confirmedDeleted.union(stampable, at: now)
             // Persist the source-id mapping for the truly-absent
