@@ -309,7 +309,15 @@ public struct KeychainSecretStore: MutableSecretStore, Sendable {
         try delete(account: userIdAccount)
         try delete(account: userEmailAccount)
         try delete(account: keyActivationsAccount)
-        try delete(account: recentServersAccount)
+        // `recentServersAccount` is intentionally preserved here.
+        // Sign-out brings the user back to the onboarding flow,
+        // and the whole point of the autocomplete is to make
+        // returning to a known server fast — wiping it on
+        // sign-out defeats that. Two explicit user-driven paths
+        // wipe it: "Clear saved servers" (Settings → Danger zone
+        // → just this list) and "Reset Index — all accounts"
+        // (the nuclear, which calls `clearRecentServers()`
+        // alongside its other wipes).
     }
 
     // MARK: - Keychain primitives

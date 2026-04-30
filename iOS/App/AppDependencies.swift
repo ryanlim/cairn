@@ -2619,6 +2619,14 @@ final class AppDependencies {
                 try? secrets.setKeyActivationMap([fp: now])
                 await MainActor.run { self.currentKeyActivatedAt = now }
 
+                // Step 4: wipe the recent-servers autocomplete list.
+                // Pointing at accounts that were just removed is at
+                // best stale and at worst confusing — the user
+                // explicitly asked to clear everything cairn knew.
+                // (Plain sign-out preserves the list; this is the
+                // hard-nuclear path.)
+                try? secrets.clearRecentServers()
+
                 await MainActor.run {
                     self.resetModelAfterIndexClear()
                     if failures.isEmpty {
