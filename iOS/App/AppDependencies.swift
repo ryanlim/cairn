@@ -3143,30 +3143,61 @@ final class AppDependencies {
         let newContainer = serverContainerURL(for: newKey)
         // SwiftData stores spawn `-shm` / `-wal` sibling files alongside
         // the main `.store`. Move all three for a clean migration.
+        //
+        // When BOTH src and dst exist we delete src instead. Earlier
+        // we left it alone, but that produces a phantom-partition bug:
+        // bootstrap routes to the URL-only partition when no userId is
+        // cached (e.g. right after sign-out), then `verifyServer`
+        // switches to URL+userId. User-driven actions taken in the
+        // first state (clear-exclusions etc.) hit the legacy partition
+        // — which is then irrelevant once the user re-verifies. Net
+        // effect: stuff the user thought they wiped reappears the
+        // moment a userId lands. Deleting the orphan legacy partition
+        // is safe: dst is the canonical newer state by construction
+        // (it's what the user has been writing to since per-(URL,
+        // userId) partitioning landed), and a userId is cached only
+        // after a successful `usersMe()` against the same URL.
         for suffix in ["", "-shm", "-wal"] {
             let src = URL(fileURLWithPath: legacyContainer.path + suffix)
             let dst = URL(fileURLWithPath: newContainer.path + suffix)
-            if fm.fileExists(atPath: src.path), !fm.fileExists(atPath: dst.path) {
+            let srcExists = fm.fileExists(atPath: src.path)
+            let dstExists = fm.fileExists(atPath: dst.path)
+            if srcExists && !dstExists {
                 do {
                     try fm.moveItem(at: src, to: dst)
                 } catch {
                     syncLog.error("[cairn.migrate] couldn't move \(src.lastPathComponent, privacy: .public) → \(dst.lastPathComponent, privacy: .public): \(String(describing: error), privacy: .public)")
                 }
+            } else if srcExists && dstExists {
+                do {
+                    try fm.removeItem(at: src)
+                    syncLog.notice("[cairn.migrate] removed orphan legacy file \(src.lastPathComponent, privacy: .public) (dst already populated)")
+                } catch {
+                    syncLog.error("[cairn.migrate] couldn't remove orphan legacy file \(src.lastPathComponent, privacy: .public): \(String(describing: error), privacy: .public)")
+                }
             }
         }
 
-        // Journal directory rename. The legacy layout puts every per-
-        // server file under `documents/servers/<dirName>/`; we move the
-        // whole directory to the new dirName and the journal file
-        // (deletion-journal.jsonl) inside it carries forward intact.
+        // Journal directory rename. Same orphan-cleanup logic as the
+        // store files above: if the destination already exists, the
+        // legacy directory is the phantom and gets removed.
         let docs = documentsDirectory().appending(path: "servers")
         let legacyJournalDir = docs.appending(path: legacyKey.directoryName)
         let newJournalDir = docs.appending(path: newKey.directoryName)
-        if fm.fileExists(atPath: legacyJournalDir.path), !fm.fileExists(atPath: newJournalDir.path) {
+        let legacyJournalExists = fm.fileExists(atPath: legacyJournalDir.path)
+        let newJournalExists = fm.fileExists(atPath: newJournalDir.path)
+        if legacyJournalExists && !newJournalExists {
             do {
                 try fm.moveItem(at: legacyJournalDir, to: newJournalDir)
             } catch {
                 syncLog.error("[cairn.migrate] couldn't move journal dir \(legacyJournalDir.lastPathComponent, privacy: .public) → \(newJournalDir.lastPathComponent, privacy: .public): \(String(describing: error), privacy: .public)")
+            }
+        } else if legacyJournalExists && newJournalExists {
+            do {
+                try fm.removeItem(at: legacyJournalDir)
+                syncLog.notice("[cairn.migrate] removed orphan legacy journal dir \(legacyJournalDir.lastPathComponent, privacy: .public) (dst already populated)")
+            } catch {
+                syncLog.error("[cairn.migrate] couldn't remove orphan legacy journal dir \(legacyJournalDir.lastPathComponent, privacy: .public): \(String(describing: error), privacy: .public)")
             }
         }
         syncLog.notice("[cairn.migrate] partition rename: \(legacyKey.directoryName, privacy: .public) → \(newKey.directoryName, privacy: .public)")
