@@ -813,6 +813,14 @@ public struct StatusScreen: View {
                                 .opacity(0.88).fixedSize(horizontal: false, vertical: true)
                         }
                     }
+                case .limitedPhotosNotice:
+                    Callout(.info, icon: "info.circle") {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Limited Photos access").fontWeight(.semibold)
+                            (Text("Missed deletes will route to ") + Text("Pending review").fontWeight(.semibold) + Text(" for confirmation. See Settings → Permissions for detail."))
+                                .opacity(0.88).fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
                 }
             }
             .padding(.horizontal, 16).padding(.bottom, 12)

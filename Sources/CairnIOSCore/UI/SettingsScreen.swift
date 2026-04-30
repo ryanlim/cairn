@@ -72,6 +72,12 @@ public struct SettingsScreen: View {
     /// tab — see `CairnTabBar.onReselect`. Each increment scrolls the
     /// screen back to the top.
     public let scrollResetToken: Int
+    /// Live PhotoKit auth state. Drives the Permissions row's value
+    /// label ("Full library" / "Selected photos" / "Denied") and a
+    /// follow-up explanation when `.limited`. `nil` falls back to the
+    /// legacy hardcoded "Full library" copy for previews and any host
+    /// that doesn't supply a status.
+    public let photoAuthStatus: SetupScreen.PhotoAuthOutcome?
 
     @Environment(\.cairnTokens) private var t
     @State private var pendingResetIndex: Bool = false
@@ -108,7 +114,8 @@ public struct SettingsScreen: View {
         onExportData: @escaping (CairnExportScope) -> Void = { _ in },
         onImportData: @escaping (URL, Bool) -> Void = { _, _ in },
         onOpenAlbumPicker: @escaping () -> Void = {},
-        scrollResetToken: Int = 0
+        scrollResetToken: Int = 0,
+        photoAuthStatus: SetupScreen.PhotoAuthOutcome? = nil
     ) {
         self._settings = settings
         self.serverUrl = serverUrl
@@ -133,6 +140,7 @@ public struct SettingsScreen: View {
         self.onImportData = onImportData
         self.onOpenAlbumPicker = onOpenAlbumPicker
         self.scrollResetToken = scrollResetToken
+        self.photoAuthStatus = photoAuthStatus
     }
 
     public var body: some View {
@@ -441,7 +449,7 @@ public struct SettingsScreen: View {
                     // away rather than a "go find it yourself" trek.
                     KeyValRow(
                         "Photos access",
-                        value: { Text("Full library").foregroundStyle(t.verifiedInk) },
+                        value: { photoAccessValueLabel },
                         chevron: true,
                         onTap: openIOSSettings
                     )
@@ -454,6 +462,39 @@ public struct SettingsScreen: View {
                     )
                 }
             }
+            // Explanatory note for `.limited` mode. Lives outside the
+            // card as a soft-tone Callout so it reads as context, not
+            // as another tap target. Hidden under `.full` and `.denied`
+            // (denied has its own actionable copy elsewhere).
+            if photoAuthStatus == .limited {
+                Callout(.info, icon: "info.circle") {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Limited Photos access").fontWeight(.semibold)
+                        (Text.cairnWord + Text(" can only see the photos you selected. Normal deletes still propagate, but any delete the system change-log misses (or any photo you deselect from the picked set) goes to ") + Text("Pending review").fontWeight(.semibold) + Text(" for manual confirmation instead of auto-trashing on Immich. Switch to Full Photos access for the strongest automatic safety."))
+                            .opacity(0.88).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, 8)
+            }
+        }
+    }
+
+    /// "Full library" / "Selected photos" / "Denied" / fallback copy
+    /// for the Photos-access row, color-coded by health.
+    @ViewBuilder
+    private var photoAccessValueLabel: some View {
+        switch photoAuthStatus {
+        case .full:
+            Text("Full library").foregroundStyle(t.verifiedInk)
+        case .limited:
+            Text("Selected photos").foregroundStyle(t.pendingInk)
+        case .denied:
+            Text("Denied").foregroundStyle(t.dangerInk)
+        case .none:
+            // No status yet (preview, mid-bootstrap). Match the
+            // legacy hardcoded copy so nothing regresses visually.
+            Text("Full library").foregroundStyle(t.verifiedInk)
         }
     }
 

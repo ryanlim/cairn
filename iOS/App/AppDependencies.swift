@@ -895,10 +895,27 @@ final class AppDependencies {
         // instead of trash. The user's original strictness setting is
         // preserved in `CairnSettings`; if they switch back to full
         // access later, normal behavior resumes.
-        let limitedAccess = PHPhotoLibrary.authorizationStatus(for: .readWrite) == .limited
+        let rawAuth = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        let limitedAccess = rawAuth == .limited
         let effectiveStrictness: DeletionStrictness = limitedAccess
             ? .strict
             : settings.deletionStrictness
+
+        // Mirror the live auth state into the model so Settings'
+        // Permissions row + the Status one-shot toast can show real
+        // state. Set on every sync so foreground transitions back from
+        // iOS Settings (.limited → .full or vice versa) reflect
+        // immediately on the next reconciliation.
+        let photoAuthOutcome: SetupScreen.PhotoAuthOutcome? = {
+            switch rawAuth {
+            case .authorized: return .full
+            case .limited:    return .limited
+            case .denied, .restricted: return .denied
+            case .notDetermined: return nil
+            @unknown default: return nil
+            }
+        }()
+        await MainActor.run { self.model.photoAuthStatus = photoAuthOutcome }
 
         var result = ReconciliationEngine.compute(.init(
             serverAssets: serverAssets,
@@ -1127,7 +1144,15 @@ final class AppDependencies {
         await refreshRunsList()
         await refreshQuarantineCount()
 
-        if result.deleteCandidates.isEmpty && result.pendingReviewCandidates.isEmpty {
+        // Toast priority: the limited-photos heads-up wins on first
+        // detection — explaining the trust downgrade matters more than
+        // the routine "up to date" pat-on-the-back. After it fires
+        // once (gated in UserDefaults below), subsequent syncs return
+        // to the normal upToDate / nil pattern.
+        if limitedAccess && !Self.hasShownLimitedPhotosNotice() {
+            Self.markLimitedPhotosNoticeShown()
+            showStatusToast(.limitedPhotosNotice)
+        } else if result.deleteCandidates.isEmpty && result.pendingReviewCandidates.isEmpty {
             showStatusToast(.upToDate(indexed: indexedCount, total: totalVisibleAssets))
         } else {
             model.syncToast = nil
@@ -1563,6 +1588,25 @@ final class AppDependencies {
 
     nonisolated fileprivate static func isUsablePhotoAuth(_ status: PHAuthorizationStatus) -> Bool {
         return status == .authorized || status == .limited
+    }
+
+    /// UserDefaults key for the one-shot Limited-Photos heads-up
+    /// toast. Set on first detection; reset by `signOut` so a user
+    /// who re-onboards on a new device or after a wipe sees the
+    /// notice once on their fresh setup. Distinct from the
+    /// per-account / per-key state — this is a device-level UX hint.
+    private static let limitedPhotosNoticeKey = "cairn.ui.limitedPhotosNoticeShown"
+
+    nonisolated fileprivate static func hasShownLimitedPhotosNotice() -> Bool {
+        UserDefaults.standard.bool(forKey: limitedPhotosNoticeKey)
+    }
+
+    nonisolated fileprivate static func markLimitedPhotosNoticeShown() {
+        UserDefaults.standard.set(true, forKey: limitedPhotosNoticeKey)
+    }
+
+    nonisolated fileprivate static func resetLimitedPhotosNotice() {
+        UserDefaults.standard.removeObject(forKey: limitedPhotosNoticeKey)
     }
 
     /// Stable, anonymous-ish identifier for an API key. SHA256 of the
@@ -2701,6 +2745,11 @@ final class AppDependencies {
                     keychainError = error
                     syncLog.error("[cairn.signout] keychain clear failed: \(Self.describeSyncError(error), privacy: .public)")
                 }
+                // Reset the one-shot Limited-Photos notice so a user
+                // who signs back in on this device (or a different
+                // user on a shared device) sees the heads-up again
+                // on their first .limited sync.
+                AppDependencies.resetLimitedPhotosNotice()
                 await self?.thumbnailLoader?.clearCache()
                 await MainActor.run {
                     guard let self else { return }

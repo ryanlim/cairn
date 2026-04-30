@@ -529,7 +529,8 @@ public struct CairnAppRoot: View {
                     }
                 },
                 onOpenAlbumPicker: { model.presentedSheet = .albumPicker },
-                scrollResetToken: scrollResetTokens["settings"] ?? 0
+                scrollResetToken: scrollResetTokens["settings"] ?? 0,
+                photoAuthStatus: model.photoAuthStatus
             )
         default:
             EmptyView()

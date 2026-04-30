@@ -80,6 +80,16 @@ public final class CairnAppModel {
     /// Populated at bootstrap and on verify; surfaces a banner on Status.
     public var missingPermissions: [String] = []
 
+    /// Live PhotoKit authorization outcome. `.full` is the canonical
+    /// healthy state; `.limited` triggers the safety guards described
+    /// in `AppDependencies.performLiveReconciliation` (forced `.strict`
+    /// strictness + `requireExplicitDeletionEvent` on the reconciler).
+    /// Settings surfaces this verbatim and the Status screen shows a
+    /// one-shot toast on the first sync after the app detects
+    /// `.limited` so the user understands the trust downgrade. `nil`
+    /// pre-bootstrap or when the auth check hasn't completed.
+    public var photoAuthStatus: SetupScreen.PhotoAuthOutcome? = nil
+
     // MARK: - Live reconciliation result
 
     /// Most recent result from `actions.requestSync`. `nil` until the first
@@ -234,6 +244,13 @@ public final class CairnAppModel {
         /// Rescan queued — token + defer queue cleared, user is
         /// routed back to the initial-scan screen.
         case rescanQueued
+        /// One-shot heads-up that the app is operating under `.limited`
+        /// PhotoKit auth. Fires once per `.limited` session (gated by
+        /// UserDefaults so a user who's chosen Limited intentionally
+        /// doesn't get nagged every sync). Explains the resulting
+        /// trust downgrade so the user knows what to expect — full
+        /// detail lives in Settings → Permissions.
+        case limitedPhotosNotice
 
         public static let autoDismissSeconds: TimeInterval = 4
     }
