@@ -43,6 +43,9 @@ public struct SettingsScreen: View {
     public let onResetIndexAllAccounts: () -> Void
     public let onClearJournal: () -> Void
     public let onClearJournalAllKeys: () -> Void
+    /// Wipe the keychain-backed recent-servers autocomplete list.
+    /// Doesn't touch credentials, journal, or index — surgical.
+    public let onClearRecentServers: () -> Void
     public let onSignOut: () -> Void
     public let onRescanLibrary: () -> Void
     public let deferredQueue: CairnAppModel.DeferredQueueSummary
@@ -75,6 +78,7 @@ public struct SettingsScreen: View {
     @State private var pendingRescanLibrary: Bool = false
     @State private var pendingClearJournal: Bool = false
     @State private var pendingSignOut: Bool = false
+    @State private var pendingClearRecentServers: Bool = false
     @State private var advancedExpanded: Bool = false
     @State private var howItWorksExpanded: Bool = false
     @State private var showExportPicker = false
@@ -93,6 +97,7 @@ public struct SettingsScreen: View {
         onResetIndexAllAccounts: @escaping () -> Void = {},
         onClearJournal: @escaping () -> Void = {},
         onClearJournalAllKeys: @escaping () -> Void = {},
+        onClearRecentServers: @escaping () -> Void = {},
         onSignOut: @escaping () -> Void = {},
         onRescanLibrary: @escaping () -> Void = {},
         deferredQueue: CairnAppModel.DeferredQueueSummary = .empty,
@@ -116,6 +121,7 @@ public struct SettingsScreen: View {
         self.onResetIndexAllAccounts = onResetIndexAllAccounts
         self.onClearJournal = onClearJournal
         self.onClearJournalAllKeys = onClearJournalAllKeys
+        self.onClearRecentServers = onClearRecentServers
         self.onSignOut = onSignOut
         self.onRescanLibrary = onRescanLibrary
         self.deferredQueue = deferredQueue
@@ -206,6 +212,17 @@ public struct SettingsScreen: View {
             },
             message: {
                 Text("Forgets your Immich URL and API key, and drops the cached thumbnails fetched with them. You'll land back on the onboarding flow — indexed state on this device is preserved for when you sign in again.")
+            }
+        )
+        .alert(
+            "Clear saved servers?",
+            isPresented: $pendingClearRecentServers,
+            actions: {
+                Button("Cancel", role: .cancel) {}
+                Button("Clear", role: .destructive) { onClearRecentServers() }
+            },
+            message: {
+                Text("Wipes the URL autocomplete list shown on the onboarding screen. Credentials, indexed state, journal, and exclusions are kept.")
             }
         )
         .confirmationDialog(
@@ -678,6 +695,13 @@ public struct SettingsScreen: View {
                         value: { Text("Delete JSONL").foregroundStyle(t.dangerInk) },
                         chevron: true,
                         onTap: { pendingClearJournal = true }
+                    )
+                    RowDivider()
+                    KeyValRow(
+                        "Clear saved servers",
+                        value: { Text("Wipe autocomplete").foregroundStyle(t.dangerInk) },
+                        chevron: true,
+                        onTap: { pendingClearRecentServers = true }
                     )
                     RowDivider()
                     KeyValRow(
