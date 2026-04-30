@@ -1290,6 +1290,12 @@ public struct StatusScreen: View {
                         .font(.system(size: 12))
                         .foregroundStyle(t.textMuted)
                         .padding(.vertical, 6)
+                        // Without this, the empty-state Text collapses to
+                        // its intrinsic width and the surrounding card
+                        // shrinks with it — visibly narrower than the
+                        // populated card next to it. Pinning to .infinity
+                        // standardizes card width across filter states.
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 } else {
                     // Single 2D ScrollView so rows shift together on
                     // both axes — column alignment stays correct when
