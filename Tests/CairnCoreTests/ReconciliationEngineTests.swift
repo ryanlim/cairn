@@ -648,6 +648,113 @@ struct ReconciliationEngineTests {
         #expect(output.excludedCandidateCount == 1)
     }
 
+    // MARK: - Limited Photos + scope-restricted deletion (user-reported scenario)
+
+    @Test("limited-scope demo: 25-asset album, 5 freshly confirmed → all 5 in held + pending under .strict")
+    func limitedScopeFiveDeletesAllHeld() {
+        // Reproduces the user-reported flow exactly: cairn restricted
+        // to a single album of 25 photos, iOS Photos auth = .limited
+        // (which forces .strict in performLiveReconciliation), 5 photos
+        // deleted in Photos.app, change-log fired and the iOS-side
+        // reconciler stamped 5 checksums into ConfirmedDeletedStore at
+        // `now`. Engine input mirrors that post-stamp state.
+        //
+        // Expected: all 5 land in heldByQuarantineCandidates (and in
+        // pendingReviewCandidates as a superset). deleteCandidates is
+        // empty because nothing has aged past the quarantine window.
+        // If this test ever fails, the engine has regressed; if it
+        // passes while the device shows "everything in unconfirmed,"
+        // the bug is in the iOS-side stamping path (look at the
+        // `[cairn.recon] stamp gate:` log line).
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let albumId = "album-1"
+        let scope: Set<String> = [albumId]
+
+        // 25 server assets, all in everSeen with album-1 tags.
+        var server: [ServerAsset] = []
+        var ever: Set<Checksum> = []
+        var tags: [Checksum: Set<String>] = [:]
+        for i in 0..<25 {
+            let ck = Checksum(base64: "asset-\(i)")
+            server.append(ServerAsset(id: "s\(i)", checksum: ck, livePhotoVideoId: nil, isTrashed: false))
+            ever.insert(ck)
+            tags[ck] = [albumId]
+        }
+
+        // 20 still local (the 5 deleted are gone).
+        let currentLocal = Set(server.prefix(20).map(\.checksum))
+        // 5 freshly stamped confirmed deletions.
+        var confirmedAt: [Checksum: Date] = [:]
+        for asset in server.suffix(5) {
+            confirmedAt[asset.checksum] = now
+        }
+
+        let output = ReconciliationEngine.compute(.init(
+            serverAssets: server,
+            currentLocalChecksums: currentLocal,
+            everSeenChecksums: ever,
+            excludedChecksums: [],
+            confirmedDeletedAt: confirmedAt,
+            now: now,
+            quarantineDays: 14,
+            strictness: .strict,
+            everSeenAlbumTags: tags,
+            selectedAlbumScope: scope
+        ))
+
+        #expect(output.deleteCandidates.isEmpty,
+                "Fresh confirmations should be held by quarantine, not eligible to trash.")
+        #expect(output.heldByQuarantineCandidates.count == 5,
+                "All 5 deletions are within the 14-day window → held.")
+        #expect(output.pendingReviewCandidates.count == 5,
+                "Under .strict, held items also surface in pending review.")
+        // Sanity: the 5 held items are exactly the deleted suffix.
+        let expected = Set(server.suffix(5).map(\.id))
+        #expect(Set(output.heldByQuarantineCandidates.map(\.id)) == expected)
+    }
+
+    @Test("limited-scope demo: 5 missing-from-local but unconfirmed → all 5 in pending only (no held), strict")
+    func limitedScopeUnconfirmedAllPending() {
+        // Failure-mode mirror of the test above: 5 are missing locally
+        // (diff sees them as candidates) but ConfirmedDeletedStore is
+        // empty — the iOS reconciler failed to stamp (assetsd hiccup,
+        // events lost, requireExplicitDeletionEvent gating an orphan
+        // sweep find under .limited, etc). Under .strict, every diff
+        // candidate without a positive signal lands in pending review.
+        // This is what the user actually saw: 0 held, 5 in pending.
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let albumId = "album-1"
+
+        var server: [ServerAsset] = []
+        var ever: Set<Checksum> = []
+        var tags: [Checksum: Set<String>] = [:]
+        for i in 0..<25 {
+            let ck = Checksum(base64: "asset-\(i)")
+            server.append(ServerAsset(id: "s\(i)", checksum: ck, livePhotoVideoId: nil, isTrashed: false))
+            ever.insert(ck)
+            tags[ck] = [albumId]
+        }
+        let currentLocal = Set(server.prefix(20).map(\.checksum))
+
+        let output = ReconciliationEngine.compute(.init(
+            serverAssets: server,
+            currentLocalChecksums: currentLocal,
+            everSeenChecksums: ever,
+            excludedChecksums: [],
+            confirmedDeletedAt: [:],   // nothing stamped — the regression case
+            now: now,
+            quarantineDays: 14,
+            strictness: .strict,
+            everSeenAlbumTags: tags,
+            selectedAlbumScope: [albumId]
+        ))
+
+        #expect(output.deleteCandidates.isEmpty)
+        #expect(output.heldByQuarantineCandidates.isEmpty)
+        #expect(output.pendingReviewCandidates.count == 5,
+                "Without ConfirmedDeleted stamps, .strict routes the 5 diff candidates to pending only.")
+    }
+
     @Test("recycled exclusion: partial — some excluded re-deleted, others not")
     func recycledPartial() {
         // B is recycled (excluded then re-deleted); C stays excluded
