@@ -500,6 +500,7 @@ public struct CairnAppRoot: View {
                 onResetIndexAllAccounts: { Task { await model.actions.resetIndexAllAccounts() } },
                 onClearJournal: { Task { await model.actions.clearJournal() } },
                 onClearJournalAllKeys: { Task { await model.actions.clearJournalAllKeys() } },
+                onClearExclusions: { Task { await model.actions.clearExclusions() } },
                 onClearRecentServers: { Task { await model.actions.clearRecentServers() } },
                 onSignOut: { Task { await model.actions.signOut() } },
                 onRescanLibrary: { Task { await model.actions.rescanLibrary() } },

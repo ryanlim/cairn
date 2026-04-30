@@ -43,6 +43,15 @@ public struct SettingsScreen: View {
     public let onResetIndexAllAccounts: () -> Void
     public let onClearJournal: () -> Void
     public let onClearJournalAllKeys: () -> Void
+    /// Wipe every entry in the active partition's `ExclusionStore`.
+    /// Surgical — doesn't touch the index, journal, or credentials.
+    /// Distinct from per-row unexclude on the Excluded screen.
+    public let onClearExclusions: () -> Void
+    /// Count of exclusions for the active partition, surfaced in the
+    /// Settings row as the value label so the user can see what's
+    /// about to be wiped before confirming. Same source as
+    /// `excludedCount` above; kept as a separate prop for clarity.
+    /// (Reuses `excludedCount` at render time.)
     /// Wipe the keychain-backed recent-servers autocomplete list.
     /// Doesn't touch credentials, journal, or index — surgical.
     public let onClearRecentServers: () -> Void
@@ -85,6 +94,7 @@ public struct SettingsScreen: View {
     @State private var pendingClearJournal: Bool = false
     @State private var pendingSignOut: Bool = false
     @State private var pendingClearRecentServers: Bool = false
+    @State private var pendingClearExclusions: Bool = false
     @State private var advancedExpanded: Bool = false
     @State private var howItWorksExpanded: Bool = false
     @State private var showExportPicker = false
@@ -103,6 +113,7 @@ public struct SettingsScreen: View {
         onResetIndexAllAccounts: @escaping () -> Void = {},
         onClearJournal: @escaping () -> Void = {},
         onClearJournalAllKeys: @escaping () -> Void = {},
+        onClearExclusions: @escaping () -> Void = {},
         onClearRecentServers: @escaping () -> Void = {},
         onSignOut: @escaping () -> Void = {},
         onRescanLibrary: @escaping () -> Void = {},
@@ -128,6 +139,7 @@ public struct SettingsScreen: View {
         self.onResetIndexAllAccounts = onResetIndexAllAccounts
         self.onClearJournal = onClearJournal
         self.onClearJournalAllKeys = onClearJournalAllKeys
+        self.onClearExclusions = onClearExclusions
         self.onClearRecentServers = onClearRecentServers
         self.onSignOut = onSignOut
         self.onRescanLibrary = onRescanLibrary
@@ -185,7 +197,7 @@ public struct SettingsScreen: View {
                 Button("All accounts on this device", role: .destructive) { onResetIndexAllAccounts() }
             },
             message: {
-                Text("This account: clears the SHA1 cache, change-tracking baseline, ever-seen set, and quarantine state for the active Immich account. Exclusions and credentials are kept; the next sync re-hashes your library.\n\nAll accounts: also wipes every other (URL, user) partition cairn has cached on this device. Use after a shared/dev-device cleanup.")
+                Text("This account: clears the SHA1 cache, change-tracking baseline, ever-seen set, and quarantine state for the active Immich account. Exclusions, credentials, and saved servers are kept; the next sync re-hashes your library.\n\nAll accounts: also wipes every other (URL, user) partition cairn has cached on this device, plus the active account's exclusions and the saved-servers list. Use after a shared/dev-device cleanup.")
             }
         )
         .alert(
@@ -231,6 +243,17 @@ public struct SettingsScreen: View {
             },
             message: {
                 Text("Wipes the URL autocomplete list shown on the onboarding screen. Credentials, indexed state, journal, and exclusions are kept.")
+            }
+        )
+        .alert(
+            "Clear excluded assets?",
+            isPresented: $pendingClearExclusions,
+            actions: {
+                Button("Cancel", role: .cancel) {}
+                Button("Clear all \(excludedCount)", role: .destructive) { onClearExclusions() }
+            },
+            message: {
+                Text("Removes all \(excludedCount) excluded checksums for this account. The index, journal, credentials, and saved servers are kept. Excluded items will start flowing through reconciliation again on the next sync — including any that were previously preserved via restore-via-cairn.")
             }
         )
         .confirmationDialog(
@@ -744,6 +767,15 @@ public struct SettingsScreen: View {
                         chevron: true,
                         onTap: { pendingClearRecentServers = true }
                     )
+                    if excludedCount > 0 {
+                        RowDivider()
+                        KeyValRow(
+                            "Clear excluded assets",
+                            value: { Text("Wipe \(excludedCount)").foregroundStyle(t.dangerInk) },
+                            chevron: true,
+                            onTap: { pendingClearExclusions = true }
+                        )
+                    }
                     RowDivider()
                     KeyValRow(
                         "Sign out of server",
