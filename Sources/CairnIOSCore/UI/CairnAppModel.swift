@@ -533,6 +533,12 @@ public final class CairnAppModel {
         case pendingReview
         case deferredQueue
         case albumPicker
+        /// `SyncDetailSheet` drill-down. Reads `model.syncActivity`,
+        /// `model.syncTimeline`, and the high-level phase. The sheet's
+        /// dedicated re-render isolation (only this sheet reads the
+        /// activity feed) means opening it during an active sync
+        /// doesn't slow Status' redraw cycle.
+        case syncDetail
 
         public var id: String {
             switch self {
@@ -541,6 +547,7 @@ public final class CairnAppModel {
             case .pendingReview: "pending-review"
             case .deferredQueue: "deferred-queue"
             case .albumPicker: "album-picker"
+            case .syncDetail: "sync-detail"
             }
         }
     }

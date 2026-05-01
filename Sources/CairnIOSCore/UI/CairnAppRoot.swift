@@ -476,6 +476,9 @@ public struct CairnAppRoot: View {
                 onRetryConnection: {
                     Task { @MainActor in await model.actions.retryConnection() }
                 },
+                onOpenSyncDetail: {
+                    model.presentedSheet = .syncDetail
+                },
                 scrollResetToken: scrollResetTokens["status"] ?? 0
             )
         case "runs":
@@ -681,6 +684,21 @@ public struct CairnAppRoot: View {
                     // the user to pick at least one album.
                     model.settings.indexingScope = .selectedAlbums(selection)
                 }
+            )
+            .cairnTheme(palette)
+        case .syncDetail:
+            SyncDetailSheet(
+                phase: model.syncPhase,
+                syncStartedAt: model.syncStartedAt,
+                isSyncing: model.isSyncing,
+                progress: model.syncProgress.map { (hashed: $0.hashed, total: $0.total) },
+                timeline: model.syncTimeline,
+                activity: model.syncActivity,
+                onCancel: {
+                    cancelActiveSync()
+                    model.presentedSheet = nil
+                },
+                onClose: { model.presentedSheet = nil }
             )
             .cairnTheme(palette)
         }

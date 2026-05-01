@@ -116,4 +116,27 @@ struct SyncActivityTests {
             #expect(!c.displayName.isEmpty)
         }
     }
+
+    // MARK: - SyncDetailSheet duration formatter
+
+    @Test("SyncDetailSheet duration formatter — sub-second")
+    func durationFormatterSubSecond() {
+        #expect(SyncDetailSheet.formatDuration(ms: 0) == "0ms")
+        #expect(SyncDetailSheet.formatDuration(ms: 240) == "240ms")
+        #expect(SyncDetailSheet.formatDuration(ms: 999) == "999ms")
+    }
+
+    @Test("SyncDetailSheet duration formatter — seconds")
+    func durationFormatterSeconds() {
+        #expect(SyncDetailSheet.formatDuration(ms: 1000) == "1.0s")
+        #expect(SyncDetailSheet.formatDuration(ms: 12_400) == "12.4s")
+        #expect(SyncDetailSheet.formatDuration(ms: 59_999) == "60.0s")
+    }
+
+    @Test("SyncDetailSheet duration formatter — minutes")
+    func durationFormatterMinutes() {
+        #expect(SyncDetailSheet.formatDuration(ms: 60_000) == "1m 0s")
+        #expect(SyncDetailSheet.formatDuration(ms: 90_500) == "1m 30s")
+        #expect(SyncDetailSheet.formatDuration(ms: 600_000) == "10m 0s")
+    }
 }

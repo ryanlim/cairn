@@ -143,6 +143,13 @@ public struct StatusScreen: View {
     public let onOpenDeleteQueue: () -> Void
     /// Tapping the deferred queue line opens the queue detail sheet.
     public let onOpenDeferredQueue: () -> Void
+    /// Tap target on the syncCard's "Show details" affordance — only
+    /// shown while `isSyncing == true`. Opens `SyncDetailSheet` with
+    /// the live phase timeline + activity feed. Constraint: this is
+    /// the **only** way the activity feed surfaces in UI; Status'
+    /// syncCard MUST NOT read `model.syncActivity` or derivatives,
+    /// or `@Observable` would re-render Status on every emit.
+    public let onOpenSyncDetail: () -> Void
     /// Token incremented by the host when the user re-taps the active
     /// tab — see `CairnTabBar.onReselect`. Each increment scrolls the
     /// screen back to the top.
@@ -231,6 +238,7 @@ public struct StatusScreen: View {
         deferredQueue: CairnAppModel.DeferredQueueSummary = .empty,
         onForceDrainDeferred: @escaping () -> Void = {},
         onRetryConnection: @escaping () -> Void = {},
+        onOpenSyncDetail: @escaping () -> Void = {},
         scrollResetToken: Int = 0
     ) {
         self.appState = appState
@@ -271,6 +279,7 @@ public struct StatusScreen: View {
         self.deferredQueue = deferredQueue
         self.onForceDrainDeferred = onForceDrainDeferred
         self.onRetryConnection = onRetryConnection
+        self.onOpenSyncDetail = onOpenSyncDetail
         self.scrollResetToken = scrollResetToken
     }
 
@@ -968,6 +977,29 @@ public struct StatusScreen: View {
                     expandedHeight: Self.checklistHeight,
                     reduceMotion: reduceMotion
                 )
+                // Drill-down entry to `SyncDetailSheet`. Only shown
+                // while a sync is in flight — when idle the user has
+                // no fresh narration to review (and the sheet's empty-
+                // state is uninteresting). Deliberately doesn't expose
+                // any activity-feed counts in the label — Status MUST
+                // NOT read `model.syncActivity` or `@Observable` would
+                // re-render the screen on every emit. Decision 4 of
+                // the sync-narration plan.
+                if isSyncing && checklistVisible {
+                    Button(action: onOpenSyncDetail) {
+                        HStack(spacing: 4) {
+                            Text("Show details")
+                                .font(.system(size: 12, weight: .medium))
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 9, weight: .semibold))
+                        }
+                        .foregroundStyle(t.accentInk)
+                        .padding(.vertical, 2)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Show sync details")
+                }
                 // Renders whenever there's anything to review — items
                 // held by the quarantine clock OR unconfirmed
                 // candidates with no positive-signal stamp (the
