@@ -310,6 +310,18 @@ public final class PhotoKitPersistentChangeReconciler {
     /// progress UI.
     private let onHashProgress: @Sendable (Int, Int, Set<Checksum>) async -> Void
 
+    /// Phase boundary callback. Fires once per `tick(...)` inside
+    /// `runIncremental` and `runFullEnumeration` with the phase name +
+    /// elapsed ms for the segment that just closed. Used by the host
+    /// to populate the in-app activity feed (`SyncDetailSheet`'s
+    /// "Activity" section). The Console-level
+    /// `[cairn.recon.timing]` log line still fires alongside — this
+    /// is a separate consumer, not a replacement, so the on-device
+    /// debugging path stays intact when no host callback is wired.
+    /// Default no-op so the dozens of existing test callers stay
+    /// unchanged.
+    private let onPhaseChange: @Sendable (String, Int) async -> Void
+
     /// Build a reconciler. All stores are injected so tests can wire
     /// in-memory fakes and so the same type works across the
     /// foreground scan and the background refresh.
@@ -362,6 +374,7 @@ public final class PhotoKitPersistentChangeReconciler {
         requireExplicitDeletionEvent: Bool = false,
         scope: IndexingScope = .fullLibrary,
         onHashProgress: @escaping @Sendable (Int, Int, Set<Checksum>) async -> Void = { _, _, _ in },
+        onPhaseChange: @escaping @Sendable (String, Int) async -> Void = { _, _ in },
         clock: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.hashStore = hashStore
@@ -379,6 +392,7 @@ public final class PhotoKitPersistentChangeReconciler {
         self.requireExplicitDeletionEvent = requireExplicitDeletionEvent
         self.scope = scope
         self.onHashProgress = onHashProgress
+        self.onPhaseChange = onPhaseChange
         self.clock = clock
     }
 
@@ -460,10 +474,12 @@ public final class PhotoKitPersistentChangeReconciler {
         // without a profiler — Console alone tells you which step
         // ate the wall clock.
         var phaseClock = Date()
+        let phaseEmit = onPhaseChange
         func tick(_ phase: String) {
             let ms = Int(Date().timeIntervalSince(phaseClock) * 1000)
             phaseClock = Date()
             Self.reconLog.info("[cairn.recon.timing] phase=\(phase, privacy: .public) took=\(ms, privacy: .public)ms")
+            Task { await phaseEmit(phase, ms) }
         }
 
         let collected = try await Task.detached(priority: .userInitiated) {
@@ -1359,10 +1375,12 @@ public final class PhotoKitPersistentChangeReconciler {
         // Lets the user pinpoint which step of a full re-enum eats
         // the wall clock without rebuilding for instrumentation.
         var phaseClock = Date()
+        let phaseEmit = onPhaseChange
         func tick(_ phase: String) {
             let ms = Int(Date().timeIntervalSince(phaseClock) * 1000)
             phaseClock = Date()
             Self.reconLog.info("[cairn.recon.timing] phase=\(phase, privacy: .public) took=\(ms, privacy: .public)ms")
+            Task { await phaseEmit(phase, ms) }
         }
 
         // Capture the baseline *before* we enumerate, so any changes that

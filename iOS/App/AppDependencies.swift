@@ -152,6 +152,40 @@ final class AppDependencies {
                             totalKnownBytes: queueBytes
                         )
                     }
+                    // First-hash detection: flip the high-level phase
+                    // from `.preparing` to `.hashing` the moment we see
+                    // hashing progress. The reconciler runs detached, so
+                    // we can't mark this from the call site; the progress
+                    // callback is the natural signal.
+                    if self.model.syncPhase == .preparing {
+                        self.model.transitionSyncPhase(to: .hashing)
+                    }
+                    // Throttled activity-feed emit. `onHashProgress` itself
+                    // is already throttled (every N or every Yms — see
+                    // `progressEveryN` / `progressEveryMs` in the
+                    // reconciler), so this just lifts the same data into
+                    // the user-facing feed.
+                    self.model.appendSyncActivity(.init(
+                        kind: .hashed,
+                        detail: total > 0
+                            ? "\(done.formatted(.number)) / \(total.formatted(.number)) hashed"
+                            : "\(done.formatted(.number)) hashed"
+                    ))
+                }
+            },
+            onPhaseChange: { [weak self] phaseName, elapsedMs in
+                // Reconciler-internal phase boundaries (fetchPersistentChanges,
+                // cachedLocalIds, observeAndFilter, hashing, orphanSweep, etc.).
+                // Each fires once with the elapsed-ms for the segment that
+                // just closed. Surface them in the activity feed as `.note`
+                // entries so the drill-down sheet shows the granular
+                // progression alongside the high-level phase.
+                guard let self else { return }
+                await MainActor.run {
+                    self.model.appendSyncActivity(.init(
+                        kind: .note,
+                        detail: "\(phaseName) · \(elapsedMs.formatted(.number))ms"
+                    ))
                 }
             }
         )
@@ -739,6 +773,17 @@ final class AppDependencies {
     ) async throws {
         let syncStart = Date()
 
+        // Reset the narration buffers and start the high-level phase
+        // progression. Transitions go: .preparing → .hashing → .reconciling
+        // → .finalizing → .idle. `.fetchingServer` runs in parallel with
+        // the prep+scan; we don't drive `model.syncPhase` through it (the
+        // user-facing CTA wants linear progress), but we do append a
+        // synthetic `.fetchingServer` entry to `model.syncTimeline` once
+        // its duration is known.
+        model.resetSyncNarration()
+        model.transitionSyncPhase(to: .preparing)
+        model.appendSyncActivity(.init(kind: .note, detail: "Sync started"))
+
         await refreshLibrarySizeStats()
 
         // Refresh server count concurrently — don't block the scan.
@@ -751,6 +796,7 @@ final class AppDependencies {
 
         serverChecksumSet = nil
         let hashStoreRef = self.localHashStore
+        let serverFetchStart = Date()
         let serverAssetsTask = Task { [weak self] () -> [ServerAsset] in
             let assets = try await client.listAllAssets()
             let checksums = Set(assets.map(\.checksum))
@@ -779,14 +825,18 @@ final class AppDependencies {
         guard let reconciler = persistentChangeReconciler else {
             throw CancellationError()
         }
-        model.syncPhase = .hashing
+        // High-level phase stays `.preparing` until the first
+        // `onHashProgress` callback flips it to `.hashing`. The scan's
+        // internal phases (fetchPersistentChanges, observeAndFilter,
+        // discoverUntracked, etc.) appear in the activity feed via
+        // `onPhaseChange` for forensic detail without disrupting the
+        // user-visible CTA.
         let t0 = Date()
         let scan = try await reconciler.runDeletionScan(skipDrain: true)
         syncLog.info("[cairn.sync] scan took \(Int(Date().timeIntervalSince(t0) * 1000))ms (events=\(scan.changeEventsProcessed))")
         let burst = scan.newlyConfirmedDeleted.count
 
         try Task.checkCancellation()
-        model.syncPhase = .fetchingServer
         let t1 = Date()
 
         // Post-scan prelude: four independent reads that each block on
@@ -904,10 +954,24 @@ final class AppDependencies {
         syncLog.info("[cairn.sync] store snapshots took \(Int(Date().timeIntervalSince(t2) * 1000))ms (edit-retirement-held=\(editRetirementHeld.count))")
         let t3 = Date()
         let serverAssets = try await serverAssetsTask.value
+        let serverFetchMs = max(0, Int(Date().timeIntervalSince(serverFetchStart) * 1000))
         syncLog.info("[cairn.sync] server fetch took \(Int(Date().timeIntervalSince(t3) * 1000))ms (\(serverAssets.count) assets)")
+        // `.fetchingServer` ran in parallel with the prep+scan, so the
+        // high-level `model.syncPhase` never stepped through it. Append a
+        // synthetic timeline entry now that its duration is known so the
+        // drill-down sheet can render it as a parallel track.
+        model.syncTimeline.append(.init(
+            phase: .fetchingServer,
+            startedAt: serverFetchStart,
+            durationMs: serverFetchMs
+        ))
+        model.appendSyncActivity(.init(
+            kind: .fetched,
+            detail: "\(serverAssets.count.formatted(.number)) server assets · \(serverFetchMs.formatted(.number))ms"
+        ))
 
         try Task.checkCancellation()
-        model.syncPhase = .reconciling
+        model.transitionSyncPhase(to: .reconciling)
 
         // Thumbhash population runs after reconciliation completes —
         // don't block the user-facing result for cache warming.
@@ -1140,6 +1204,17 @@ final class AppDependencies {
             }
             model.restoredAfterCairnTrash = matches
         }
+
+        // Engine + orphan match + restoredAfterCairnTrash detection are
+        // done; what's left is journal writes and the post-sync refresh
+        // helpers. Bucket all of that under `.finalizing` so the
+        // user-facing CTA shows a meaningful label during the brief
+        // post-reconciliation cleanup.
+        model.transitionSyncPhase(to: .finalizing)
+        model.appendSyncActivity(.init(
+            kind: .stamped,
+            detail: "engine: delete=\(result.deleteCandidates.count.formatted(.number)) pending=\(result.pendingReviewCandidates.count.formatted(.number)) held=\(result.heldByQuarantineCandidates.count.formatted(.number))"
+        ))
 
         let isEventfulSync = scan.didFullEnumeration
             || scan.changeEventsProcessed > 0
@@ -1867,7 +1942,7 @@ final class AppDependencies {
                     await MainActor.run {
                         self.model.lastError = "Not signed in yet. Complete onboarding first."
                         self.model.isSyncing = false
-                        self.model.syncPhase = .idle
+                        self.model.transitionSyncPhase(to: .idle)
                     }
                     return
                 }
@@ -1877,7 +1952,7 @@ final class AppDependencies {
                     await MainActor.run {
                         self.model.lastError = "No server activated. Complete onboarding first."
                         self.model.isSyncing = false
-                        self.model.syncPhase = .idle
+                        self.model.transitionSyncPhase(to: .idle)
                     }
                     return
                 }
@@ -1901,7 +1976,7 @@ final class AppDependencies {
                     await MainActor.run {
                         self.model.lastError = message
                         self.model.isSyncing = false
-                        self.model.syncPhase = .idle
+                        self.model.transitionSyncPhase(to: .idle)
                         self.model.syncStartedAt = nil
                     }
                     return
@@ -1916,7 +1991,7 @@ final class AppDependencies {
                     )
                     await MainActor.run {
                         self.model.isSyncing = false
-                        self.model.syncPhase = .idle
+                        self.model.transitionSyncPhase(to: .idle)
                         self.model.syncProgress = nil
                         self.model.syncStartedAt = nil
                         self.model.pausedSyncElapsedSeconds = nil
@@ -1931,7 +2006,7 @@ final class AppDependencies {
                         self.model.pausedSyncElapsedSeconds = max(0, elapsed)
                         self.model.syncStartedAt = nil
                         self.model.isSyncing = false
-                        self.model.syncPhase = .idle
+                        self.model.transitionSyncPhase(to: .idle)
                         self.lastSyncEndedAt = Date()
                     }
                 } catch {
@@ -1941,7 +2016,7 @@ final class AppDependencies {
                     await MainActor.run {
                         self.model.lastError = desc
                         self.model.isSyncing = false
-                        self.model.syncPhase = .idle
+                        self.model.transitionSyncPhase(to: .idle)
                         self.model.syncProgress = nil
                         self.model.syncStartedAt = nil
                         self.model.pausedSyncElapsedSeconds = nil
@@ -3055,7 +3130,8 @@ final class AppDependencies {
                 }
                 await MainActor.run {
                     self.model.isSyncing = true
-                    self.model.syncPhase = .hashing
+                    self.model.resetSyncNarration()
+                    self.model.transitionSyncPhase(to: .hashing)
                     self.model.lastError = nil
                     self.model.syncProgress = nil
                     self.model.syncStartedAt = Date()
@@ -3066,7 +3142,7 @@ final class AppDependencies {
                     await MainActor.run {
                         self.model.lastError = "No server activated."
                         self.model.isSyncing = false
-                        self.model.syncPhase = .idle
+                        self.model.transitionSyncPhase(to: .idle)
                         self.model.syncStartedAt = nil
                     }
                     return
@@ -3075,7 +3151,7 @@ final class AppDependencies {
                     _ = try await reconciler.drainDeferred()
                     await MainActor.run {
                         self.model.isSyncing = false
-                        self.model.syncPhase = .idle
+                        self.model.transitionSyncPhase(to: .idle)
                         self.model.syncProgress = nil
                         self.model.syncStartedAt = nil
                     }
@@ -3088,14 +3164,14 @@ final class AppDependencies {
                         self.model.pausedSyncElapsedSeconds = max(0, elapsed)
                         self.model.syncStartedAt = nil
                         self.model.isSyncing = false
-                        self.model.syncPhase = .idle
+                        self.model.transitionSyncPhase(to: .idle)
                     }
                     await self.refreshDeferredQueueSummary()
                 } catch {
                     await MainActor.run {
                         self.model.lastError = Self.describeSyncError(error)
                         self.model.isSyncing = false
-                        self.model.syncPhase = .idle
+                        self.model.transitionSyncPhase(to: .idle)
                         self.model.syncProgress = nil
                         self.model.syncStartedAt = nil
                     }
