@@ -1190,10 +1190,14 @@ public struct StatusScreen: View {
                     return "Processing \(progress.hashed.formatted(.number)) / \(progress.total.formatted(.number))"
                 }
                 return "Indexing…"
+            case .preparing:
+                return "Preparing…"
             case .fetchingServer:
                 return "Fetching server data…"
             case .reconciling:
                 return "Reconciling…"
+            case .finalizing:
+                return "Finalizing…"
             case .idle:
                 return "Syncing…"
             }
@@ -1462,15 +1466,16 @@ public struct StatusScreen: View {
 
     /// How many journal rows show in the collapsed state. Everything
     /// beyond this hides behind the "Show more" toggle.
-    /// Hardcoded height for the SyncPhaseChecklist — three rows of
-    /// 12pt text + 6pt VStack spacing + 4pt top padding ≈ 60pt.
-    /// Used as the explicit `.frame(height:)` target when isSyncing
-    /// is true so the layout shift is a deterministic frame
-    /// animation rather than a "view appears for the first time"
-    /// event that has to instantiate + measure + animate in one
-    /// frame. Tuning: bump if the checklist visibly clips at the
-    /// bottom; reduce if there's a visible gap.
-    private static let checklistHeight: CGFloat = 64
+    /// Hardcoded height for the `SyncPhaseChecklist` — now one row of
+    /// 12pt text + 4pt top padding ≈ 22pt (down from 64pt when it was
+    /// a three-row checklist; see "Sync phase indicator" in
+    /// CairnPrimitives.swift). Used as the explicit `.frame(height:)`
+    /// target when `isSyncing` is true so the layout shift is a
+    /// deterministic frame animation rather than a "view appears for
+    /// the first time" event that has to instantiate + measure +
+    /// animate in one frame. Tuning: bump if the indicator visibly
+    /// clips at the bottom; reduce if there's a visible gap.
+    private static let checklistHeight: CGFloat = 22
 
     private static let scrollTopAnchor = "cairn.scroll.top"
 

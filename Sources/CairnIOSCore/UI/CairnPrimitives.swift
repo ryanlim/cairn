@@ -1622,8 +1622,18 @@ public struct CairnRadioList<Value: Hashable>: View {
 }
 #endif
 
-// MARK: - Sync phase checklist
+// MARK: - Sync phase indicator
 
+/// One-line current-phase indicator that lives under the sync card on
+/// Status. Replaced the previous three-row checklist after the SyncPhase
+/// expansion to six cases (idle/preparing/fetchingServer/hashing/
+/// reconciling/finalizing) made the static-list rendering cluttered.
+/// The full timeline lives in `SyncDetailSheet` — Status stays quiet
+/// for the steady-state user; the curious user opens the sheet.
+///
+/// The struct is still named `SyncPhaseChecklist` so the existing
+/// `SyncChecklistAnimator` wrapper, its layout-grow timing, and
+/// `Self.checklistHeight` keep working unchanged.
 public struct SyncPhaseChecklist: View {
     public let phase: CairnAppModel.SyncPhase
 
@@ -1633,56 +1643,15 @@ public struct SyncPhaseChecklist: View {
         self.phase = phase
     }
 
-    private struct Step {
-        let label: String
-        let phase: CairnAppModel.SyncPhase
-    }
-
-    private let steps: [Step] = [
-        .init(label: "Index library", phase: .hashing),
-        .init(label: "Fetch server data", phase: .fetchingServer),
-        .init(label: "Reconcile", phase: .reconciling),
-    ]
-
-    private func state(for step: Step) -> StepState {
-        let order: [CairnAppModel.SyncPhase] = [.hashing, .fetchingServer, .reconciling]
-        guard let currentIdx = order.firstIndex(of: phase),
-              let stepIdx = order.firstIndex(of: step.phase) else {
-            return .pending
-        }
-        if stepIdx < currentIdx { return .done }
-        if stepIdx == currentIdx { return .active }
-        return .pending
-    }
-
-    private enum StepState { case pending, active, done }
-
     public var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            ForEach(Array(steps.enumerated()), id: \.offset) { _, step in
-                let s = state(for: step)
-                HStack(spacing: 8) {
-                    Group {
-                        switch s {
-                        case .done:
-                            Image(systemName: "checkmark.circle.fill")
-                                .foregroundStyle(t.verifiedInk)
-                        case .active:
-                            Image(systemName: "circle.dotted.circle")
-                                .foregroundStyle(t.pendingInk)
-                        case .pending:
-                            Image(systemName: "circle")
-                                .foregroundStyle(t.textHint)
-                        }
-                    }
-                    .font(.system(size: 12))
-
-                    Text(step.label)
-                        .font(.system(size: 12))
-                        .foregroundStyle(s == .active ? t.textBody : t.textMuted)
-                }
-                .opacity(s == .pending ? 0.6 : 1.0)
-            }
+        HStack(spacing: 8) {
+            Image(systemName: "circle.dotted.circle")
+                .font(.system(size: 12))
+                .foregroundStyle(t.pendingInk)
+            Text(phase.displayName)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(t.textBody)
+            Spacer(minLength: 0)
         }
         .padding(.top, 4)
     }

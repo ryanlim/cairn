@@ -260,14 +260,166 @@ public final class CairnAppModel {
     public var isSyncing: Bool = false
 
     /// Current phase of the sync pipeline. Drives the CTA label so the
-    /// user sees what's happening after hashing finishes.
+    /// user sees what's happening after hashing finishes. Also written
+    /// into `syncTimeline` on each transition so the drill-down
+    /// `SyncDetailSheet` can show "Preparing 820ms · Fetching 3.2s · …"
+    /// as the sync progresses.
     public var syncPhase: SyncPhase = .idle
 
+    /// Six phases mirror the `tick(...)` boundaries inside
+    /// `PhotoKitPersistentChangeReconciler` and `performLiveReconciliation`,
+    /// so the in-app narration matches the Console timing logs. Order:
+    /// `idle` → `preparing` → (`fetchingServer` runs concurrently) →
+    /// `hashing` → `reconciling` → `finalizing` → `idle`.
     public enum SyncPhase: Sendable, Equatable {
+        /// No sync in flight.
         case idle
-        case hashing
+        /// Pre-hash setup: `fetchPersistentChanges`, cached-id read,
+        /// untracked sweep, deferred-queue snapshot, scope membership.
+        /// This is the phase the user used to see as "Indexing…" while
+        /// no counter advanced; that opacity was the original motivator
+        /// for this expansion.
+        case preparing
+        /// `listAllAssets` pagination. Runs in parallel with the
+        /// pre-hash work, but surfaces as a phase here so the activity
+        /// feed has a row per page.
         case fetchingServer
+        /// SHA1 work — the existing progress bar covers this.
+        case hashing
+        /// Engine compute + orphan match.
         case reconciling
+        /// Journal append + persistSnapshot + post-sync refresh helpers.
+        case finalizing
+
+        /// Display label rendered in `SyncDetailSheet`'s timeline +
+        /// header. `idle` collapses to "Idle" so the empty-state row
+        /// reads cleanly when the sheet opens before the first sync.
+        public var displayName: String {
+            switch self {
+            case .idle: "Idle"
+            case .preparing: "Preparing"
+            case .fetchingServer: "Fetching server"
+            case .hashing: "Hashing"
+            case .reconciling: "Reconciling"
+            case .finalizing: "Finalizing"
+            }
+        }
+    }
+
+    /// Forensic ring buffer of recent sync events. Populated by
+    /// `appendSyncActivity` from the reconciler's `onPhaseChange`
+    /// callback, the hashing throttle, and per-page server fetch
+    /// emits. Only `SyncDetailSheet` reads this property — Status'
+    /// `syncCard` MUST NOT read `syncActivity.count` or any derivative,
+    /// or it would re-render on every emit (potentially 4×/sec
+    /// during hashing, since the throttle is 250ms).
+    public var syncActivity: [SyncActivity] = []
+
+    /// Cap on `syncActivity` size. ~12s of recent hashing history at
+    /// the 250ms throttle, plus phase + server-fetch entries on top.
+    /// Sufficient for "is anything happening?" confidence without
+    /// growing unboundedly during a multi-minute scan.
+    public static let syncActivityCap: Int = 50
+
+    /// One forensic row in the sync activity feed. Newest first.
+    public struct SyncActivity: Identifiable, Sendable, Equatable {
+        public let id: UUID
+        public let timestamp: Date
+        public let kind: Kind
+        public let detail: String
+
+        public init(
+            id: UUID = UUID(),
+            timestamp: Date = Date(),
+            kind: Kind,
+            detail: String
+        ) {
+            self.id = id
+            self.timestamp = timestamp
+            self.kind = kind
+            self.detail = detail
+        }
+
+        public enum Kind: Sendable, Equatable {
+            /// New phase started. `detail` is the phase's display name.
+            case phaseStart
+            /// One asset finished hashing. `detail` is the original
+            /// filename; throttled to ≤ one entry per 250ms.
+            case hashed
+            /// One server-asset page returned. `detail` is short prose
+            /// like "page 3 · 1000 assets".
+            case fetched
+            /// One or more confirmed-deleted stamps landed. `detail` is
+            /// short prose like "5 confirmed deleted".
+            case stamped
+            /// Generic info ("Untracked sweep: 142 ids"). Plain text.
+            case note
+            /// Degraded mode notice. Renders in warn tone in the sheet.
+            case warning
+        }
+    }
+
+    /// Append `entry` to `syncActivity`, capped at `syncActivityCap`.
+    /// Newest first — the sheet renders top-down.
+    public func appendSyncActivity(_ entry: SyncActivity) {
+        syncActivity.insert(entry, at: 0)
+        if syncActivity.count > Self.syncActivityCap {
+            syncActivity.removeLast()
+        }
+    }
+
+    /// Reset the activity feed and timeline. Called at the start of
+    /// each sync so the sheet shows just the current run, not
+    /// accumulated history across syncs.
+    public func resetSyncNarration() {
+        syncActivity.removeAll(keepingCapacity: true)
+        syncTimeline.removeAll(keepingCapacity: true)
+    }
+
+    /// Per-phase elapsed plus order. Cleared on each sync start;
+    /// rebuilt as phases advance. Each transition closes the prior
+    /// phase (sets `durationMs`) and appends the new one with
+    /// `durationMs == nil`. Final entry stays open until the sync
+    /// completes.
+    public var syncTimeline: [PhaseEntry] = []
+
+    /// One row in `syncTimeline`. `durationMs == nil` means "in
+    /// flight" — `SyncDetailSheet` renders an elapsed timer for the
+    /// open phase.
+    public struct PhaseEntry: Sendable, Equatable, Identifiable {
+        public let id: UUID
+        public let phase: SyncPhase
+        public let startedAt: Date
+        public var durationMs: Int?
+
+        public init(
+            id: UUID = UUID(),
+            phase: SyncPhase,
+            startedAt: Date,
+            durationMs: Int? = nil
+        ) {
+            self.id = id
+            self.phase = phase
+            self.startedAt = startedAt
+            self.durationMs = durationMs
+        }
+    }
+
+    /// Transition `syncPhase` to `next`, closing the previous phase's
+    /// `durationMs` in `syncTimeline` and appending a new in-flight
+    /// row. Idempotent on identical phases (no-op when `next` ==
+    /// `syncPhase`) so accidental double-emits from the reconciler
+    /// don't duplicate timeline rows.
+    public func transitionSyncPhase(to next: SyncPhase, at now: Date = Date()) {
+        guard syncPhase != next else { return }
+        if let lastIdx = syncTimeline.indices.last, syncTimeline[lastIdx].durationMs == nil {
+            let started = syncTimeline[lastIdx].startedAt
+            syncTimeline[lastIdx].durationMs = max(0, Int(now.timeIntervalSince(started) * 1000))
+        }
+        syncPhase = next
+        if next != .idle {
+            syncTimeline.append(PhaseEntry(phase: next, startedAt: now))
+        }
     }
 
     /// Hashing progress during a sync. `nil` outside sync. The
