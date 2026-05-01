@@ -35,6 +35,13 @@ public struct InitialScanScreen: View {
     /// rather than a live `now - startedAt` computation. See
     /// `CairnAppModel.pausedSyncElapsedSeconds`.
     public let pausedElapsed: TimeInterval?
+    /// Current high-level sync phase. Surfaced as a small label under
+    /// the progress bar during pre-hashing (`.preparing`,
+    /// `.fetchingServer`) so the user knows something is happening
+    /// even before per-asset progress can advance. Hidden when
+    /// `.hashing` (the existing X / Y counter is more informative)
+    /// or when idle.
+    public let phase: CairnAppModel.SyncPhase
     @Binding public var settings: CairnSettings
     public let onStart: () -> Void
     public let onCancel: () -> Void
@@ -53,6 +60,7 @@ public struct InitialScanScreen: View {
         isActive: Bool,
         startedAt: Date?,
         pausedElapsed: TimeInterval? = nil,
+        phase: CairnAppModel.SyncPhase = .idle,
         settings: Binding<CairnSettings> = .constant(.defaults),
         onStart: @escaping () -> Void = {},
         onCancel: @escaping () -> Void = {},
@@ -66,6 +74,7 @@ public struct InitialScanScreen: View {
         self.isActive = isActive
         self.startedAt = startedAt
         self.pausedElapsed = pausedElapsed
+        self.phase = phase
         self._settings = settings
         self.onStart = onStart
         self.onCancel = onCancel
@@ -191,10 +200,37 @@ public struct InitialScanScreen: View {
                         .foregroundStyle(t.textMuted)
                 }
                 ProgressBar(fraction: fraction, tone: .pending)
-                ProcessingBreakdown(indexed: indexed, deferredQueueCount: deferredQueueCount, processed: hashed)
+                if let prePhaseLabel {
+                    HStack(spacing: 6) {
+                        Image(systemName: "circle.dotted.circle")
+                            .font(.system(size: 10))
+                            .foregroundStyle(t.pendingInk)
+                        Text(prePhaseLabel)
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(t.textBody)
+                    }
+                } else {
+                    ProcessingBreakdown(indexed: indexed, deferredQueueCount: deferredQueueCount, processed: hashed)
+                }
                 timingStrip
             }
             .padding(18)
+        }
+    }
+
+    /// Phase label shown when the per-asset counter can't yet advance —
+    /// the silent prelude window where the reconciler is fetching
+    /// PhotoKit changes / building the cached-id set / resolving scope
+    /// membership before any hash work begins. Surfaced as small text
+    /// in the progress card. Returns `nil` once `.hashing` engages
+    /// (the X/Y counter takes over) or when idle.
+    private var prePhaseLabel: String? {
+        guard isActive else { return nil }
+        switch phase {
+        case .preparing, .fetchingServer, .reconciling, .finalizing:
+            return phase.displayName
+        case .hashing, .idle:
+            return nil
         }
     }
 

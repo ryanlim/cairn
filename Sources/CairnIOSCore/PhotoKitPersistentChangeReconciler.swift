@@ -1529,19 +1529,29 @@ public final class PhotoKitPersistentChangeReconciler {
         // us, so re-hash. Entries missing a cached modDate — legacy rows
         // from before this field existed, or tests not wiring it — are
         // treated as stale so we err toward correctness.
-        let existing = try await hashStore.snapshot()
+        //
+        // Perf: pull `(checksums, modificationDate)` for every asset in
+        // ONE batched fetch. Earlier code did `hashStore.snapshot()` plus
+        // a per-asset `modificationDate(for:)` lookup inside the loop —
+        // for a library with N=2,000 cached entries that's 2,000 sequential
+        // SwiftData queries before the first asset hashes. On real
+        // hardware that surfaced as a ~10-15s "silent prelude" where the
+        // InitialScanScreen showed no progress and the user assumed sync
+        // wasn't running. `entries(forIdentifiers:)` collapses the whole
+        // pre-hash classification into one fetch.
+        let allLocalIds = Set(assets.map(\.localIdentifier))
+        let existing = try await hashStore.entries(forIdentifiers: allLocalIds)
         var cached: [String: Set<Checksum>] = [:]
         var toHash: [PHAsset] = []
         toHash.reserveCapacity(assets.count)
         for asset in assets {
-            guard let hit = existing[asset.localIdentifier], !hit.isEmpty else {
+            guard let entry = existing[asset.localIdentifier], !entry.checksums.isEmpty else {
                 toHash.append(asset)
                 continue
             }
-            let cachedDate = try? await hashStore.modificationDate(for: asset.localIdentifier)
-            if let cachedDate, let currentDate = asset.modificationDate, cachedDate == currentDate {
+            if let cachedDate = entry.modificationDate, let currentDate = asset.modificationDate, cachedDate == currentDate {
                 // Unchanged — trust the cache.
-                cached[asset.localIdentifier] = hit
+                cached[asset.localIdentifier] = entry.checksums
             } else {
                 // modDate missing or diverged → re-hash.
                 toHash.append(asset)
@@ -1553,7 +1563,6 @@ public final class PhotoKitPersistentChangeReconciler {
         let start = Date()
         let startMsg = "[cairn.hash] full-enum start: total=\(total) resuming-cached=\(resumedFrom) to-hash=\(toHash.count)"
         hashLog.notice("\(startMsg, privacy: .public)")
-        print(startMsg)   // also to stdout so `make device-run --console` shows live.
 
         // Seed progress with the cached count so the UI immediately
         // reflects "resumed" state rather than dropping back to 0.
@@ -1569,7 +1578,6 @@ public final class PhotoKitPersistentChangeReconciler {
         let perAssetMs = toHash.isEmpty ? 0 : (elapsed * 1000 / Double(toHash.count))
         let doneMsg = "[cairn.hash] full-enum done: total=\(total) resumed=\(resumedFrom) hashed=\(fresh.checksumsByID.count) elapsed=\(Int(elapsed * 1000))ms per-asset=\(String(format: "%.1f", perAssetMs))ms"
         hashLog.notice("\(doneMsg, privacy: .public)")
-        print(doneMsg)
 
         // Seed edit-retirement anchors for ids that had no prior cache
         // entry — this enum is their first observation. First-write-
@@ -1579,7 +1587,8 @@ public final class PhotoKitPersistentChangeReconciler {
         // across re-enumerations.
         if let editRetirement {
             for asset in toHash {
-                guard existing[asset.localIdentifier]?.isEmpty ?? true,
+                let priorEmpty = existing[asset.localIdentifier]?.checksums.isEmpty ?? true
+                guard priorEmpty,
                       let newChecksums = fresh.checksumsByID[asset.localIdentifier],
                       !newChecksums.isEmpty else { continue }
                 try await editRetirement.recordFirstObserved(newChecksums, for: asset.localIdentifier)
@@ -1819,7 +1828,6 @@ public final class PhotoKitPersistentChangeReconciler {
                         )
                         let msg = "[cairn.hash] deferred-large: id=\(result.assetID.prefix(12))… would-download=\(Self.formatBytes(bytes))"
                         hashLog.notice("\(msg, privacy: .public)")
-                        print(msg)
                     case .timedOut:
                         out.deferredTimeout += 1
                         entry = DeferredHashEntry(
@@ -1830,7 +1838,6 @@ public final class PhotoKitPersistentChangeReconciler {
                         )
                         let msg = "[cairn.hash] deferred-timeout: id=\(result.assetID.prefix(12))… after=\(Int(result.elapsedMs))ms"
                         hashLog.notice("\(msg, privacy: .public)")
-                        print(msg)
                     case .noHashableResources:
                         out.deferredEmpty += 1
                         entry = DeferredHashEntry(
@@ -1864,7 +1871,6 @@ public final class PhotoKitPersistentChangeReconciler {
                         )
                         let msg = "[cairn.hash] above-hard-ceiling: id=\(result.assetID.prefix(12))… would-download=\(Self.formatBytes(bytes)) (out-of-scope)"
                         hashLog.notice("\(msg, privacy: .public)")
-                        print(msg)
                     }
                     if let entry, let deferredStore {
                         do {
@@ -1901,7 +1907,6 @@ public final class PhotoKitPersistentChangeReconciler {
                     verySlowCount += 1
                     let msg = "[cairn.hash] slow-asset: id=\(result.assetID.prefix(12))… took=\(Int(result.elapsedMs))ms resources=\(result.resourceCount) — probably iCloud fetch"
                     hashLog.notice("\(msg, privacy: .public)")
-                    print(msg)
                 }
 
                 done += 1
@@ -2298,7 +2303,6 @@ public final class PhotoKitPersistentChangeReconciler {
         let sample = orphans.prefix(3).map { String($0.prefix(12)) + "…" }.joined(separator: ", ")
         let msg = "[cairn.recon] orphan cleanup: \(orphans.count) cached id(s) no longer in library → \(recoveredChecksums.count) checksum(s) confirmed-deleted via safety net (sample: \(sample))"
         Self.reconLog.notice("\(msg, privacy: .public)")
-        print(msg)
 
         // Purge orphan ids from the cache. The confirmed-deleted union
         // is the caller's responsibility — it filters against the
@@ -2344,7 +2348,6 @@ public final class PhotoKitPersistentChangeReconciler {
         if !deleted.isEmpty  { parts.append("del-sample=[\(sample(deleted))]") }
         let msg = "[cairn.recon] incremental: " + parts.joined(separator: " ")
         reconLog.notice("\(msg, privacy: .public)")
-        print(msg)
     }
 
     // MARK: - Token archiving
