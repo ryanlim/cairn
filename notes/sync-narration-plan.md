@@ -37,10 +37,10 @@ drill-down can show it as a concurrent track rather than a strict
 next-step.
 
 The existing `SyncPhaseChecklist` view in StatusScreen has a fixed
-three-row layout. **Decision needed (open question 1):** simplify to a
-one-line current-phase indicator and push the timeline into the
-drill-down sheet (cleaner; recommended), or expand to six rows on the
-syncCard (visually busy).
+three-row layout. **Decision:** simplify to a one-line current-phase
+indicator and push the timeline into the drill-down sheet. Keeps the
+Status syncCard quiet; the curious user opens the sheet for the full
+breakdown.
 
 ### 1b. Add `SyncActivity` + ring buffer
 
@@ -260,10 +260,10 @@ wires to `model.presentedSheet = .syncDetail`.
 
 ### 5b. InitialScanScreen
 
-**Decision needed (open question 2):** the InitialScanScreen already has
-a custom progress display, so adding "Show details" might be redundant
-when the screen IS the detail. **Recommended:** skip the entry point on
-InitialScan; only StatusScreen gets the drill-down.
+**Decision:** skip the drill-down entry point on InitialScanScreen.
+The screen already IS the detail view for first-run hashing — adding a
+"Show details" button on top of an existing progress display is
+redundant. Only StatusScreen gets the drill-down.
 
 ### 5c. PresentedSheet enum
 
@@ -312,7 +312,7 @@ Sources/CairnIOSCore/
     CairnAppModel.swift                     +60 LoC (SyncPhase expand, SyncActivity, timeline)
     CairnAppRoot.swift                      +20 LoC (sheet routing, prop plumbing)
     StatusScreen.swift                      +15 LoC ("Show details" affordance)
-    InitialScanScreen.swift                 +15 LoC (optional — see open question 2)
+    InitialScanScreen.swift                 (no change — see decision 2)
     SyncDetailSheet.swift                   +200 LoC (new file)
 iOS/App/AppDependencies.swift               +60 LoC (phase writes, throttle helper, wiring)
 Tests/CairnIOSCoreTests/
@@ -338,22 +338,28 @@ for future use).
 
 ---
 
-## Open questions
+## Decisions
 
-1. **`SyncPhaseChecklist` shape.** Simplify to one-line current-phase
-   indicator (cleanest, recommended) or expand to six rows on the
-   syncCard (busy)?
-2. **InitialScanScreen drill-down entry.** Worth it, or is the screen
-   itself enough? Recommended: skip — Status only.
-3. **Activity feed forensic depth.** 50-entry cap means a 30-second sync
-   throttled at 250ms shows only the last ~12s. Fine for "is anything
-   happening" confidence; not full forensic timeline. If deeper history
-   matters, write to the journal too — stretch goal, deferred.
+1. **`SyncPhaseChecklist` shape.** Simplify to a one-line current-phase
+   indicator on Status' syncCard. The full timeline lives in the
+   drill-down sheet. Status stays quiet for the steady-state user; the
+   curious user opens the sheet.
+2. **InitialScanScreen drill-down entry.** Skip. The screen already IS
+   the detail view for first-run hashing; bolting a "Show details"
+   button onto an existing progress display is redundant. Only
+   StatusScreen gets the drill-down.
+3. **Activity feed forensic depth.** 50-entry ring buffer is the v1.
+   Throttled at 250ms during hashing, that surfaces ~12s of recent
+   history on a long sync. Sufficient for "is anything happening"
+   confidence; not a full forensic timeline. Deeper history (tee to the
+   journal) is deferred — stretch goal if real-world reports show 12s
+   isn't enough.
 4. **SwiftUI re-render cost.** `@Observable` + array prepend triggers
-   re-render of every consumer. SyncDetailSheet is the only consumer;
-   OK. But if Status' syncCard ever reads `model.syncActivity.count`,
-   every emit re-renders Status. Avoid binding Status to the activity
-   buffer.
+   re-render of every view that reads any property on the model. Only
+   `SyncDetailSheet` reads `syncActivity` directly; Status'
+   `syncCard` MUST NOT read `model.syncActivity.count` or any derivative
+   — doing so would re-render Status on every activity emit (potentially
+   4×/sec during hashing). Pin this constraint in code review.
 
 ---
 
