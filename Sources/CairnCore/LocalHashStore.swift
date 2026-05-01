@@ -46,6 +46,14 @@ public protocol LocalHashStore: Sendable {
     /// should override.
     func allChecksums() async throws -> Set<Checksum>
 
+    /// One-shot fetch combining `allChecksums()` + `indexedCount()`.
+    /// Both projections from the same materialized rows — saves a
+    /// duplicate full-table scan when the caller needs both (the
+    /// reconciliation prelude is the only current consumer). Default
+    /// impl runs the two methods sequentially; concrete stores should
+    /// override with a single fetch.
+    func summary() async throws -> (checksums: Set<Checksum>, distinctIdCount: Int)
+
     /// Batch lookup for a known id set. Returns only entries that
     /// exist (missing ids drop out). Cheaper than calling
     /// `checksums(for:)` and `modificationDate(for:)` in a loop —
@@ -110,6 +118,14 @@ public extension LocalHashStore {
         var out = Set<Checksum>()
         for (_, cks) in try await snapshot() { out.formUnion(cks) }
         return out
+    }
+
+    /// Fallback implementation of `summary()`. Two sequential calls;
+    /// concrete stores should override with a single fetch.
+    func summary() async throws -> (checksums: Set<Checksum>, distinctIdCount: Int) {
+        async let cks = allChecksums()
+        async let count = indexedCount()
+        return try await (checksums: cks, distinctIdCount: count)
     }
 
     /// Fallback `entries(forIdentifiers:)` — falls back to per-id

@@ -792,6 +792,24 @@ public actor SwiftDataLocalHashStore: LocalHashStore {
         return out
     }
 
+    /// Combined `allChecksums` + `indexedCount` from a single fetch.
+    /// Both projections walk the same row set, so doing them together
+    /// saves one full-table fetch worth of SwiftData hydration —
+    /// material on libraries with thousands of cached SHA1s where the
+    /// row count is the dominant cost. Materializes once, sweeps once.
+    public func summary() async throws -> (checksums: Set<Checksum>, distinctIdCount: Int) {
+        let rows = try context.fetch(FetchDescriptor<StoredLocalHashEntry>())
+        var cks = Set<Checksum>()
+        var ids = Set<String>()
+        cks.reserveCapacity(rows.count)
+        ids.reserveCapacity(rows.count)
+        for row in rows {
+            cks.insert(Checksum(base64: row.base64))
+            ids.insert(row.localIdentifier)
+        }
+        return (cks, ids.count)
+    }
+
     /// Batch lookup of `(checksums, modificationDate)` for a known id
     /// set. One SQL fetch with a `localIdentifier IN (...)` predicate
     /// instead of N per-id queries. Used by drain pre-filtering and

@@ -788,13 +788,29 @@ final class AppDependencies {
         try Task.checkCancellation()
         model.syncPhase = .fetchingServer
         let t1 = Date()
-        let local = try await self.localHashStore.allChecksums()
-        let indexedCount = try await self.localHashStore.indexedCount()
 
-        let visibleFetchOptions = PHFetchOptions()
-        visibleFetchOptions.includeHiddenAssets = false
-        visibleFetchOptions.includeAssetSourceTypes = [.typeUserLibrary]
-        let visibleFetch = PHAsset.fetchAssets(with: visibleFetchOptions)
+        // Post-scan prelude: four independent reads that each block on
+        // their own SwiftData fetch / PhotoKit enumeration. Run them
+        // in parallel rather than serially. On a 50k-photo library with
+        // Live Photo doubling, each store fetch is hundreds of ms
+        // (full-table materialization), and the visible PHAsset fetch
+        // off the main actor is another hundred-ish; serial they stack
+        // to ~1s of dead time before the engine sees anything.
+        async let cacheSummaryTask = self.localHashStore.summary()
+        async let observedSnapshotTask = observed.snapshot()
+        async let exclusionSnapshotTask = exclusions.snapshot()
+        async let confirmedSnapshotTask = confirmed.snapshot()
+        async let visibleFetchTask: PHFetchResult<PHAsset> = Task.detached(priority: .userInitiated) {
+            let opts = PHFetchOptions()
+            opts.includeHiddenAssets = false
+            opts.includeAssetSourceTypes = [.typeUserLibrary]
+            return PHAsset.fetchAssets(with: opts)
+        }.value
+
+        let cacheSummary = try await cacheSummaryTask
+        let local = cacheSummary.checksums
+        let indexedCount = cacheSummary.distinctIdCount
+        let visibleFetch = await visibleFetchTask
         var totalVisibleAssets = visibleFetch.count
         if let cap = Self.resolveTestingAssetCap(), totalVisibleAssets > cap {
             totalVisibleAssets = cap
@@ -817,7 +833,11 @@ final class AppDependencies {
         await backfillMetadataIfNeeded(visibleFetch: visibleFetch)
 
         let t2 = Date()
-        var observedSet = try await observed.snapshot()
+        // Drain the parallel store fetches kicked off above. They were
+        // launched alongside `cacheSummary` / `visibleFetch` so by the
+        // time `backfillMetadataIfNeeded` returns most are already
+        // resolved — these awaits collect, they don't initiate.
+        var observedSet = try await observedSnapshotTask
         // Recovery path for users upgrading across the SwiftData entity
         // rename (StoredEverSeenChecksum → StoredObservedChecksum). The
         // new table starts empty; LocalHashStore is keyed on a different
@@ -835,10 +855,10 @@ final class AppDependencies {
             try? await observed.union(local)
             observedSet = local
         }
-        let exclusionSnapshot = try await exclusions.snapshot()
+        let exclusionSnapshot = try await exclusionSnapshotTask
         let exclusionSet = Set(exclusionSnapshot.keys)
         let exclusionAddedAt = exclusionSnapshot.mapValues(\.addedAt)
-        let confirmedMap = try await confirmed.snapshot()
+        let confirmedMap = try await confirmedSnapshotTask
 
         // Edit-retirement: union the firstObserved SHA1s for every
         // alive `localIdentifier` into the "current local" set the

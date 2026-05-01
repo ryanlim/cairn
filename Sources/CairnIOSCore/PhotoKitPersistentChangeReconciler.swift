@@ -469,7 +469,15 @@ public final class PhotoKitPersistentChangeReconciler {
         // suspended.) Find them and merge into `insertedIds` so the existing
         // hash + observed + metadata pipeline picks them up. Subsequent syncs
         // see an empty diff once the gap is closed.
-        let untrackedIds = try await discoverUntrackedAssets()
+        // Cache the local-id set ONCE for the duration of this scan.
+        // `discoverUntrackedAssets` and `reconcileCacheAgainstLibrary`
+        // both need the same `Set<String>` of all cached identifiers.
+        // Without this they each issued their own full-table fetch —
+        // 2× materialization on a 50k-photo library, both serialized
+        // before any hashing counter moves.
+        let cachedLocalIds = try await hashStore.allLocalIdentifiers()
+
+        let untrackedIds = try await discoverUntrackedAssets(cachedLocalIds: cachedLocalIds)
         if !untrackedIds.isEmpty {
             Self.reconLog.notice("[cairn.recon] untracked sweep: \(untrackedIds.count, privacy: .public) PHAssets visible but neither indexed nor queued — adding to insert pipeline")
             insertedIds.formUnion(untrackedIds)
@@ -704,7 +712,8 @@ public final class PhotoKitPersistentChangeReconciler {
         let orphanResult = try await reconcileCacheAgainstLibrary(
             alreadyHandledDeletedIds: deletedIds,
             protectedIds: insertedIds.union(updatedIds),
-            now: now
+            now: now,
+            cachedLocalIds: cachedLocalIds
         )
         Self.reconLog.notice("[cairn.recon] orphan sweep ran: cache=\(preOrphanCacheCount, privacy: .public) orphans=\(orphanResult.orphanIds.count, privacy: .public) recovered-checksums=\(orphanResult.checksums.count, privacy: .public)")
         if !orphanResult.checksums.isEmpty {
@@ -2146,7 +2155,7 @@ public final class PhotoKitPersistentChangeReconciler {
     /// the orphan sweep also does — could share if we ever notice the
     /// duplicate cost) plus two store snapshots (`allLocalIdentifiers`,
     /// `deferredStore.snapshot()`), all set-membership-only.
-    private func discoverUntrackedAssets() async throws -> Set<String> {
+    private func discoverUntrackedAssets(cachedLocalIds: Set<String>? = nil) async throws -> Set<String> {
         let liveIds = await Task.detached(priority: .userInitiated) {
             Self.enumerateLiveLocalIdentifiers(
                 includeHiddenAssets: false,
@@ -2154,7 +2163,12 @@ public final class PhotoKitPersistentChangeReconciler {
             )
         }.value
 
-        let cacheIds = try await hashStore.allLocalIdentifiers()
+        let cacheIds: Set<String>
+        if let cachedLocalIds {
+            cacheIds = cachedLocalIds
+        } else {
+            cacheIds = try await hashStore.allLocalIdentifiers()
+        }
         var deferredIds: Set<String> = []
         if let deferredStore {
             let snapshot = try await deferredStore.snapshot()
@@ -2174,7 +2188,8 @@ public final class PhotoKitPersistentChangeReconciler {
     private func reconcileCacheAgainstLibrary(
         alreadyHandledDeletedIds: Set<String>,
         protectedIds: Set<String>,
-        now: Date
+        now: Date,
+        cachedLocalIds: Set<String>? = nil
     ) async throws -> (checksums: Set<Checksum>, orphanIds: Set<String>, sourceIdByChecksum: [Checksum: String]) {
         // Include hidden assets so Live Photo motion videos (which
         // live in `hidden` visibility) don't get flagged as orphans.
@@ -2185,10 +2200,17 @@ public final class PhotoKitPersistentChangeReconciler {
             )
         }.value
 
-        // Use the keys-only fetch — we don't need the actual checksums
-        // here, just set-membership. On 7k+ libraries this saves a
-        // materially expensive load.
-        let cacheIds = try await hashStore.allLocalIdentifiers()
+        // When the caller has already fetched the cache id-set for
+        // this scan (the prelude does this once and threads it through),
+        // reuse it. Optional for backward compat; on stale-cache risk
+        // there is none — `cachedLocalIds` is computed per-scan and is
+        // a snapshot, not a long-lived reference.
+        let cacheIds: Set<String>
+        if let cachedLocalIds {
+            cacheIds = cachedLocalIds
+        } else {
+            cacheIds = try await hashStore.allLocalIdentifiers()
+        }
         // Candidate orphans = cache ids that:
         //  - aren't in the live library (so really gone), AND
         //  - aren't already accounted for by the explicit delete
