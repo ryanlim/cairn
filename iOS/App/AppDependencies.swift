@@ -817,7 +817,24 @@ final class AppDependencies {
         await backfillMetadataIfNeeded(visibleFetch: visibleFetch)
 
         let t2 = Date()
-        let observedSet = try await observed.snapshot()
+        var observedSet = try await observed.snapshot()
+        // Recovery path for users upgrading across the SwiftData entity
+        // rename (StoredEverSeenChecksum → StoredObservedChecksum). The
+        // new table starts empty; LocalHashStore is keyed on a different
+        // @Model class and survives intact. Without this, an
+        // events=0 incremental sync after upgrade (stable library, no
+        // PhotoKit changes since the last token) leaves Observed empty
+        // and silently produces zero deletion candidates forever — the
+        // engine's diff requires an entry in Observed for any candidate
+        // to surface. Backfilling from LocalHashStore (`local`, fetched
+        // a few lines up) brings the witness set back without re-hashing
+        // PHAsset bytes — the SHA1s are already cached. Idempotent:
+        // subsequent syncs see Observed populated and skip this branch.
+        if observedSet.isEmpty, !local.isEmpty {
+            syncLog.notice("[cairn.recover] observed empty, localHash has \(local.count, privacy: .public) entries — bootstrapping")
+            try? await observed.union(local)
+            observedSet = local
+        }
         let exclusionSnapshot = try await exclusions.snapshot()
         let exclusionSet = Set(exclusionSnapshot.keys)
         let exclusionAddedAt = exclusionSnapshot.mapValues(\.addedAt)
