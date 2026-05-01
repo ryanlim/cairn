@@ -19,7 +19,7 @@ import CairnCore
 /// fetched on. The actors below convert to `Checksum` values before
 /// returning anything to callers.
 @Model
-final class StoredEverSeenChecksum {
+final class StoredObservedChecksum {
     @Attribute(.unique) var base64: String
     /// Comma-separated `PHAssetCollection.localIdentifier` values
     /// recording which selected-scope albums cairn last observed this
@@ -277,7 +277,7 @@ public enum CairnSwiftDataContainer {
     /// edit-retirement anchors, cosmetic status snapshot).
     public static func makePerServer(url: URL, inMemory: Bool = false) throws -> ModelContainer {
         let schema = Schema([
-            StoredEverSeenChecksum.self,
+            StoredObservedChecksum.self,
             StoredExclusion.self,
             StoredConfirmedDeletedChecksum.self,
             StoredPersistentChangeToken.self,
@@ -293,7 +293,7 @@ public enum CairnSwiftDataContainer {
     /// only by tests and the one-shot migration path.
     public static func make(url: URL? = nil, inMemory: Bool = false) throws -> ModelContainer {
         let schema = Schema([
-            StoredEverSeenChecksum.self,
+            StoredObservedChecksum.self,
             StoredExclusion.self,
             StoredConfirmedDeletedChecksum.self,
             StoredLocalHashEntry.self,
@@ -345,7 +345,7 @@ public actor SwiftDataObservedStore: ObservedStore {
     }
 
     public func snapshot() async throws -> Set<Checksum> {
-        let descriptor = FetchDescriptor<StoredEverSeenChecksum>()
+        let descriptor = FetchDescriptor<StoredObservedChecksum>()
         let rows = try context.fetch(descriptor)
         var out: Set<Checksum> = []
         out.reserveCapacity(rows.count)
@@ -364,14 +364,14 @@ public actor SwiftDataObservedStore: ObservedStore {
         // throws on save rather than silent drops).
         let existing = try snapshotBase64Set()
         for checksum in additions where !existing.contains(checksum.base64) {
-            context.insert(StoredEverSeenChecksum(base64: checksum.base64))
+            context.insert(StoredObservedChecksum(base64: checksum.base64))
         }
         // SwiftData doesn't auto-persist — explicit save required.
         try context.save()
     }
 
     private func snapshotBase64Set() throws -> Set<String> {
-        let descriptor = FetchDescriptor<StoredEverSeenChecksum>()
+        let descriptor = FetchDescriptor<StoredObservedChecksum>()
         let rows = try context.fetch(descriptor)
         var out: Set<String> = []
         out.reserveCapacity(rows.count)
@@ -389,7 +389,7 @@ public actor SwiftDataObservedStore: ObservedStore {
         guard !checksums.isEmpty else { return }
         let targets = Set(checksums.map(\.base64))
         var changed = false
-        for row in try context.fetch(FetchDescriptor<StoredEverSeenChecksum>()) {
+        for row in try context.fetch(FetchDescriptor<StoredObservedChecksum>()) {
             if targets.contains(row.base64) {
                 context.delete(row)
                 changed = true
@@ -400,7 +400,7 @@ public actor SwiftDataObservedStore: ObservedStore {
 
     public func clear() async throws {
         var changed = false
-        for row in try context.fetch(FetchDescriptor<StoredEverSeenChecksum>()) {
+        for row in try context.fetch(FetchDescriptor<StoredObservedChecksum>()) {
             context.delete(row)
             changed = true
         }
@@ -410,7 +410,7 @@ public actor SwiftDataObservedStore: ObservedStore {
     // MARK: - Scope-aware tag API
 
     public func snapshotWithTags() async throws -> [Checksum: Set<String>] {
-        let descriptor = FetchDescriptor<StoredEverSeenChecksum>()
+        let descriptor = FetchDescriptor<StoredObservedChecksum>()
         let rows = try context.fetch(descriptor)
         var out: [Checksum: Set<String>] = [:]
         out.reserveCapacity(rows.count)
@@ -425,8 +425,8 @@ public actor SwiftDataObservedStore: ObservedStore {
         // Build a map of existing rows so we can update-in-place on
         // collision rather than firing N independent fetch+update
         // round-trips.
-        let allRows = try context.fetch(FetchDescriptor<StoredEverSeenChecksum>())
-        var byBase64: [String: StoredEverSeenChecksum] = [:]
+        let allRows = try context.fetch(FetchDescriptor<StoredObservedChecksum>())
+        var byBase64: [String: StoredObservedChecksum] = [:]
         byBase64.reserveCapacity(allRows.count)
         for row in allRows { byBase64[row.base64] = row }
 
@@ -439,7 +439,7 @@ public actor SwiftDataObservedStore: ObservedStore {
                     changed = true
                 }
             } else {
-                context.insert(StoredEverSeenChecksum(base64: ck.base64, albumIdsCSV: csv))
+                context.insert(StoredObservedChecksum(base64: ck.base64, albumIdsCSV: csv))
                 changed = true
             }
         }
@@ -451,7 +451,7 @@ public actor SwiftDataObservedStore: ObservedStore {
         let targets = Set(checksums.map(\.base64))
         let csv = Self.formatAlbumCSV(tags)
         var changed = false
-        for row in try context.fetch(FetchDescriptor<StoredEverSeenChecksum>()) {
+        for row in try context.fetch(FetchDescriptor<StoredObservedChecksum>()) {
             if targets.contains(row.base64), row.albumIdsCSV != csv {
                 row.albumIdsCSV = csv
                 changed = true

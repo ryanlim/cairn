@@ -128,7 +128,7 @@ struct CairnExportPayloadTests {
             {
               "partitionKey": "host:abcd1234",
               "normalizedURL": "https://immich.example.com/api",
-              "everSeen": [],
+              "observed": [],
               "exclusions": [
                 {
                   "checksum": "ck1",

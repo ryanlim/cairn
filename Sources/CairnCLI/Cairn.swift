@@ -147,7 +147,7 @@ func updateConfirmedFromSnapshotDiff(
 ///
 /// Runs the full pipeline (snapshot-diff → persistent stores → reconciliation
 /// engine → safety rails) and prints what `trash` would do, without issuing
-/// any DELETE calls. Persists updated `ever-seen.json` + `confirmed-deleted.json`
+/// any DELETE calls. Persists updated `observed.json` + `confirmed-deleted.json`
 /// + `local-snapshot.json` so repeated dry-runs converge; only the DELETE is
 /// suppressed. Required as the first run on a fresh observed store — `trash`
 /// refuses until observed has been seeded.
@@ -169,7 +169,7 @@ struct DryRun: AsyncParsableCommand {
         name: .long,
         help: "Path to the persistent observed checksum store (JSON). Created if absent."
     )
-    var observedStore: String = "ever-seen.json"
+    var observedStore: String = "observed.json"
 
     @Option(name: .long, help: "Abort if more than this percent (0–100) of in-purview assets would be deleted. Default: 1 (one percent).")
     var maxDeletePercent: Double = 1.0
@@ -318,7 +318,7 @@ struct Trash: AsyncParsableCommand {
     var localChecksumsFile: String
 
     @Option(name: .long, help: "Path to the persistent observed checksum store (JSON). Created if absent.")
-    var observedStore: String = "ever-seen.json"
+    var observedStore: String = "observed.json"
 
     @Option(name: .long, help: "Path to the append-only deletion journal (JSONL).")
     var journal: String = "deletion-journal.jsonl"

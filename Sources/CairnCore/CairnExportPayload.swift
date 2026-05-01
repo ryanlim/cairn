@@ -43,18 +43,6 @@ public struct CairnExportPayload: Codable, Sendable, Equatable {
             self.journal = journal
         }
 
-        // The Swift property was renamed `everSeen` → `observed` for
-        // clarity, but the on-disk JSON key stays `everSeen` so older
-        // export files (the only payload format shipped before the
-        // rename) decode unchanged. Future v2 schema bumps are free
-        // to drop this mapping.
-        private enum CodingKeys: String, CodingKey {
-            case partitionKey
-            case normalizedURL
-            case observed = "everSeen"
-            case exclusions
-            case journal
-        }
 
         public struct ExclusionRecord: Codable, Sendable, Equatable {
             public let checksum: String
