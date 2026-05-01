@@ -453,6 +453,19 @@ public final class PhotoKitPersistentChangeReconciler {
         // as a stutter in the sync-card spring during the .hashing phase
         // transition. Detaching makes the prelude invisible to the UI
         // thread.
+        // Phase timing. Each `tick` records the elapsed ms since the
+        // previous boundary and resets the clock for the next phase.
+        // Surfaces as `[cairn.recon.timing] phase=X took=Yms` lines
+        // so the user-reported "appears to hang" can be narrowed
+        // without a profiler — Console alone tells you which step
+        // ate the wall clock.
+        var phaseClock = Date()
+        func tick(_ phase: String) {
+            let ms = Int(Date().timeIntervalSince(phaseClock) * 1000)
+            phaseClock = Date()
+            Self.reconLog.info("[cairn.recon.timing] phase=\(phase, privacy: .public) took=\(ms, privacy: .public)ms")
+        }
+
         let collected = try await Task.detached(priority: .userInitiated) {
             try Self.collectIncrementalChanges(since: token)
         }.value
@@ -460,6 +473,7 @@ public final class PhotoKitPersistentChangeReconciler {
         var updatedIds = collected.updatedIds
         let deletedIds = collected.deletedIds
         let events = collected.events
+        tick("fetchPersistentChanges")
 
         // Library→cache untracked sweep. PHAssets that exist in the visible
         // library but aren't in either `LocalHashStore` or `DeferredHashStore`
@@ -476,12 +490,14 @@ public final class PhotoKitPersistentChangeReconciler {
         // 2× materialization on a 50k-photo library, both serialized
         // before any hashing counter moves.
         let cachedLocalIds = try await hashStore.allLocalIdentifiers()
+        tick("cachedLocalIds")
 
         let untrackedIds = try await discoverUntrackedAssets(cachedLocalIds: cachedLocalIds)
         if !untrackedIds.isEmpty {
             Self.reconLog.notice("[cairn.recon] untracked sweep: \(untrackedIds.count, privacy: .public) PHAssets visible but neither indexed nor queued — adding to insert pipeline")
             insertedIds.formUnion(untrackedIds)
         }
+        tick("discoverUntracked")
 
         // Snapshot the deferred queue once for this scan — used to filter
         // `insertedIds` and `staleUpdates` below. The drain owns retry of
@@ -495,6 +511,7 @@ public final class PhotoKitPersistentChangeReconciler {
             return Set(snapshot.map(\.localIdentifier))
         }()
         Self.reconLog.info("[cairn.recon] deferred-queue snapshot at scan-start: count=\(deferredQueueIds.count, privacy: .public)")
+        tick("deferredQueue")
         if !deferredQueueIds.isEmpty {
             let blockedInserts = insertedIds.intersection(deferredQueueIds)
             if !blockedInserts.isEmpty {
@@ -520,6 +537,7 @@ public final class PhotoKitPersistentChangeReconciler {
                 Self.reconLog.notice("[cairn.recon] scope filter: dropped \(droppedInserts, privacy: .public) inserts + \(droppedUpdates, privacy: .public) updates outside selected albums")
             }
         }
+        tick("scopeMembership")
 
         // Diagnostic log — makes "why didn't my delete propagate?"
         // answerable from the device console without rebuilding.
@@ -571,6 +589,7 @@ public final class PhotoKitPersistentChangeReconciler {
             let skipped = updatedIds.count - staleUpdates.count
             hashLog.notice("[cairn.recon] skipped \(skipped, privacy: .public) update events with unchanged modDate")
         }
+        tick("observeAndFilter")
 
         // Drop staleUpdates that are already in the deferred queue —
         // same reasoning as the inserts filter above. Reuses the
@@ -657,6 +676,7 @@ public final class PhotoKitPersistentChangeReconciler {
                 membership: membership
             )
         }
+        tick("hashing(insert=\(insertedBatch.checksumsByID.count) update=\(updatedBatch.checksumsByID.count))")
 
         // Capture pre-mutation state so `unconfirmedByRestoration` reports
         // the actual delta, not the post-`remove` view.
@@ -716,6 +736,7 @@ public final class PhotoKitPersistentChangeReconciler {
             cachedLocalIds: cachedLocalIds
         )
         Self.reconLog.notice("[cairn.recon] orphan sweep ran: cache=\(preOrphanCacheCount, privacy: .public) orphans=\(orphanResult.orphanIds.count, privacy: .public) recovered-checksums=\(orphanResult.checksums.count, privacy: .public)")
+        tick("orphanSweep")
         if !orphanResult.checksums.isEmpty {
             removedChecksums.formUnion(orphanResult.checksums)
         }
@@ -1334,10 +1355,21 @@ public final class PhotoKitPersistentChangeReconciler {
     /// resync, not a positive deletion signal. Default `cause` keeps
     /// existing test callers working without changes.
     private func runFullEnumeration(cause: FullEnumerationCause = .firstRun) async throws -> Result {
+        // Phase timing — same shape as `runIncremental`'s `tick(...)`.
+        // Lets the user pinpoint which step of a full re-enum eats
+        // the wall clock without rebuilding for instrumentation.
+        var phaseClock = Date()
+        func tick(_ phase: String) {
+            let ms = Int(Date().timeIntervalSince(phaseClock) * 1000)
+            phaseClock = Date()
+            Self.reconLog.info("[cairn.recon.timing] phase=\(phase, privacy: .public) took=\(ms, privacy: .public)ms")
+        }
+
         // Capture the baseline *before* we enumerate, so any changes that
         // happen during enumeration are picked up by the next incremental
         // scan rather than lost to the gap.
         let baselineToken = PHPhotoLibrary.shared().currentChangeToken
+        tick("baselineToken")
 
         // Resolve scope membership once for this scan. `nil` for
         // `.fullLibrary` (legacy untagged path); a populated map for
@@ -1345,6 +1377,7 @@ public final class PhotoKitPersistentChangeReconciler {
         // `hashAllCurrentAssets` and the per-checksum tag write into
         // `ObservedStore` below.
         let membership = await Self.resolveScopeMembership(scope)
+        tick("scopeMembership")
 
         // Enumerate the (possibly scoped) library, hashing per-asset,
         // rebuilding the local hash cache from scratch. We don't union
@@ -1362,6 +1395,7 @@ public final class PhotoKitPersistentChangeReconciler {
             checksumsByID: batch.checksumsByID,
             membership: membership
         )
+        tick("hashAllCurrentAssets")
 
         let now = clock()
         try await tokens.save(.init(
