@@ -2,7 +2,7 @@ import Foundation
 
 /// One server asset matched against locally-observed metadata where
 /// cairn never managed to hash the asset before it was deleted from
-/// the photo library — i.e. an orphan that the standard ever-seen
+/// the photo library — i.e. an orphan that the standard observed
 /// reconciliation cannot surface because the SHA1 was never recorded.
 ///
 /// `matchedMetadata` is surfaced so the UI can explain *why* the asset
@@ -26,9 +26,9 @@ public struct InferredOrphan: Sendable, Equatable {
 /// `fetchPersistentChanges(since:)` later returns insert+delete events
 /// for the same `localIdentifier`, but `PHAsset.fetchAssets(...)` finds
 /// nothing for the deleted id, so the asset's bytes are unreachable
-/// and its SHA1 never lands in `EverSeenStore`. The standard
+/// and its SHA1 never lands in `ObservedStore`. The standard
 /// reconciliation can't candidate it for trash because the candidate
-/// predicate requires `everSeen.contains(checksum)`. Without this
+/// predicate requires `observed.contains(checksum)`. Without this
 /// matcher, the asset is orphaned on Immich forever.
 ///
 /// `LocalAssetMetadataStore` records filename + creationDate at
@@ -43,7 +43,7 @@ public enum OrphanReconciler {
     ///
     /// Match criteria — all required:
     ///   - server asset is non-trashed
-    ///   - server asset's checksum is NOT in `everSeen` (cairn doesn't
+    ///   - server asset's checksum is NOT in `observed` (cairn doesn't
     ///     know about it locally)
     ///   - server asset has a non-nil `originalFileName` and `fileCreatedAt`
     ///   - some entry in `metadata` has matching `originalFileName`
@@ -56,7 +56,7 @@ public enum OrphanReconciler {
     /// matches multiple metadata rows, the closest creationDate wins.
     public static func match(
         serverAssets: [ServerAsset],
-        everSeen: Set<Checksum>,
+        observed: Set<Checksum>,
         metadata: [LocalAssetMetadata],
         presentLocalIdentifiers: Set<String>,
         dateTolerance: TimeInterval = 2  // seconds; PhotoKit ↔ Immich rounding
@@ -78,7 +78,7 @@ public enum OrphanReconciler {
 
         for asset in serverAssets {
             guard !asset.isTrashed,
-                  !everSeen.contains(asset.checksum),
+                  !observed.contains(asset.checksum),
                   let serverName = asset.originalFileName?.lowercased(),
                   let serverCreatedAt = asset.fileCreatedAt else { continue }
 

@@ -2,7 +2,7 @@ import Foundation
 
 /// Checksums this device has positively observed as locally-deleted, each
 /// carrying the timestamp it was first confirmed at. Companion to
-/// `EverSeenStore`. Together they implement Wave 4's strict-mode safety: a
+/// `ObservedStore`. Together they implement Wave 4's strict-mode safety: a
 /// candidate trash is only trusted if its checksum has been positively
 /// observed leaving the local library, and the confirmation is older than
 /// the settings-controlled quarantine window.

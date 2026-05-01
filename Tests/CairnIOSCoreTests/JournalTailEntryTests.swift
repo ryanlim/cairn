@@ -156,7 +156,7 @@ struct JournalTailEntryFromTests {
 
     @Test("runAborted summarizes firstRunNotDryRun")
     func runAbortedFirstRun() {
-        let reason = "firstRunNotDryRun — the first run on a fresh ever-seen store must be a dry-run"
+        let reason = "firstRunNotDryRun — the first run on a fresh observed store must be a dry-run"
         let t = Tail.from(entry(.runAborted(reason: reason)))
         #expect(t.message == "first run must be dry-run")
     }
@@ -534,7 +534,7 @@ struct JournalTailAbortSummaryTests {
 
     @Test("firstRunNotDryRun → short form")
     func firstRun() {
-        let raw = "firstRunNotDryRun — the first run on a fresh ever-seen store must be a dry-run"
+        let raw = "firstRunNotDryRun — the first run on a fresh observed store must be a dry-run"
         #expect(Tail.summarizeAbortReason(raw) == "first run must be dry-run")
     }
 
@@ -554,7 +554,7 @@ struct JournalTailAbortSummaryTests {
             .emptyServerResponse,
             .emptyLocalLibrary,
             .firstRunNotDryRun,
-            .thresholdExceeded(candidateCount: 12, assetsInEverSeen: 1024, percent: 0.0117, limit: 0.01),
+            .thresholdExceeded(candidateCount: 12, assetsInObserved: 1024, percent: 0.0117, limit: 0.01),
         ]
         for reason in cases {
             let summary = Tail.summarizeAbortReason(reason.description)

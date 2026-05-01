@@ -78,10 +78,10 @@ public struct CairnSettings: Sendable, Codable, Equatable {
     /// iCloud-download size exceeds this are **never hashed**, by any
     /// path — not foreground, not background. They're effectively
     /// out-of-scope for cairn: no checksum, not entered into
-    /// `EverSeenStore`, not added to `DeferredHashStore`. A consequence
+    /// `ObservedStore`, not added to `DeferredHashStore`. A consequence
     /// is that if the user later deletes them from iPhone, cairn won't
     /// propagate the deletion to Immich (because the checksum was never
-    /// in `everSeen`). Use this for multi-GB iCloud-archived videos you
+    /// in `observed`). Use this for multi-GB iCloud-archived videos you
     /// want cairn to ignore entirely.
     ///
     /// `nil` = off (no hard ceiling, default). Values outside
@@ -132,7 +132,7 @@ public struct CairnSettings: Sendable, Codable, Equatable {
     /// cairn's view to a hand-picked set of Photos albums (identified
     /// by `PHAssetCollection.localIdentifier`); photos outside those
     /// albums are silently ignored — never hashed, never proposed for
-    /// trash, never enter the EverSeen / Confirmed flow until they're
+    /// trash, never enter the Observed / Confirmed flow until they're
     /// added to a selected album.
     public var indexingScope: IndexingScope
 

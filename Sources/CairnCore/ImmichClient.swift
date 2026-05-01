@@ -151,7 +151,7 @@ public struct ImmichClient: Sendable {
     /// The Immich user the current API key authenticates as. Used as the
     /// stable per-user discriminator in cairn's partition key — paired
     /// with server URL, this lets multiple Immich accounts on the same
-    /// server URL get isolated journal/runs/EverSeen state on the same
+    /// server URL get isolated journal/runs/Observed state on the same
     /// device.
     ///
     /// `id` is the canonical Immich user UUID — stable across email and

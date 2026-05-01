@@ -13,7 +13,7 @@ import Foundation
 /// the saved counts are a hold-over until that lands.
 public struct StatusSnapshot: Sendable, Equatable, Codable {
     public let deleteCandidatesCount: Int
-    /// Mirrors `ReconciliationOutput.assetsInEverSeen` — drives the
+    /// Mirrors `ReconciliationOutput.assetsInObserved` — drives the
     /// "X.XX% of synced" chip math on Status.
     public let matchedCount: Int
     public let pendingReviewCount: Int

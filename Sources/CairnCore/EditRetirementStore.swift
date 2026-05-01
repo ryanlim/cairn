@@ -14,7 +14,7 @@ import Foundation
 /// so once on Immich an "edited photo" is just two unrelated assets
 /// (original + rendered edit). Without `EditRetirementStore`, cairn's
 /// cache reflects the post-edit bytes, the pre-edit SHA1 sits in
-/// `EverSeenStore` with no local presence, and reconciliation candidates
+/// `ObservedStore` with no local presence, and reconciliation candidates
 /// the original for trash — destroying the user's original-content
 /// backup. This store anchors the original so `currentLocalChecksums`
 /// can extend to include "first observed for any live id" and the
@@ -62,7 +62,7 @@ import Foundation
 /// id that's already been edited, `firstObserved` ends up being the
 /// edited bytes, not the true pre-cairn original. The actual
 /// pre-cairn original on Immich is invisible to cairn (its SHA1 isn't
-/// in `EverSeenStore` since cairn never hashed it) so reconciliation
+/// in `ObservedStore` since cairn never hashed it) so reconciliation
 /// never candidates it — it stays safe on Immich by virtue of being
 /// outside the diff. Net behavior is acceptable: every cairn-known
 /// version is protected; pre-cairn versions are also protected by

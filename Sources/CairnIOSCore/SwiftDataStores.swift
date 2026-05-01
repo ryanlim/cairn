@@ -272,7 +272,7 @@ public enum CairnSwiftDataContainer {
         return try container(schema: schema, url: url, inMemory: inMemory)
     }
 
-    /// Build a `ModelContainer` for per-server state (ever-seen,
+    /// Build a `ModelContainer` for per-server state (observed,
     /// exclusions, confirmed-deleted, persistent-change token,
     /// edit-retirement anchors, cosmetic status snapshot).
     public static func makePerServer(url: URL, inMemory: Bool = false) throws -> ModelContainer {
@@ -321,9 +321,9 @@ public enum CairnSwiftDataContainer {
     }
 }
 
-// MARK: - SwiftDataEverSeenStore
+// MARK: - SwiftDataObservedStore
 
-/// SwiftData-backed `EverSeenStore`.
+/// SwiftData-backed `ObservedStore`.
 ///
 /// **Why a plain `actor` instead of `@ModelActor`.** `@ModelActor`
 /// synthesizes an init taking a `ModelContainer` + custom `Executor`
@@ -333,7 +333,7 @@ public enum CairnSwiftDataContainer {
 /// doesn't leave room for other parameters. A plain actor with an
 /// internally-owned `ModelContext` is just as `Sendable`-safe (the
 /// context never escapes the actor) with full control over the init.
-public actor SwiftDataEverSeenStore: EverSeenStore {
+public actor SwiftDataObservedStore: ObservedStore {
     private let context: ModelContext
 
     public init(container: ModelContainer) {
@@ -381,8 +381,8 @@ public actor SwiftDataEverSeenStore: EverSeenStore {
         return out
     }
 
-    /// Wipe every ever-seen row. Called by Settings → Reset index.
-    /// Not on the `EverSeenStore` protocol — wiping the index is an
+    /// Wipe every observed row. Called by Settings → Reset index.
+    /// Not on the `ObservedStore` protocol — wiping the index is an
     /// iOS-specific affordance; no Kotlin port or CLI invocation
     /// needs it.
     public func remove(_ checksums: Set<Checksum>) async throws {
@@ -482,7 +482,7 @@ public actor SwiftDataEverSeenStore: EverSeenStore {
 // MARK: - SwiftDataExclusionStore
 
 /// SwiftData-backed `ExclusionStore`. Same actor-with-private-context
-/// pattern as `SwiftDataEverSeenStore`; see that type for the
+/// pattern as `SwiftDataObservedStore`; see that type for the
 /// plain-actor-vs-`@ModelActor` rationale.
 public actor SwiftDataExclusionStore: ExclusionStore {
     private let context: ModelContext
@@ -573,7 +573,7 @@ public actor SwiftDataExclusionStore: ExclusionStore {
 /// checksum + `confirmedAt` timestamp; schema-level dedup on
 /// `base64`. `union(_:at:)` is first-write-wins on `confirmedAt` so
 /// the quarantine clock stays stable across re-observations. See
-/// `SwiftDataEverSeenStore` for the plain-actor-vs-`@ModelActor`
+/// `SwiftDataObservedStore` for the plain-actor-vs-`@ModelActor`
 /// rationale.
 public actor SwiftDataConfirmedDeletedStore: ConfirmedDeletedStore {
     private let context: ModelContext

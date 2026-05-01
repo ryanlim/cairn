@@ -8,7 +8,7 @@ import CairnCore
 ///
 ///   - Restrict the set of `PHAsset`s it enumerates and hashes
 ///     (`.selectedAlbums` mode → only walk selected albums)
-///   - Tag `EverSeenStore` writes with current album membership so the
+///   - Tag `ObservedStore` writes with current album membership so the
 ///     engine's `tags ∩ scope` filter has fresh ground truth
 ///
 /// Kept separate from `PhotoKitPersistentChangeReconciler` so the

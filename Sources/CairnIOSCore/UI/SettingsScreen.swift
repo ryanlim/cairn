@@ -197,7 +197,7 @@ public struct SettingsScreen: View {
                 Button("All accounts on this device", role: .destructive) { onResetIndexAllAccounts() }
             },
             message: {
-                Text("This account: clears the SHA1 cache, change-tracking baseline, ever-seen set, and quarantine state for the active Immich account. Exclusions, credentials, and saved servers are kept; the next sync re-hashes your library.\n\nAll accounts: also wipes every other (URL, user) partition cairn has cached on this device, plus the active account's exclusions and the saved-servers list. Use after a shared/dev-device cleanup.")
+                Text("This account: clears the SHA1 cache, change-tracking baseline, observed set, and quarantine state for the active Immich account. Exclusions, credentials, and saved servers are kept; the next sync re-hashes your library.\n\nAll accounts: also wipes every other (URL, user) partition cairn has cached on this device, plus the active account's exclusions and the saved-servers list. Use after a shared/dev-device cleanup.")
             }
         )
         .alert(
@@ -1206,7 +1206,7 @@ private struct ICloudDownloadLimitRow: View {
 /// below it.
 ///
 /// Tradeoff surfaced in the help popover: excluded assets never enter
-/// `everSeen`, so deletion propagation stops at them. That's the
+/// `observed`, so deletion propagation stops at them. That's the
 /// intended semantic ("out of scope by user choice") but important to
 /// make explicit — there's no other place this invariant shows up.
 private struct HardCeilingRow: View {

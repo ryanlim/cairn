@@ -25,22 +25,35 @@ public struct CairnExportPayload: Codable, Sendable, Equatable {
     public struct ServerPayload: Codable, Sendable, Equatable {
         public let partitionKey: String
         public let normalizedURL: String
-        public let everSeen: [String]  // sorted base64 checksums
+        public let observed: [String]  // sorted base64 checksums
         public let exclusions: [ExclusionRecord]
         public let journal: [String]  // raw JSONL lines
 
         public init(
             partitionKey: String,
             normalizedURL: String,
-            everSeen: [String],
+            observed: [String],
             exclusions: [ExclusionRecord],
             journal: [String]
         ) {
             self.partitionKey = partitionKey
             self.normalizedURL = normalizedURL
-            self.everSeen = everSeen
+            self.observed = observed
             self.exclusions = exclusions
             self.journal = journal
+        }
+
+        // The Swift property was renamed `everSeen` → `observed` for
+        // clarity, but the on-disk JSON key stays `everSeen` so older
+        // export files (the only payload format shipped before the
+        // rename) decode unchanged. Future v2 schema bumps are free
+        // to drop this mapping.
+        private enum CodingKeys: String, CodingKey {
+            case partitionKey
+            case normalizedURL
+            case observed = "everSeen"
+            case exclusions
+            case journal
         }
 
         public struct ExclusionRecord: Codable, Sendable, Equatable {

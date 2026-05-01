@@ -15,7 +15,7 @@ public struct ReconciliationInput: Sendable {
     /// candidate only if its checksum is in this set AND absent from
     /// `currentLocalChecksums` — the "ever seen" gate is what keeps cairn
     /// from reaping photos that were only ever on the server.
-    public let everSeenChecksums: Set<Checksum>
+    public let observedChecksums: Set<Checksum>
     /// Checksums the user has explicitly excluded. Server assets with these
     /// checksums drop out of the candidate set regardless of signal.
     public let excludedChecksums: Set<Checksum>
@@ -40,15 +40,15 @@ public struct ReconciliationInput: Sendable {
     /// Per-checksum album-membership tags, paired with `selectedAlbumScope`
     /// for scope-aware indexing. `nil` (the default) means "no scope filter
     /// — full library mode." When non-nil and `selectedAlbumScope` is also
-    /// non-nil, the engine restricts `everSeenChecksums` to entries whose
+    /// non-nil, the engine restricts `observedChecksums` to entries whose
     /// tags intersect the scope before running the diff. Untagged entries
     /// (legacy / pre-scope-aware) are excluded under restricted scope —
     /// they get re-tagged on next sync.
-    public let everSeenAlbumTags: [Checksum: Set<String>]?
+    public let observedAlbumTags: [Checksum: Set<String>]?
 
     /// Active album scope: `Set` of `PHAssetCollection.localIdentifier`
     /// values from `CairnSettings.indexingScope.selectedAlbums`. Pair
-    /// with `everSeenAlbumTags` to enable scope filtering. `nil` for
+    /// with `observedAlbumTags` to enable scope filtering. `nil` for
     /// full-library mode.
     public let selectedAlbumScope: Set<String>?
 
@@ -66,25 +66,25 @@ public struct ReconciliationInput: Sendable {
     public init(
         serverAssets: [ServerAsset],
         currentLocalChecksums: Set<Checksum>,
-        everSeenChecksums: Set<Checksum>,
+        observedChecksums: Set<Checksum>,
         excludedChecksums: Set<Checksum> = [],
         confirmedDeletedAt: [Checksum: Date] = [:],
         now: Date = Date(),
         quarantineDays: Int = 14,
         strictness: DeletionStrictness = .trusting,
-        everSeenAlbumTags: [Checksum: Set<String>]? = nil,
+        observedAlbumTags: [Checksum: Set<String>]? = nil,
         selectedAlbumScope: Set<String>? = nil,
         excludedAtByChecksum: [Checksum: Date]? = nil
     ) {
         self.serverAssets = serverAssets
         self.currentLocalChecksums = currentLocalChecksums
-        self.everSeenChecksums = everSeenChecksums
+        self.observedChecksums = observedChecksums
         self.excludedChecksums = excludedChecksums
         self.confirmedDeletedAt = confirmedDeletedAt
         self.now = now
         self.quarantineDays = quarantineDays
         self.strictness = strictness
-        self.everSeenAlbumTags = everSeenAlbumTags
+        self.observedAlbumTags = observedAlbumTags
         self.selectedAlbumScope = selectedAlbumScope
         self.excludedAtByChecksum = excludedAtByChecksum
     }
@@ -100,12 +100,12 @@ public struct ReconciliationOutput: Sendable, Equatable {
     /// and strictness have all been applied.
     public let deleteCandidates: [ServerAsset]
     /// Checksums present locally that have never been seen before. Caller is
-    /// expected to union these into the persistent `EverSeenStore`.
+    /// expected to union these into the persistent `ObservedStore`.
     public let newlyObservedChecksums: Set<Checksum>
-    /// Count of non-trashed server assets whose checksum is in the ever-seen
+    /// Count of non-trashed server assets whose checksum is in the observed
     /// set. Used as the denominator for `SafetyRails`'s percent cap so
     /// libraries that are partially-synced don't trip the rail.
-    public let assetsInEverSeen: Int
+    public let assetsInObserved: Int
     /// Count of would-be candidates filtered out by `excludedChecksums`.
     /// Informational; surfaced in the dry-run summary.
     public let excludedCandidateCount: Int
@@ -132,7 +132,7 @@ public struct ReconciliationOutput: Sendable, Equatable {
     public init(
         deleteCandidates: [ServerAsset],
         newlyObservedChecksums: Set<Checksum>,
-        assetsInEverSeen: Int,
+        assetsInObserved: Int,
         excludedCandidateCount: Int = 0,
         pendingReviewCandidates: [ServerAsset] = [],
         heldByQuarantineCandidates: [ServerAsset] = [],
@@ -140,7 +140,7 @@ public struct ReconciliationOutput: Sendable, Equatable {
     ) {
         self.deleteCandidates = deleteCandidates
         self.newlyObservedChecksums = newlyObservedChecksums
-        self.assetsInEverSeen = assetsInEverSeen
+        self.assetsInObserved = assetsInObserved
         self.excludedCandidateCount = excludedCandidateCount
         self.pendingReviewCandidates = pendingReviewCandidates
         self.heldByQuarantineCandidates = heldByQuarantineCandidates
@@ -159,7 +159,7 @@ public struct ReconciliationOutput: Sendable, Equatable {
         return ReconciliationOutput(
             deleteCandidates: [],
             newlyObservedChecksums: newlyObservedChecksums,
-            assetsInEverSeen: assetsInEverSeen,
+            assetsInObserved: assetsInObserved,
             excludedCandidateCount: excludedCandidateCount,
             pendingReviewCandidates: deleteCandidates + pendingReviewCandidates,
             heldByQuarantineCandidates: heldByQuarantineCandidates,
@@ -176,7 +176,7 @@ public enum ReconciliationEngine {
     /// Four-pass classification:
     ///
     ///   1. Diff: pick non-trashed server assets whose checksum is in
-    ///      ever-seen but NOT in current-local (the negative signal).
+    ///      observed but NOT in current-local (the negative signal).
     ///   2. Exclusions: drop anything the user has explicitly protected.
     ///   3. Quarantine: split confirmed-deleted checksums into in-window
     ///      vs past-window using `input.now` and `quarantineDays`.
@@ -185,29 +185,29 @@ public enum ReconciliationEngine {
     ///      `heldByQuarantineCandidates`.
     public static func compute(_ input: ReconciliationInput) -> ReconciliationOutput {
         // Scope filter (Wave 5: scope-aware indexing). When the user has
-        // restricted cairn to specific Photos albums, only EverSeen
+        // restricted cairn to specific Photos albums, only Observed
         // entries whose album tags intersect the scope are considered.
         // Out-of-scope entries (and untagged-legacy ones) drop out
         // before the diff runs — they don't become candidates and they
-        // don't count toward `assetsInEverSeen` (the safety-rails
+        // don't count toward `assetsInObserved` (the safety-rails
         // denominator). When either side of the pair is nil we fall
         // back to full-library behavior.
-        let effectiveEverSeen: Set<Checksum>
-        if let tags = input.everSeenAlbumTags, let scope = input.selectedAlbumScope {
-            effectiveEverSeen = input.everSeenChecksums.filter { ck in
+        let effectiveObserved: Set<Checksum>
+        if let tags = input.observedAlbumTags, let scope = input.selectedAlbumScope {
+            effectiveObserved = input.observedChecksums.filter { ck in
                 guard let entryTags = tags[ck] else { return false }
                 return !entryTags.isDisjoint(with: scope)
             }
         } else {
-            effectiveEverSeen = input.everSeenChecksums
+            effectiveObserved = input.observedChecksums
         }
 
-        let newlyObserved = input.currentLocalChecksums.subtracting(effectiveEverSeen)
+        let newlyObserved = input.currentLocalChecksums.subtracting(effectiveObserved)
 
         // Pass 1: would-be candidates, ignoring exclusions/quarantine/strictness.
         let wouldBeCandidates = input.serverAssets.filter { asset in
             guard !asset.isTrashed else { return false }
-            return effectiveEverSeen.contains(asset.checksum)
+            return effectiveObserved.contains(asset.checksum)
                 && !input.currentLocalChecksums.contains(asset.checksum)
         }
 
@@ -261,10 +261,10 @@ public enum ReconciliationEngine {
         //
         // Held-by-quarantine is common to both modes — a freshly-confirmed
         // deletion always waits out the window. Strictness governs how
-        // *unconfirmed* diff candidates (in ever-seen, absent locally, but
+        // *unconfirmed* diff candidates (in observed, absent locally, but
         // never surfaced by `fetchPersistentChanges`) are handled:
         //   - `.trusting`: unconfirmed candidates flow straight to
-        //     `deleteCandidates`. The ever-seen negative signal alone is
+        //     `deleteCandidates`. The observed negative signal alone is
         //     enough. Pending = held-by-quarantine only.
         //   - `.strict`: unconfirmed candidates also land in pending.
         //     Trashing requires both the positive signal AND an elapsed
@@ -287,8 +287,8 @@ public enum ReconciliationEngine {
             pending = postExclusion.filter { !pastQuarantine.contains($0.checksum) }
         }
 
-        let inEverSeen = input.serverAssets.reduce(into: 0) { count, asset in
-            if !asset.isTrashed, effectiveEverSeen.contains(asset.checksum) {
+        let inObserved = input.serverAssets.reduce(into: 0) { count, asset in
+            if !asset.isTrashed, effectiveObserved.contains(asset.checksum) {
                 count += 1
             }
         }
@@ -296,7 +296,7 @@ public enum ReconciliationEngine {
         return ReconciliationOutput(
             deleteCandidates: candidates,
             newlyObservedChecksums: newlyObserved,
-            assetsInEverSeen: inEverSeen,
+            assetsInObserved: inObserved,
             excludedCandidateCount: excludedCount,
             pendingReviewCandidates: pending,
             heldByQuarantineCandidates: held,

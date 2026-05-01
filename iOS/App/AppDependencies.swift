@@ -52,7 +52,7 @@ final class AppDependencies {
     /// history. `nil` until `activateServer` has run.
     private(set) var currentKeyActivatedAt: Date?
     private(set) var serverContainer: ModelContainer?
-    private(set) var everSeenStore: SwiftDataEverSeenStore?
+    private(set) var observedStore: SwiftDataObservedStore?
     private(set) var exclusionStore: SwiftDataExclusionStore?
     private(set) var confirmedDeletedStore: SwiftDataConfirmedDeletedStore?
     private(set) var deletionSourceStore: SwiftDataDeletionSourceStore?
@@ -65,7 +65,7 @@ final class AppDependencies {
     var persistentChangeReconciler: PhotoKitPersistentChangeReconciler? {
         guard let localHash = Optional(localHashStore),
               let confirmed = confirmedDeletedStore,
-              let everSeen = everSeenStore,
+              let observed = observedStore,
               let tokens = tokenStore else { return nil }
 
         let limitMB = model.settings.iCloudDownloadLimitMB
@@ -80,7 +80,7 @@ final class AppDependencies {
         return PhotoKitPersistentChangeReconciler(
             hashStore: localHash,
             confirmedDeleted: confirmed,
-            everSeen: everSeen,
+            observed: observed,
             tokens: tokens,
             deferredStore: deferredHashStore,
             metadataStore: localAssetMetadataStore,
@@ -293,7 +293,7 @@ final class AppDependencies {
 
         self.currentPartitionKey = key
         self.serverContainer = container
-        self.everSeenStore = SwiftDataEverSeenStore(container: container)
+        self.observedStore = SwiftDataObservedStore(container: container)
         self.exclusionStore = SwiftDataExclusionStore(container: container)
         self.confirmedDeletedStore = SwiftDataConfirmedDeletedStore(container: container)
         self.deletionSourceStore = SwiftDataDeletionSourceStore(container: container)
@@ -399,7 +399,7 @@ final class AppDependencies {
             // surfaces in the log instead of being silently dropped.
             let lh = self.localHashStore
             let tk = self.tokenStore
-            let eh = self.everSeenStore
+            let eh = self.observedStore
             let cd = self.confirmedDeletedStore
             let ds = self.deletionSourceStore
             let er = self.editRetirementStore
@@ -408,7 +408,7 @@ final class AppDependencies {
                 ("local hash cache", { try await lh.clear() }),
             ]
             if let tk { ops.append(("change-token store", { try await tk.clear() })) }
-            if let eh { ops.append(("ever-seen store", { try await eh.clear() })) }
+            if let eh { ops.append(("observed store", { try await eh.clear() })) }
             if let cd { ops.append(("confirmed-deleted store", { try await cd.clear() })) }
             if let ds { ops.append(("deletion-source store", { try await ds.clear() })) }
             if let er { ops.append(("edit-retirement store", { try await er.clear() })) }
@@ -733,7 +733,7 @@ final class AppDependencies {
     @MainActor
     fileprivate func performLiveReconciliation(
         client: ImmichClient,
-        everSeen: SwiftDataEverSeenStore,
+        observed: SwiftDataObservedStore,
         exclusions: SwiftDataExclusionStore,
         confirmed: SwiftDataConfirmedDeletedStore
     ) async throws {
@@ -817,7 +817,7 @@ final class AppDependencies {
         await backfillMetadataIfNeeded(visibleFetch: visibleFetch)
 
         let t2 = Date()
-        let everSeenSet = try await everSeen.snapshot()
+        let observedSet = try await observed.snapshot()
         let exclusionSnapshot = try await exclusions.snapshot()
         let exclusionSet = Set(exclusionSnapshot.keys)
         let exclusionAddedAt = exclusionSnapshot.mapValues(\.addedAt)
@@ -831,7 +831,7 @@ final class AppDependencies {
         // current-bytes SHA1 in `LocalHashStore`. Without this
         // union, edited-but-kept photos would have their original
         // SHA1 silently classified as a deletion candidate (it's in
-        // ever-seen, absent from current-bytes), and the wrong-
+        // observed, absent from current-bytes), and the wrong-
         // semantics fix would be only half-applied.
         var editRetirementHeld: Set<Checksum> = []
         if let editRetirementStore {
@@ -877,7 +877,7 @@ final class AppDependencies {
         let thumbhashWork: [(assetId: String, data: Data)] = {
             guard thumbnailStore != nil else { return [] }
             return serverAssets.compactMap { asset in
-                guard everSeenSet.contains(asset.checksum),
+                guard observedSet.contains(asset.checksum),
                       let hash = asset.thumbhash,
                       let data = Data(base64Encoded: hash) else { return nil }
                 return (assetId: asset.id, data: data)
@@ -888,18 +888,18 @@ final class AppDependencies {
         // Scope-aware indexing: when the user has restricted cairn to
         // specific albums, fetch the album-tag map and pass it (along
         // with the active scope) into the engine. The engine filters
-        // EverSeen entries to only those whose tags intersect the scope
+        // Observed entries to only those whose tags intersect the scope
         // before computing candidates — out-of-scope photos quietly
         // exclude themselves from the diff. `nil` for full-library mode
         // (the default) preserves the legacy behavior.
-        let everSeenAlbumTags: [Checksum: Set<String>]?
+        let observedAlbumTags: [Checksum: Set<String>]?
         let selectedAlbumScope: Set<String>?
         switch settings.indexingScope {
         case .fullLibrary:
-            everSeenAlbumTags = nil
+            observedAlbumTags = nil
             selectedAlbumScope = nil
         case .selectedAlbums(let albumIds):
-            everSeenAlbumTags = (try? await everSeen.snapshotWithTags()) ?? [:]
+            observedAlbumTags = (try? await observed.snapshotWithTags()) ?? [:]
             selectedAlbumScope = albumIds
         }
 
@@ -936,18 +936,18 @@ final class AppDependencies {
         // Diagnostic: surface the inputs and outputs of the engine
         // call so "items in unconfirmed not held" reports can be
         // narrowed without a rebuild. Counts only.
-        syncLog.notice("[cairn.engine] input: server=\(serverAssets.count, privacy: .public) local=\(extendedLocal.count, privacy: .public) everSeen=\(everSeenSet.count, privacy: .public) confirmed=\(confirmedMap.count, privacy: .public) excluded=\(exclusionSet.count, privacy: .public) strictness=\(String(describing: effectiveStrictness), privacy: .public) qDays=\(settings.quarantineDays, privacy: .public) scope=\(selectedAlbumScope?.count ?? -1, privacy: .public)")
+        syncLog.notice("[cairn.engine] input: server=\(serverAssets.count, privacy: .public) local=\(extendedLocal.count, privacy: .public) observed=\(observedSet.count, privacy: .public) confirmed=\(confirmedMap.count, privacy: .public) excluded=\(exclusionSet.count, privacy: .public) strictness=\(String(describing: effectiveStrictness), privacy: .public) qDays=\(settings.quarantineDays, privacy: .public) scope=\(selectedAlbumScope?.count ?? -1, privacy: .public)")
 
         var result = ReconciliationEngine.compute(.init(
             serverAssets: serverAssets,
             currentLocalChecksums: extendedLocal,
-            everSeenChecksums: everSeenSet,
+            observedChecksums: observedSet,
             excludedChecksums: exclusionSet,
             confirmedDeletedAt: confirmedMap,
             now: Date(),
             quarantineDays: settings.quarantineDays,
             strictness: effectiveStrictness,
-            everSeenAlbumTags: everSeenAlbumTags,
+            observedAlbumTags: observedAlbumTags,
             selectedAlbumScope: selectedAlbumScope,
             excludedAtByChecksum: exclusionAddedAt
         ))
@@ -968,7 +968,7 @@ final class AppDependencies {
         // Orphan reconciliation. Catches the cull-burst case the
         // SHA1-based reconciler can't see: photo taken, uploaded to
         // Immich, and deleted locally before cairn could hash it. By
-        // the time we look, the bytes are gone — `EverSeenStore` never
+        // the time we look, the bytes are gone — `ObservedStore` never
         // got the checksum. We match server assets against the metadata
         // we captured at observer time (filename + creationDate). See
         // `OrphanReconciler` for the match algorithm. Orphans land in
@@ -977,7 +977,7 @@ final class AppDependencies {
         var inferredOrphanLocalIds: [Checksum: String] = [:]
         do {
             let metadataSnapshot = try await self.localAssetMetadataStore.snapshot()
-            syncLog.notice("[cairn.orphan] starting match: serverAssets=\(serverAssets.count, privacy: .public) metadata=\(metadataSnapshot.count, privacy: .public) everSeen=\(everSeenSet.count, privacy: .public)")
+            syncLog.notice("[cairn.orphan] starting match: serverAssets=\(serverAssets.count, privacy: .public) metadata=\(metadataSnapshot.count, privacy: .public) observed=\(observedSet.count, privacy: .public)")
             if !metadataSnapshot.isEmpty {
                 var presentLocalIds = Set<String>()
                 presentLocalIds.reserveCapacity(visibleFetch.count)
@@ -987,12 +987,12 @@ final class AppDependencies {
                 // Surface orphan candidate counts BEFORE the match so we
                 // can tell whether the gate is filtering them out vs the
                 // match algorithm not finding correlations.
-                let nonTrashedNonEverSeen = serverAssets.filter { !$0.isTrashed && !everSeenSet.contains($0.checksum) }
+                let nonTrashedNonObserved = serverAssets.filter { !$0.isTrashed && !observedSet.contains($0.checksum) }
                 let absentMetadataCount = metadataSnapshot.filter { !presentLocalIds.contains($0.localIdentifier) }.count
-                syncLog.notice("[cairn.orphan] gate: server-non-trashed-non-everSeen=\(nonTrashedNonEverSeen.count, privacy: .public) metadata-for-absent-ids=\(absentMetadataCount, privacy: .public) presentLocalIds=\(presentLocalIds.count, privacy: .public)")
+                syncLog.notice("[cairn.orphan] gate: server-non-trashed-non-observed=\(nonTrashedNonObserved.count, privacy: .public) metadata-for-absent-ids=\(absentMetadataCount, privacy: .public) presentLocalIds=\(presentLocalIds.count, privacy: .public)")
                 let orphans = OrphanReconciler.match(
                     serverAssets: serverAssets,
-                    everSeen: everSeenSet,
+                    observed: observedSet,
                     metadata: metadataSnapshot,
                     presentLocalIdentifiers: presentLocalIds
                 )
@@ -1003,7 +1003,7 @@ final class AppDependencies {
                     var pending = result.pendingReviewCandidates
                     for orphan in orphans {
                         inferredOrphanLocalIds[orphan.serverAsset.checksum] = orphan.matchedMetadata.localIdentifier
-                        // By definition, orphans aren't in everSeen and
+                        // By definition, orphans aren't in observed and
                         // therefore can't be in deleteCandidates; the
                         // pending dedup is defensive in case future
                         // engine changes blur the line.
@@ -1014,7 +1014,7 @@ final class AppDependencies {
                     result = ReconciliationOutput(
                         deleteCandidates: result.deleteCandidates,
                         newlyObservedChecksums: result.newlyObservedChecksums,
-                        assetsInEverSeen: result.assetsInEverSeen,
+                        assetsInObserved: result.assetsInObserved,
                         excludedCandidateCount: result.excludedCandidateCount,
                         pendingReviewCandidates: pending,
                         heldByQuarantineCandidates: result.heldByQuarantineCandidates
@@ -1025,7 +1025,7 @@ final class AppDependencies {
         } catch {
             // Metadata snapshot is best-effort; a SwiftData fetch failure
             // shouldn't poison the whole reconciliation. The standard
-            // ever-seen reconciler still ran and its results are fine.
+            // observed reconciler still ran and its results are fine.
             syncLog.error("[cairn.sync] orphan match skipped: \(Self.describeSyncError(error), privacy: .public)")
         }
 
@@ -1034,7 +1034,7 @@ final class AppDependencies {
             local: totalVisibleAssets,
             indexed: indexedCount,
             server: serverNonTrashed,
-            matched: result.assetsInEverSeen,
+            matched: result.assetsInObserved,
             candidates: result.deleteCandidates.count
         )
         // Merge the source-id mapping from three sources, in
@@ -1048,7 +1048,7 @@ final class AppDependencies {
         //      the persistent record for items just retired.
         //   3. Inferred orphans — filename-matching is the most
         //      authoritative for items the SHA1 reconciler can't
-        //      see (deleted before hash, never in everSeen).
+        //      see (deleted before hash, never in observed).
         // Each step overwrites collisions so later sources win.
         var mergedSourceIds: [Checksum: String] = [:]
         if let deletionSourceStore {
@@ -1281,7 +1281,7 @@ final class AppDependencies {
         // Per-account scoping: LocalHashStore is global (content-
         // addressed cache shared across accounts on this device).
         // The per-account filter is "this localId's checksums
-        // intersect the active account's EverSeen" — that excludes
+        // intersect the active account's Observed" — that excludes
         // localIds cached for OTHER accounts whose checksums never
         // entered this account's view. Without it the count would
         // inflate when a user switches accounts on the same device.
@@ -1290,17 +1290,17 @@ final class AppDependencies {
         // albums, additionally require the localId to be in the
         // scope membership map. Out-of-scope localIds drop out.
         //
-        // When EverSeen is unavailable (server not yet activated,
+        // When Observed is unavailable (server not yet activated,
         // identity not yet cached, or transient SwiftData hiccup),
         // surface `indexedKnown: false` so the UI shows "—" instead
         // of a stale count.
-        if let everSeen = self.everSeenStore,
+        if let observed = self.observedStore,
            let entries = try? await self.localHashStore.snapshot(),
-           let observed = try? await everSeen.snapshot() {
+           let observed = try? await observed.snapshot() {
             var indexedAssets = 0
             for (localId, checksums) in entries {
                 // Per-account filter — at least one of this localId's
-                // checksums must be in the active account's EverSeen.
+                // checksums must be in the active account's Observed.
                 guard !checksums.intersection(observed).isEmpty else { continue }
                 // Per-scope filter — when restricted, require the
                 // localId to belong to a selected album.
@@ -1356,7 +1356,7 @@ final class AppDependencies {
     }
 
     @MainActor
-    /// Refresh `EverSeenStore` album tags to match the currently
+    /// Refresh `ObservedStore` album tags to match the currently
     /// selected scope. Called from a SwiftUI `.onChange` in
     /// CairnAppRoot whenever `model.settings.indexingScope` mutates.
     /// No-op for `.fullLibrary` (the engine bypasses the tag filter
@@ -1371,7 +1371,7 @@ final class AppDependencies {
         guard case .selectedAlbums(let albumIds) = scope, !albumIds.isEmpty else {
             return
         }
-        guard let everSeenStore = self.everSeenStore else { return }
+        guard let observedStore = self.observedStore else { return }
 
         // PhotoKit enumeration of selected albums runs off-main —
         // potentially hundreds of localIdentifiers across multiple
@@ -1400,8 +1400,8 @@ final class AppDependencies {
         }
 
         do {
-            try await everSeenStore.recordObserved(tagsByChecksum)
-            syncLog.info("[cairn.scope] tagged \(tagsByChecksum.count, privacy: .public) ever-seen entries across \(albumIds.count, privacy: .public) selected album(s)")
+            try await observedStore.recordObserved(tagsByChecksum)
+            syncLog.info("[cairn.scope] tagged \(tagsByChecksum.count, privacy: .public) observed entries across \(albumIds.count, privacy: .public) selected album(s)")
         } catch {
             syncLog.error("[cairn.scope] recordObserved failed during tag rebuild: \(Self.describeSyncError(error), privacy: .public)")
         }
@@ -1454,7 +1454,7 @@ final class AppDependencies {
     }
 
     /// Empty every backing store the index touches: per-(URL, userId)
-    /// engine state (ever-seen, confirmed-deleted, change-token, edit
+    /// engine state (observed, confirmed-deleted, change-token, edit
     /// retirement, deletion source, status snapshot) plus the global
     /// content-addressed caches (local hash store, deferred queue,
     /// metadata store). Returns aggregated failures so the caller can
@@ -1466,7 +1466,7 @@ final class AppDependencies {
     fileprivate func clearCurrentPartitionStores() async -> [(label: String, error: Swift.Error)] {
         let lh = self.localHashStore
         let dh = self.deferredHashStore
-        let eh = self.everSeenStore
+        let eh = self.observedStore
         let cd = self.confirmedDeletedStore
         let tk = self.tokenStore
         let er = self.editRetirementStore
@@ -1484,7 +1484,7 @@ final class AppDependencies {
             ("deferred queue", { try await dh.clear() }),
             ("metadata store", { try await mdStore.clear() }),
         ]
-        if let eh { ops.append(("ever-seen store", { try await eh.clear() })) }
+        if let eh { ops.append(("observed store", { try await eh.clear() })) }
         if let cd { ops.append(("confirmed-deleted store", { try await cd.clear() })) }
         if let tk { ops.append(("change-token store", { try await tk.clear() })) }
         if let er { ops.append(("edit-retirement store", { try await er.clear() })) }
@@ -1834,7 +1834,7 @@ final class AppDependencies {
                     }
                     return
                 }
-                guard let everSeen = await self.everSeenStore,
+                guard let observed = await self.observedStore,
                       let exclusions = await self.exclusionStore,
                       let confirmed = await self.confirmedDeletedStore else {
                     await MainActor.run {
@@ -1873,7 +1873,7 @@ final class AppDependencies {
                 do {
                     try await self.performLiveReconciliation(
                         client: client,
-                        everSeen: everSeen,
+                        observed: observed,
                         exclusions: exclusions,
                         confirmed: confirmed
                     )
@@ -2277,7 +2277,7 @@ final class AppDependencies {
             dismissPending: { [weak self] checksums in
                 guard let self,
                       let confirmed = await self.confirmedDeletedStore,
-                      let everSeen = await self.everSeenStore else { return }
+                      let observed = await self.observedStore else { return }
                 let cks = Set(checksums.map { Checksum(base64: $0) })
                 // Resolve source localIdentifiers BEFORE we mutate
                 // anything — both maps live on the in-memory
@@ -2301,11 +2301,11 @@ final class AppDependencies {
                 let metadataStore = await MainActor.run { self.localAssetMetadataStore }
                 do {
                     try await confirmed.remove(cks)
-                    try await everSeen.remove(cks)
+                    try await observed.remove(cks)
                     try? await self.deletionSourceStore?.remove(cks)
                     // Without this, the orphan reconciler at
                     // `OrphanReconciler.match` finds the asset on the
-                    // next sync — `everSeen` no longer contains the
+                    // next sync — `observed` no longer contains the
                     // checksum (we just removed), but the metadata row
                     // still satisfies the filename + creationDate +
                     // absent-localId filters → it reappears as an
@@ -2347,26 +2347,26 @@ final class AppDependencies {
             },
             exportData: { [weak self] scope in
                 guard let self else { throw CancellationError() }
-                let (partitionKey, everSeen, exclusions, journal, settings) = await MainActor.run {
-                    (self.currentPartitionKey, self.everSeenStore, self.exclusionStore, self.journal, self.model.settings)
+                let (partitionKey, observed, exclusions, journal, settings) = await MainActor.run {
+                    (self.currentPartitionKey, self.observedStore, self.exclusionStore, self.journal, self.model.settings)
                 }
 
                 var serverPayloads: [CairnExportPayload.ServerPayload] = []
 
                 switch scope {
                 case .currentServer:
-                    guard let partitionKey, let everSeen, let exclusions, let journal else {
+                    guard let partitionKey, let observed, let exclusions, let journal else {
                         throw CancellationError()
                     }
                     let payload = try await Self.buildServerPayload(
-                        key: partitionKey, everSeen: everSeen, exclusions: exclusions, journal: journal
+                        key: partitionKey, observed: observed, exclusions: exclusions, journal: journal
                     )
                     serverPayloads.append(payload)
 
                 case .allServers:
-                    if let partitionKey, let everSeen, let exclusions, let journal {
+                    if let partitionKey, let observed, let exclusions, let journal {
                         let payload = try await Self.buildServerPayload(
-                            key: partitionKey, everSeen: everSeen, exclusions: exclusions, journal: journal
+                            key: partitionKey, observed: observed, exclusions: exclusions, journal: journal
                         )
                         serverPayloads.append(payload)
                     }
@@ -2383,7 +2383,7 @@ final class AppDependencies {
                             guard entry.pathExtension == "store" else { continue }
 
                             guard let container = try? CairnSwiftDataContainer.makePerServer(url: entry) else { continue }
-                            let otherEverSeen = SwiftDataEverSeenStore(container: container)
+                            let otherObserved = SwiftDataObservedStore(container: container)
                             let otherExclusions = SwiftDataExclusionStore(container: container)
 
                             let normalizedURL = dirName.replacingOccurrences(of: "_", with: "://", range: dirName.range(of: "_"))
@@ -2395,7 +2395,7 @@ final class AppDependencies {
                             let otherJournal = DeletionJournal(path: journalURL)
 
                             let payload = try await Self.buildServerPayload(
-                                key: otherKey, everSeen: otherEverSeen, exclusions: otherExclusions, journal: otherJournal
+                                key: otherKey, observed: otherObserved, exclusions: otherExclusions, journal: otherJournal
                             )
                             serverPayloads.append(payload)
                         }
@@ -2425,11 +2425,11 @@ final class AppDependencies {
                 let data = try Data(contentsOf: fileURL)
                 let payload = try CairnExportPayload.decode(from: data)
 
-                let (partitionKey, everSeen, exclusions, journal, settingsStore) = await MainActor.run {
-                    (self.currentPartitionKey, self.everSeenStore, self.exclusionStore, self.journal, self.settingsStore)
+                let (partitionKey, observed, exclusions, journal, settingsStore) = await MainActor.run {
+                    (self.currentPartitionKey, self.observedStore, self.exclusionStore, self.journal, self.settingsStore)
                 }
 
-                var totalEverSeenAdded = 0
+                var totalObservedAdded = 0
                 var totalExclusionsAdded = 0
                 var totalJournalLines = 0
                 var processedServers = 0
@@ -2437,18 +2437,18 @@ final class AppDependencies {
                 for serverPayload in payload.servers {
                     guard let partitionKey,
                           serverPayload.partitionKey == partitionKey.directoryName,
-                          let everSeen, let exclusions, let journal else {
+                          let observed, let exclusions, let journal else {
                         continue
                     }
                     processedServers += 1
 
-                    let newChecksums = Set(serverPayload.everSeen.map { Checksum(base64: $0) })
-                    let existing = try await everSeen.snapshot()
+                    let newChecksums = Set(serverPayload.observed.map { Checksum(base64: $0) })
+                    let existing = try await observed.snapshot()
                     let actuallyNew = newChecksums.subtracting(existing)
                     if !actuallyNew.isEmpty {
-                        try await everSeen.union(actuallyNew)
+                        try await observed.union(actuallyNew)
                     }
-                    totalEverSeenAdded += actuallyNew.count
+                    totalObservedAdded += actuallyNew.count
 
                     let existingExclusions = try await exclusions.snapshot()
                     var newExclusions: [Checksum: ExclusionMetadata] = [:]
@@ -2485,7 +2485,7 @@ final class AppDependencies {
                 await self.refreshJournalTail()
 
                 return CairnImportResult(
-                    everSeenAdded: totalEverSeenAdded,
+                    observedAdded: totalObservedAdded,
                     exclusionsAdded: totalExclusionsAdded,
                     journalLinesAppended: totalJournalLines,
                     settingsApplied: didApplySettings,
@@ -2886,7 +2886,7 @@ final class AppDependencies {
                     self.thumbnailLoader = nil
                     self.currentPartitionKey = nil
                     self.serverContainer = nil
-                    self.everSeenStore = nil
+                    self.observedStore = nil
                     self.exclusionStore = nil
                     self.confirmedDeletedStore = nil
                     self.deletionSourceStore = nil
@@ -2970,7 +2970,7 @@ final class AppDependencies {
             startOverInitialScan: { [weak self] in
                 guard let self else { return }
                 let (lh, dh, tk, eh, cd, er, ds, mdStore, ss) = await MainActor.run {
-                    (self.localHashStore, self.deferredHashStore, self.tokenStore, self.everSeenStore, self.confirmedDeletedStore, self.editRetirementStore, self.deletionSourceStore, self.localAssetMetadataStore, self.statusSnapshotStore)
+                    (self.localHashStore, self.deferredHashStore, self.tokenStore, self.observedStore, self.confirmedDeletedStore, self.editRetirementStore, self.deletionSourceStore, self.localAssetMetadataStore, self.statusSnapshotStore)
                 }
                 var ops: [(label: String, body: @Sendable () async throws -> Void)] = [
                     ("local hash cache", { try await lh.clear() }),
@@ -2978,7 +2978,7 @@ final class AppDependencies {
                     ("metadata store", { try await mdStore.clear() }),
                 ]
                 if let tk { ops.append(("change-token store", { try await tk.clear() })) }
-                if let eh { ops.append(("ever-seen store", { try await eh.clear() })) }
+                if let eh { ops.append(("observed store", { try await eh.clear() })) }
                 if let cd { ops.append(("confirmed-deleted store", { try await cd.clear() })) }
                 if let er { ops.append(("edit-retirement store", { try await er.clear() })) }
                 if let ds { ops.append(("deletion-source store", { try await ds.clear() })) }
@@ -3126,7 +3126,7 @@ final class AppDependencies {
     /// per-user partitioning lands, the same data should live at
     /// `<sanitizedURL>__<userId>`. This helper detects that situation
     /// at activation time and renames in place — so the user's existing
-    /// EverSeen, journal, runs, etc. carry forward without reset.
+    /// Observed, journal, runs, etc. carry forward without reset.
     ///
     /// Best-effort. If the rename fails (rare: file open by another
     /// process, permissions), we log but continue — `activateServer`
@@ -3234,12 +3234,12 @@ final class AppDependencies {
 
     private static func buildServerPayload(
         key: ServerPartitionKey,
-        everSeen: SwiftDataEverSeenStore,
+        observed: SwiftDataObservedStore,
         exclusions: SwiftDataExclusionStore,
         journal: DeletionJournal
     ) async throws -> CairnExportPayload.ServerPayload {
-        let everSeenSet = try await everSeen.snapshot()
-        let sortedEverSeen = everSeenSet.map(\.base64).sorted()
+        let observedSet = try await observed.snapshot()
+        let sortedObserved = observedSet.map(\.base64).sorted()
 
         let exclusionMap = try await exclusions.snapshot()
         let exclusionRecords = exclusionMap
@@ -3258,7 +3258,7 @@ final class AppDependencies {
         return CairnExportPayload.ServerPayload(
             partitionKey: key.directoryName,
             normalizedURL: key.normalizedURL,
-            everSeen: sortedEverSeen,
+            observed: sortedObserved,
             exclusions: exclusionRecords,
             journal: journalLines
         )

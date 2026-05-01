@@ -38,7 +38,7 @@ private let hashLog = Logger(subsystem: "app.cairn.ios", category: "hash")
 ///   its cached checksums, unions them into
 ///   `ConfirmedDeletedStore` (starting each item's quarantine clock).
 ///   Inserted/updated ids re-hash and refresh both `LocalHashStore`
-///   and `EverSeenStore`.
+///   and `ObservedStore`.
 ///
 /// State lives entirely in injected stores — the reconciler itself is
 /// stateless between calls. Callers are the background-refresh handler
@@ -211,7 +211,7 @@ public final class PhotoKitPersistentChangeReconciler {
 
     private let hashStore: any LocalHashStore
     private let confirmedDeleted: any ConfirmedDeletedStore
-    private let everSeen: any EverSeenStore
+    private let observed: any ObservedStore
     private let tokens: any PersistentChangeTokenStore
     /// Persistent queue of assets awaiting a later re-hash. `nil`
     /// disables queueing entirely (tests, legacy callers). When set,
@@ -274,8 +274,8 @@ public final class PhotoKitPersistentChangeReconciler {
     /// What slice of the user's library cairn is allowed to enumerate /
     /// hash / observe. `.fullLibrary` preserves legacy v1 behavior
     /// (full-library `PHAsset.fetchAssets` walk, untagged
-    /// `everSeen.union` writes, no scope filter); `.selectedAlbums(...)`
-    /// restricts enumeration to a per-album loop, tags `EverSeenStore`
+    /// `observed.union` writes, no scope filter); `.selectedAlbums(...)`
+    /// restricts enumeration to a per-album loop, tags `ObservedStore`
     /// writes with current album membership, and the engine's scope
     /// filter excludes anything that isn't in the user's selected set.
     ///
@@ -349,7 +349,7 @@ public final class PhotoKitPersistentChangeReconciler {
     public init(
         hashStore: any LocalHashStore,
         confirmedDeleted: any ConfirmedDeletedStore,
-        everSeen: any EverSeenStore,
+        observed: any ObservedStore,
         tokens: any PersistentChangeTokenStore,
         deferredStore: (any DeferredHashStore)? = nil,
         metadataStore: (any LocalAssetMetadataStore)? = nil,
@@ -366,7 +366,7 @@ public final class PhotoKitPersistentChangeReconciler {
     ) {
         self.hashStore = hashStore
         self.confirmedDeleted = confirmedDeleted
-        self.everSeen = everSeen
+        self.observed = observed
         self.tokens = tokens
         self.deferredStore = deferredStore
         self.metadataStore = metadataStore
@@ -439,7 +439,7 @@ public final class PhotoKitPersistentChangeReconciler {
     /// `ConfirmedDeletedStore.union(_:at:)` writes (starting the per-item
     /// quarantine clock) and `insertedLocalIdentifiers` / `updatedLocalIdentifiers`
     /// into fresh hashes that refresh both `LocalHashStore` and
-    /// `EverSeenStore`. Ends with an orphan sweep (`reconcileCacheAgainstLibrary`)
+    /// `ObservedStore`. Ends with an orphan sweep (`reconcileCacheAgainstLibrary`)
     /// and a best-effort drain of `DeferredHashStore`.
     ///
     /// On `PHPhotosError.persistentChangeTokenExpired` the caller
@@ -467,7 +467,7 @@ public final class PhotoKitPersistentChangeReconciler {
         // hashed, never deferred. (Causes: stale CAIRN_ASSET_CAP from a debug
         // run, an interrupted full enum, missed insert events while cairn was
         // suspended.) Find them and merge into `insertedIds` so the existing
-        // hash + ever-seen + metadata pipeline picks them up. Subsequent syncs
+        // hash + observed + metadata pipeline picks them up. Subsequent syncs
         // see an empty diff once the gap is closed.
         let untrackedIds = try await discoverUntrackedAssets()
         if !untrackedIds.isEmpty {
@@ -497,7 +497,7 @@ public final class PhotoKitPersistentChangeReconciler {
 
         // Resolve scope membership once for this incremental pass. Used
         // to filter insert/update events (out-of-scope ids skip hashing)
-        // and to tag the EverSeen writes. Deletion events flow through
+        // and to tag the Observed writes. Deletion events flow through
         // unchanged — out-of-scope deletions still stamp ConfirmedDeleted
         // so they can auto-propagate when scope re-expands later.
         let membership = await Self.resolveScopeMembership(scope)
@@ -579,7 +579,7 @@ public final class PhotoKitPersistentChangeReconciler {
         // When a user edits a photo (filter, crop, markup), PhotoKit
         // advances modificationDate and we re-hash; `set(_:for:)`
         // replaces the rows. The OLD SHA1 disappears from the cache but
-        // stays in EverSeen (which is union-only). We need this snapshot
+        // stays in Observed (which is union-only). We need this snapshot
         // to compute the retired set (`prior \ new`) and decide whether
         // each retired SHA1 is the original-content anchor (protect) or
         // an intermediate edit (quarantine). It also tells us whether
@@ -590,7 +590,7 @@ public final class PhotoKitPersistentChangeReconciler {
             forIdentifiers: insertedIds.union(staleUpdates)
         ).mapValues(\.checksums)
 
-        // Inserted: hash the new assets, stash in local cache + ever-seen.
+        // Inserted: hash the new assets, stash in local cache + observed.
         // Defer counts from both inserted + updated batches accumulate
         // into the Result.
         let insertedBatch = try await hashAssets(ids: insertedIds)
@@ -617,7 +617,7 @@ public final class PhotoKitPersistentChangeReconciler {
             }
         }
         if !addedChecksums.isEmpty {
-            try await writeObservedToEverSeen(
+            try await commitObservations(
                 checksumsByID: insertedBatch.checksumsByID,
                 membership: membership
             )
@@ -644,7 +644,7 @@ public final class PhotoKitPersistentChangeReconciler {
             }
         }
         if !updatedChecksums.isEmpty {
-            try await writeObservedToEverSeen(
+            try await commitObservations(
                 checksumsByID: updatedBatch.checksumsByID,
                 membership: membership
             )
@@ -1039,19 +1039,19 @@ public final class PhotoKitPersistentChangeReconciler {
         }.value
     }
 
-    /// Write hashed observations into `EverSeenStore`, picking the
+    /// Write hashed observations into `ObservedStore`, picking the
     /// tagged or untagged write path based on the scope-membership map.
     /// Centralized so every enumeration site (full enum, incremental
     /// inserts, incremental updates) routes through one place.
     ///
     ///   - `nil` membership → `.fullLibrary` mode → untagged
-    ///     `everSeen.union(...)` (preserves legacy semantics; existing
+    ///     `observed.union(...)` (preserves legacy semantics; existing
     ///     tags are not cleared, since the engine ignores tags in full-
     ///     library mode anyway).
     ///   - non-`nil` membership → `.selectedAlbums(...)` mode → tagged
-    ///     `everSeen.recordObserved([Checksum: Set<albumId>])` so the
+    ///     `observed.recordObserved([Checksum: Set<albumId>])` so the
     ///     engine's `tags ∩ scope` filter has fresh ground truth.
-    private func writeObservedToEverSeen(
+    private func commitObservations(
         checksumsByID: [String: Set<Checksum>],
         membership: PhotoKitScopeEnumerator.Membership?
     ) async throws {
@@ -1064,13 +1064,13 @@ public final class PhotoKitPersistentChangeReconciler {
                 }
             }
             if !tagsByChecksum.isEmpty {
-                try await everSeen.recordObserved(tagsByChecksum)
+                try await observed.recordObserved(tagsByChecksum)
             }
         } else {
             var allChecksums: Set<Checksum> = []
             for (_, cs) in checksumsByID { allChecksums.formUnion(cs) }
             if !allChecksums.isEmpty {
-                try await everSeen.union(allChecksums)
+                try await observed.union(allChecksums)
             }
         }
     }
@@ -1160,7 +1160,7 @@ public final class PhotoKitPersistentChangeReconciler {
     /// full drain. Reads up to `budget` entries from
     /// `DeferredHashStore`, filters them against the current soft
     /// limit, fetches the matching `PHAsset`s, re-hashes under
-    /// `softLimitMode`, and unions fresh checksums into `everSeen`
+    /// `softLimitMode`, and unions fresh checksums into `observed`
     /// (matching the insert/update paths). Successful rows drop off
     /// the queue via `hashAssets`' batched remove; still-too-large
     /// and timed-out rows re-upsert so `firstDeferredAt` stays
@@ -1302,13 +1302,13 @@ public final class PhotoKitPersistentChangeReconciler {
             reportProgressWithTotal: assetsToHash.count
         )
 
-        // Write freshly-hashed checksums into ever-seen — matches the
+        // Write freshly-hashed checksums into observed — matches the
         // insert/update paths. Without this, a queued item that finally
         // hashes wouldn't enter the reconciliation surface. Tagged with
         // current scope membership so `.selectedAlbums(...)` mode keeps
         // album tags fresh as deferred items finally drain.
         let drainMembership = await Self.resolveScopeMembership(scope)
-        try? await writeObservedToEverSeen(
+        try? await commitObservations(
             checksumsByID: batch.checksumsByID,
             membership: drainMembership
         )
@@ -1334,7 +1334,7 @@ public final class PhotoKitPersistentChangeReconciler {
         // `.fullLibrary` (legacy untagged path); a populated map for
         // `.selectedAlbums(...)` that drives both the asset fetch in
         // `hashAllCurrentAssets` and the per-checksum tag write into
-        // `EverSeenStore` below.
+        // `ObservedStore` below.
         let membership = await Self.resolveScopeMembership(scope)
 
         // Enumerate the (possibly scoped) library, hashing per-asset,
@@ -1349,7 +1349,7 @@ public final class PhotoKitPersistentChangeReconciler {
         for (_, checksums) in batch.checksumsByID {
             allChecksums.formUnion(checksums)
         }
-        try await writeObservedToEverSeen(
+        try await commitObservations(
             checksumsByID: batch.checksumsByID,
             membership: membership
         )
@@ -2081,7 +2081,7 @@ public final class PhotoKitPersistentChangeReconciler {
         case noHashableResources
         /// iCloud download exceeds the user's hard ceiling. Out of
         /// scope — **not** persisted to the defer queue, no checksum,
-        /// no `EverSeen` row.
+        /// no `Observed` row.
         case aboveHardCeiling(bytes: Int64)
     }
 
@@ -2140,7 +2140,7 @@ public final class PhotoKitPersistentChangeReconciler {
     /// `LocalHashStore` nor in `DeferredHashStore` — i.e. invisible to
     /// cairn's normal pipeline. Returns the localIdentifiers so the
     /// caller can fold them into `insertedIds` and let the standard
-    /// hash + metadata + ever-seen flow handle them.
+    /// hash + metadata + observed flow handle them.
     ///
     /// Cheap when the gap is empty: one `PHAsset.fetchAssets` call (which
     /// the orphan sweep also does — could share if we ever notice the

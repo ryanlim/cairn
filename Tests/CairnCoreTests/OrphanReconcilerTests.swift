@@ -41,7 +41,7 @@ struct OrphanReconcilerTests {
     func noMetadata() {
         let orphans = OrphanReconciler.match(
             serverAssets: [server("s1", checksum: "AAA")],
-            everSeen: [],
+            observed: [],
             metadata: [],
             presentLocalIdentifiers: []
         )
@@ -52,7 +52,7 @@ struct OrphanReconcilerTests {
     func matchedButLocalIdStillPresent() {
         let orphans = OrphanReconciler.match(
             serverAssets: [server("s1", checksum: "AAA")],
-            everSeen: [],
+            observed: [],
             metadata: [meta("local-1")],
             presentLocalIdentifiers: ["local-1"]
         )
@@ -65,7 +65,7 @@ struct OrphanReconcilerTests {
     func matchedWithLocalIdAbsent() {
         let orphans = OrphanReconciler.match(
             serverAssets: [server("s1", checksum: "AAA")],
-            everSeen: [],
+            observed: [],
             metadata: [meta("local-1")],
             presentLocalIdentifiers: []
         )
@@ -74,11 +74,11 @@ struct OrphanReconcilerTests {
         #expect(orphans.first?.matchedMetadata.localIdentifier == "local-1")
     }
 
-    @Test("checksum already in everSeen → no orphan (already known)")
-    func everSeenSkipsOrphan() {
+    @Test("checksum already in observed → no orphan (already known)")
+    func observedSkipsOrphan() {
         let orphans = OrphanReconciler.match(
             serverAssets: [server("s1", checksum: "AAA")],
-            everSeen: [Checksum(base64: "AAA")],
+            observed: [Checksum(base64: "AAA")],
             metadata: [meta("local-1")],
             presentLocalIdentifiers: []
         )
@@ -89,7 +89,7 @@ struct OrphanReconcilerTests {
     func trashedSkipped() {
         let orphans = OrphanReconciler.match(
             serverAssets: [server("s1", checksum: "AAA", isTrashed: true)],
-            everSeen: [],
+            observed: [],
             metadata: [meta("local-1")],
             presentLocalIdentifiers: []
         )
@@ -102,7 +102,7 @@ struct OrphanReconcilerTests {
         let assets = [server("s1", checksum: "AAA", createdAt: serverDate)]
         let orphans = OrphanReconciler.match(
             serverAssets: assets,
-            everSeen: [],
+            observed: [],
             metadata: [
                 meta("local-far", creationDate: serverDate.addingTimeInterval(1.5)),
                 meta("local-near", creationDate: serverDate.addingTimeInterval(0.2))
@@ -117,7 +117,7 @@ struct OrphanReconcilerTests {
     func filenameCaseInsensitive() {
         let orphans = OrphanReconciler.match(
             serverAssets: [server("s1", checksum: "AAA", filename: "IMG_0001.HEIC")],
-            everSeen: [],
+            observed: [],
             metadata: [meta("local-1", filename: "img_0001.heic")],
             presentLocalIdentifiers: []
         )
@@ -129,7 +129,7 @@ struct OrphanReconcilerTests {
         let serverDate = Date(timeIntervalSince1970: 1_700_000_000)
         let orphans = OrphanReconciler.match(
             serverAssets: [server("s1", checksum: "AAA", createdAt: serverDate)],
-            everSeen: [],
+            observed: [],
             metadata: [meta("local-1", creationDate: serverDate.addingTimeInterval(60))],
             presentLocalIdentifiers: [],
             dateTolerance: 2
@@ -142,7 +142,7 @@ struct OrphanReconcilerTests {
         let serverDate = Date(timeIntervalSince1970: 1_700_000_000)
         let orphans = OrphanReconciler.match(
             serverAssets: [server("s1", checksum: "AAA", createdAt: serverDate)],
-            everSeen: [],
+            observed: [],
             metadata: [meta("local-1", creationDate: serverDate.addingTimeInterval(2))],
             presentLocalIdentifiers: [],
             dateTolerance: 2
@@ -154,7 +154,7 @@ struct OrphanReconcilerTests {
     func serverMissingDate() {
         let orphans = OrphanReconciler.match(
             serverAssets: [server("s1", checksum: "AAA", createdAt: nil)],
-            everSeen: [],
+            observed: [],
             metadata: [meta("local-1")],
             presentLocalIdentifiers: []
         )
@@ -165,7 +165,7 @@ struct OrphanReconcilerTests {
     func serverMissingFilename() {
         let orphans = OrphanReconciler.match(
             serverAssets: [server("s1", checksum: "AAA", filename: nil)],
-            everSeen: [],
+            observed: [],
             metadata: [meta("local-1")],
             presentLocalIdentifiers: []
         )

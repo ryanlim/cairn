@@ -19,7 +19,7 @@ struct CairnExportPayloadTests {
         let server = CairnExportPayload.ServerPayload(
             partitionKey: "host:abcd1234",
             normalizedURL: "https://immich.example.com/api",
-            everSeen: ["aaaa", "bbbb", "cccc"],
+            observed: ["aaaa", "bbbb", "cccc"],
             exclusions: [exclusion],
             journal: [
                 #"{"runId":"R1","event":"runStarted"}"#,
@@ -198,6 +198,6 @@ struct CairnExportPayloadTests {
         #expect(decoded.servers[0].exclusions.count == 1)
         #expect(decoded.servers[0].exclusions[0] == original.servers[0].exclusions[0])
         #expect(decoded.servers[0].journal == original.servers[0].journal)
-        #expect(decoded.servers[0].everSeen == original.servers[0].everSeen)
+        #expect(decoded.servers[0].observed == original.servers[0].observed)
     }
 }

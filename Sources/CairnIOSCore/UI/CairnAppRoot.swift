@@ -77,7 +77,7 @@ public struct CairnAppRoot: View {
             ) { _ in
                 Button("OK", role: .cancel) { importResult = nil }
             } message: { result in
-                Text("\(result.serverCount) server\(result.serverCount == 1 ? "" : "s") processed. \(result.everSeenAdded) checksums added, \(result.exclusionsAdded) exclusions added, \(result.journalLinesAppended) journal lines appended.\(result.settingsApplied ? " Settings applied." : "")")
+                Text("\(result.serverCount) server\(result.serverCount == 1 ? "" : "s") processed. \(result.observedAdded) checksums added, \(result.exclusionsAdded) exclusions added, \(result.journalLinesAppended) journal lines appended.\(result.settingsApplied ? " Settings applied." : "")")
             }
             // Persist every settings mutation. No explicit save UI — each
             // slider / toggle commit flows straight to disk. Debouncing
@@ -86,7 +86,7 @@ public struct CairnAppRoot: View {
             .onChange(of: model.settings) { _, newValue in
                 Task { await model.actions.persistSettings(newValue) }
             }
-            // Scope changes need to refresh `EverSeenStore` album tags
+            // Scope changes need to refresh `ObservedStore` album tags
             // — without this, toggling to a restricted scope leaves
             // every existing entry untagged, which the engine filter
             // treats as out-of-scope, which surfaces "0 candidates" no

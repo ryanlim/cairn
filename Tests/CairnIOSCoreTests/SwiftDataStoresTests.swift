@@ -29,22 +29,22 @@ private func meta(
     ExclusionMetadata(addedAt: addedAt, fromRunId: runId, reason: reason)
 }
 
-// MARK: - SwiftDataEverSeenStore
+// MARK: - SwiftDataObservedStore
 
-@Suite("SwiftDataEverSeenStore")
-struct SwiftDataEverSeenStoreTests {
+@Suite("SwiftDataObservedStore")
+struct SwiftDataObservedStoreTests {
 
     @Test("empty container snapshot returns empty set")
     func emptyIsEmpty() async throws {
         let container = try makeContainer()
-        let store = SwiftDataEverSeenStore(container: container)
+        let store = SwiftDataObservedStore(container: container)
         #expect(try await store.snapshot().isEmpty)
     }
 
     @Test("union + snapshot roundtrips")
     func unionRoundtrips() async throws {
         let container = try makeContainer()
-        let store = SwiftDataEverSeenStore(container: container)
+        let store = SwiftDataObservedStore(container: container)
 
         try await store.union(cks("A", "B"))
         try await store.union(cks("C"))
@@ -55,7 +55,7 @@ struct SwiftDataEverSeenStoreTests {
     @Test("union with overlapping checksums is idempotent — no duplicates, no errors")
     func overlapIdempotent() async throws {
         let container = try makeContainer()
-        let store = SwiftDataEverSeenStore(container: container)
+        let store = SwiftDataObservedStore(container: container)
 
         try await store.union(cks("A", "B"))
         try await store.union(cks("B", "C"))
@@ -67,8 +67,8 @@ struct SwiftDataEverSeenStoreTests {
     @Test("two stores sharing one container see each other's writes")
     func sharedContainerCrossVisibility() async throws {
         let container = try makeContainer()
-        let writer = SwiftDataEverSeenStore(container: container)
-        let reader = SwiftDataEverSeenStore(container: container)
+        let writer = SwiftDataObservedStore(container: container)
+        let reader = SwiftDataObservedStore(container: container)
 
         try await writer.union(cks("X", "Y", "Z"))
 
@@ -78,7 +78,7 @@ struct SwiftDataEverSeenStoreTests {
     @Test("empty union is a no-op")
     func emptyUnionNoop() async throws {
         let container = try makeContainer()
-        let store = SwiftDataEverSeenStore(container: container)
+        let store = SwiftDataObservedStore(container: container)
 
         try await store.union([])
         #expect(try await store.snapshot().isEmpty)
@@ -89,7 +89,7 @@ struct SwiftDataEverSeenStoreTests {
     @Test("recordObserved persists album tags retrievable via snapshotWithTags")
     func recordObservedPersistsTags() async throws {
         let container = try makeContainer()
-        let store = SwiftDataEverSeenStore(container: container)
+        let store = SwiftDataObservedStore(container: container)
 
         try await store.recordObserved([
             ck("A"): ["album-1", "album-2"],
@@ -103,7 +103,7 @@ struct SwiftDataEverSeenStoreTests {
     @Test("recordObserved replaces tags on re-observation — accommodates album moves")
     func recordObservedReplaces() async throws {
         let container = try makeContainer()
-        let store = SwiftDataEverSeenStore(container: container)
+        let store = SwiftDataObservedStore(container: container)
 
         try await store.recordObserved([ck("A"): ["album-1"]])
         try await store.recordObserved([ck("A"): ["album-2"]])
@@ -114,7 +114,7 @@ struct SwiftDataEverSeenStoreTests {
     @Test("setTags bulk-replaces tags only on existing entries; missing checksums skip")
     func setTagsBulkSafe() async throws {
         let container = try makeContainer()
-        let store = SwiftDataEverSeenStore(container: container)
+        let store = SwiftDataObservedStore(container: container)
 
         try await store.recordObserved([
             ck("A"): ["old"],
@@ -130,7 +130,7 @@ struct SwiftDataEverSeenStoreTests {
     @Test("legacy union() preserves tags on existing entries; new entries get empty tags")
     func unionPreservesTags() async throws {
         let container = try makeContainer()
-        let store = SwiftDataEverSeenStore(container: container)
+        let store = SwiftDataObservedStore(container: container)
 
         try await store.recordObserved([ck("A"): ["album-1"]])
         try await store.union(cks("A", "B"))
@@ -141,11 +141,11 @@ struct SwiftDataEverSeenStoreTests {
 
     @Test("CSV codec round-trips: empty, one, many tags")
     func csvCodecRoundTrips() {
-        #expect(SwiftDataEverSeenStore.parseAlbumCSV("") == [])
-        #expect(SwiftDataEverSeenStore.parseAlbumCSV("A") == ["A"])
-        #expect(SwiftDataEverSeenStore.parseAlbumCSV("A,B,C") == ["A", "B", "C"])
-        #expect(SwiftDataEverSeenStore.formatAlbumCSV([]) == "")
-        #expect(SwiftDataEverSeenStore.formatAlbumCSV(["B", "A", "C"]) == "A,B,C")  // sorted
+        #expect(SwiftDataObservedStore.parseAlbumCSV("") == [])
+        #expect(SwiftDataObservedStore.parseAlbumCSV("A") == ["A"])
+        #expect(SwiftDataObservedStore.parseAlbumCSV("A,B,C") == ["A", "B", "C"])
+        #expect(SwiftDataObservedStore.formatAlbumCSV([]) == "")
+        #expect(SwiftDataObservedStore.formatAlbumCSV(["B", "A", "C"]) == "A,B,C")  // sorted
     }
 }
 

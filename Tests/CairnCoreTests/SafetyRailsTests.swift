@@ -4,21 +4,21 @@ import Testing
 @Suite("SafetyRails")
 struct SafetyRailsTests {
 
-    private func output(candidates: Int, inEverSeen: Int) -> ReconciliationOutput {
+    private func output(candidates: Int, inObserved: Int) -> ReconciliationOutput {
         let fakes = (0..<candidates).map {
             ServerAsset(id: "c\($0)", checksum: Checksum(base64: "X\($0)"))
         }
         return ReconciliationOutput(
             deleteCandidates: fakes,
             newlyObservedChecksums: [],
-            assetsInEverSeen: inEverSeen
+            assetsInObserved: inObserved
         )
     }
 
     @Test("proceeds under the threshold")
     func proceedsUnderThreshold() {
         let decision = SafetyRails.evaluate(
-            reconciliation: output(candidates: 5, inEverSeen: 1000),
+            reconciliation: output(candidates: 5, inObserved: 1000),
             totalServerAssets: 1200,
             currentLocalCount: 995,
             isFirstRun: false,
@@ -31,7 +31,7 @@ struct SafetyRailsTests {
     @Test("aborts above the threshold (both percent and absolute floor exceeded)")
     func abortsAboveThreshold() {
         let decision = SafetyRails.evaluate(
-            reconciliation: output(candidates: 50, inEverSeen: 1000),
+            reconciliation: output(candidates: 50, inObserved: 1000),
             totalServerAssets: 1200,
             currentLocalCount: 950,
             isFirstRun: false,
@@ -47,7 +47,7 @@ struct SafetyRailsTests {
     func smallAbsoluteCountBypassesPercent() {
         // 3 of 22 = 13.6% — way over 1% — but 3 ≤ 5 floor, so percent rail does not fire.
         let decision = SafetyRails.evaluate(
-            reconciliation: output(candidates: 3, inEverSeen: 22),
+            reconciliation: output(candidates: 3, inObserved: 22),
             totalServerAssets: 22,
             currentLocalCount: 19,
             isFirstRun: false,
@@ -61,7 +61,7 @@ struct SafetyRailsTests {
     func justAboveFloorAborts() {
         // 6 of 100 = 6% over 1%, and 6 > 5 floor → abort.
         let decision = SafetyRails.evaluate(
-            reconciliation: output(candidates: 6, inEverSeen: 100),
+            reconciliation: output(candidates: 6, inObserved: 100),
             totalServerAssets: 100,
             currentLocalCount: 94,
             isFirstRun: false,
@@ -77,7 +77,7 @@ struct SafetyRailsTests {
     func atFloorProceeds() {
         // 5 of 50 = 10% over 1%, but 5 == 5 floor (not strictly greater) → proceed.
         let decision = SafetyRails.evaluate(
-            reconciliation: output(candidates: 5, inEverSeen: 50),
+            reconciliation: output(candidates: 5, inObserved: 50),
             totalServerAssets: 50,
             currentLocalCount: 45,
             isFirstRun: false,
@@ -91,7 +91,7 @@ struct SafetyRailsTests {
     func emptyLocalBeatsFloor() {
         // candidates=200 over a floor of 5, but local==0 should abort with emptyLocalLibrary first.
         let decision = SafetyRails.evaluate(
-            reconciliation: output(candidates: 200, inEverSeen: 200),
+            reconciliation: output(candidates: 200, inObserved: 200),
             totalServerAssets: 200,
             currentLocalCount: 0,
             isFirstRun: false,
@@ -104,7 +104,7 @@ struct SafetyRailsTests {
     @Test("aborts when server returns zero assets")
     func abortsOnEmptyServer() {
         let decision = SafetyRails.evaluate(
-            reconciliation: output(candidates: 0, inEverSeen: 0),
+            reconciliation: output(candidates: 0, inObserved: 0),
             totalServerAssets: 0,
             currentLocalCount: 500,
             isFirstRun: false,
@@ -117,7 +117,7 @@ struct SafetyRailsTests {
     @Test("aborts when the local library is empty — prevents nuking the whole server if Photos permission is borked")
     func abortsOnEmptyLocal() {
         let decision = SafetyRails.evaluate(
-            reconciliation: output(candidates: 1000, inEverSeen: 1000),
+            reconciliation: output(candidates: 1000, inObserved: 1000),
             totalServerAssets: 1000,
             currentLocalCount: 0,
             isFirstRun: false,
@@ -130,7 +130,7 @@ struct SafetyRailsTests {
     @Test("first-ever run must be dry-run")
     func firstRunMustBeDryRun() {
         let decision = SafetyRails.evaluate(
-            reconciliation: output(candidates: 0, inEverSeen: 0),
+            reconciliation: output(candidates: 0, inObserved: 0),
             totalServerAssets: 500,
             currentLocalCount: 500,
             isFirstRun: true,
@@ -143,7 +143,7 @@ struct SafetyRailsTests {
     @Test("first-run dry-run passes")
     func firstRunDryRunPasses() {
         let decision = SafetyRails.evaluate(
-            reconciliation: output(candidates: 0, inEverSeen: 0),
+            reconciliation: output(candidates: 0, inObserved: 0),
             totalServerAssets: 500,
             currentLocalCount: 500,
             isFirstRun: true,
@@ -153,10 +153,10 @@ struct SafetyRailsTests {
         #expect(decision == .proceed)
     }
 
-    @Test("zero ever-seen assets means no denominator — threshold check is skipped, empty-local still fires first")
+    @Test("zero observed assets means no denominator — threshold check is skipped, empty-local still fires first")
     func zeroDenominatorSkipsThreshold() {
         let decision = SafetyRails.evaluate(
-            reconciliation: output(candidates: 0, inEverSeen: 0),
+            reconciliation: output(candidates: 0, inObserved: 0),
             totalServerAssets: 100,
             currentLocalCount: 100,
             isFirstRun: false,

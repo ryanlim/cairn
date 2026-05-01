@@ -186,7 +186,7 @@ public final class CairnAppModel {
     /// Count of inferred orphans from the most recent scan — server
     /// assets cairn observed locally (filename + creationDate) but
     /// never finished hashing before they were deleted from the photo
-    /// library. The standard ever-seen reconciler can't surface these
+    /// library. The standard observed reconciler can't surface these
     /// because the SHA1 was never recorded; `OrphanReconciler` matches
     /// them by metadata. Drives a warn-tone banner on Status.
     public var inferredOrphanCount: Int = 0
@@ -475,14 +475,14 @@ public enum CairnExportScope: Sendable {
 }
 
 public struct CairnImportResult: Sendable {
-    public let everSeenAdded: Int
+    public let observedAdded: Int
     public let exclusionsAdded: Int
     public let journalLinesAppended: Int
     public let settingsApplied: Bool
     public let serverCount: Int
 
-    public init(everSeenAdded: Int, exclusionsAdded: Int, journalLinesAppended: Int, settingsApplied: Bool, serverCount: Int) {
-        self.everSeenAdded = everSeenAdded
+    public init(observedAdded: Int, exclusionsAdded: Int, journalLinesAppended: Int, settingsApplied: Bool, serverCount: Int) {
+        self.observedAdded = observedAdded
         self.exclusionsAdded = exclusionsAdded
         self.journalLinesAppended = journalLinesAppended
         self.settingsApplied = settingsApplied
@@ -599,7 +599,7 @@ public struct CairnAppActions: Sendable {
     public var requestBackgroundRefresh: @Sendable () async -> Bool
 
     /// Settings → Danger zone. Each is a destructive op the host wires
-    /// to its real teardown logic (rebuild ever-seen, delete journal,
+    /// to its real teardown logic (rebuild observed, delete journal,
     /// clear keychain).
     ///
     /// `resetIndex` clears the *current* (URL, userId) partition's
@@ -631,7 +631,7 @@ public struct CairnAppActions: Sendable {
 
     /// Settings → Library. Clears the persistent-change token + the
     /// deferred-hash queue so the next sync re-enumerates the library
-    /// from scratch. Lighter than `resetIndex` — ever-seen and
+    /// from scratch. Lighter than `resetIndex` — observed and
     /// confirmed-deleted survive, so reconciliation history is
     /// preserved. Used when the user changes a size-limit setting and
     /// wants the new value to take effect immediately.
@@ -649,7 +649,7 @@ public struct CairnAppActions: Sendable {
     public var dismissInitialScan: @Sendable () async -> Void
 
     /// User tapped "Start over" while indexing was paused. Wipe hash
-    /// cache + token + defer queue + ever-seen + confirmed-deleted so
+    /// cache + token + defer queue + observed + confirmed-deleted so
     /// the next scan begins from scratch. Distinct from `resumeSync`
     /// (which picks up from where the cache left off).
     public var startOverInitialScan: @Sendable () async -> Void
@@ -670,14 +670,14 @@ public struct CairnAppActions: Sendable {
     /// DEBUG-gated row in Settings → Advanced.
     public var replayOnboarding: @Sendable () async -> Void
 
-    /// Refresh `EverSeenStore` album tags to match the currently
+    /// Refresh `ObservedStore` album tags to match the currently
     /// selected scope. Called automatically when
     /// `CairnSettings.indexingScope` changes (host wires this from a
     /// SwiftUI `.onChange`). For `.fullLibrary` scope this is a no-op
     /// — the engine bypasses the tag filter in that mode. For
     /// `.selectedAlbums(ids)`, walks each selected album, looks up
     /// the contained assets' checksums via `LocalHashStore`, and
-    /// updates `EverSeenStore` tags via `recordObserved`. Idempotent;
+    /// updates `ObservedStore` tags via `recordObserved`. Idempotent;
     /// safe to call repeatedly.
     public var recomputeScopeTags: @Sendable () async -> Void
 
@@ -703,7 +703,7 @@ public struct CairnAppActions: Sendable {
         dismissPending: @escaping @Sendable ([String]) async throws -> Void = { _ in },
         loadDeferredEntries: @escaping @Sendable () async throws -> [DeferredHashEntry] = { [] },
         exportData: @escaping @Sendable (CairnExportScope) async throws -> URL = { _ in URL(fileURLWithPath: "/dev/null") },
-        importData: @escaping @Sendable (URL, Bool) async throws -> CairnImportResult = { _, _ in CairnImportResult(everSeenAdded: 0, exclusionsAdded: 0, journalLinesAppended: 0, settingsApplied: false, serverCount: 0) },
+        importData: @escaping @Sendable (URL, Bool) async throws -> CairnImportResult = { _, _ in CairnImportResult(observedAdded: 0, exclusionsAdded: 0, journalLinesAppended: 0, settingsApplied: false, serverCount: 0) },
         bulkExcludeRecentOffload: @escaping @Sendable () async throws -> Void = {},
         verifyServer: @escaping @Sendable (String, String) async -> SetupScreen.ServerVerifyResult = { _, _ in
             SetupScreen.ServerVerifyResult(success: true, assetCount: 0, errorMessage: nil)

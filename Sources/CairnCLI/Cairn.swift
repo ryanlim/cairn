@@ -8,7 +8,7 @@ import CairnCore
 /// assets that have left the local set. Every subcommand reads `IMMICH_URL`
 /// and `IMMICH_API_KEY` from a `.env` in the current directory (override with
 /// `--env-file`). `dry-run` is the default subcommand; `trash` is the only
-/// destructive one and refuses to run on a fresh ever-seen store.
+/// destructive one and refuses to run on a fresh observed store.
 @main
 struct Cairn: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -149,8 +149,8 @@ func updateConfirmedFromSnapshotDiff(
 /// engine → safety rails) and prints what `trash` would do, without issuing
 /// any DELETE calls. Persists updated `ever-seen.json` + `confirmed-deleted.json`
 /// + `local-snapshot.json` so repeated dry-runs converge; only the DELETE is
-/// suppressed. Required as the first run on a fresh ever-seen store — `trash`
-/// refuses until ever-seen has been seeded.
+/// suppressed. Required as the first run on a fresh observed store — `trash`
+/// refuses until observed has been seeded.
 struct DryRun: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "dry-run",
@@ -167,9 +167,9 @@ struct DryRun: AsyncParsableCommand {
 
     @Option(
         name: .long,
-        help: "Path to the persistent ever-seen checksum store (JSON). Created if absent."
+        help: "Path to the persistent observed checksum store (JSON). Created if absent."
     )
-    var everSeenStore: String = "ever-seen.json"
+    var observedStore: String = "ever-seen.json"
 
     @Option(name: .long, help: "Abort if more than this percent (0–100) of in-purview assets would be deleted. Default: 1 (one percent).")
     var maxDeletePercent: Double = 1.0
@@ -195,7 +195,7 @@ struct DryRun: AsyncParsableCommand {
     func run() async throws {
         let client = try loadClient(globals)
         let photos = ChecksumFilePhotoEnumerator(filePath: localChecksumsFile)
-        let store = JSONFileEverSeenStore(filePath: everSeenStore)
+        let store = JSONFileObservedStore(filePath: observedStore)
         let exclusions = JSONFileExclusionStore(filePath: exclusionsStore)
         let confirmed = JSONFileConfirmedDeletedStore(filePath: confirmedDeletedStore)
 
@@ -206,13 +206,13 @@ struct DryRun: AsyncParsableCommand {
             confirmed: confirmed
         )
 
-        let everSeenBefore = try await store.snapshot()
+        let observedBefore = try await store.snapshot()
         let excludedSet = Set(try await exclusions.snapshot().keys)
         let confirmedMap = try await confirmed.snapshot()
-        let isFirstRun = everSeenBefore.isEmpty
+        let isFirstRun = observedBefore.isEmpty
 
         print("local checksums: \(local.count)")
-        print("ever-seen (before): \(everSeenBefore.count)\(isFirstRun ? "  [first run]" : "")")
+        print("observed (before): \(observedBefore.count)\(isFirstRun ? "  [first run]" : "")")
         if !excludedSet.isEmpty { print("excluded checksums: \(excludedSet.count)") }
         print("confirmed-deleted: \(confirmedMap.count)  (+\(removed.count) confirmed, -\(added.count) un-confirmed on this scan)")
         print("strictness: \(strictness.rawValue)  quarantineDays: \(quarantineDays)")
@@ -224,7 +224,7 @@ struct DryRun: AsyncParsableCommand {
         let result = ReconciliationEngine.compute(.init(
             serverAssets: allServer,
             currentLocalChecksums: local,
-            everSeenChecksums: everSeenBefore,
+            observedChecksums: observedBefore,
             excludedChecksums: excludedSet,
             confirmedDeletedAt: confirmedMap,
             now: Date(),
@@ -232,8 +232,8 @@ struct DryRun: AsyncParsableCommand {
             strictness: strictness
         ))
 
-        print("newly-observed local checksums (would be added to ever-seen): \(result.newlyObservedChecksums.count)")
-        print("server assets in purview (in ever-seen): \(result.assetsInEverSeen)")
+        print("newly-observed local checksums (would be added to observed): \(result.newlyObservedChecksums.count)")
+        print("server assets in purview (in observed): \(result.assetsInObserved)")
         if result.excludedCandidateCount > 0 {
             print("excluded by allowlist (would-be candidates skipped): \(result.excludedCandidateCount)")
         }
@@ -279,11 +279,11 @@ struct DryRun: AsyncParsableCommand {
             }
         }
 
-        // Persist the updated ever-seen set even on dry-run; it's only the deletion that
+        // Persist the updated observed set even on dry-run; it's only the deletion that
         // we're suppressing. This makes repeated dry-runs converge correctly.
         try await store.union(local)
-        let everSeenAfter = try await store.snapshot()
-        print("ever-seen (after): \(everSeenAfter.count)  → \(everSeenStore)")
+        let observedAfter = try await store.snapshot()
+        print("observed (after): \(observedAfter.count)  → \(observedStore)")
         let confirmedAfter = try await confirmed.snapshot()
         print("confirmed-deleted (after): \(confirmedAfter.count)  → \(confirmedDeletedStore)")
     }
@@ -302,7 +302,7 @@ extension DeletionStrictness: ExpressibleByArgument {}
 /// `runStarted` / `planningTrash` / `tagApplied` / `trashSucceeded` /
 /// `runCompleted` sequence to `deletion-journal.jsonl`.
 ///
-/// Refuses to run on a fresh ever-seen store — the user must run `dry-run`
+/// Refuses to run on a fresh observed store — the user must run `dry-run`
 /// first to seed it. Otherwise day-one would trash every server asset not
 /// currently on the device. Also requires a two-confirm prompt (suppressed
 /// with `--yes`) mirroring the iOS "Yes, trash N" rust-banner pattern.
@@ -317,8 +317,8 @@ struct Trash: AsyncParsableCommand {
     @Option(name: .long, help: "Path to a file with one base64 SHA1 checksum per line representing the photos currently on the device.")
     var localChecksumsFile: String
 
-    @Option(name: .long, help: "Path to the persistent ever-seen checksum store (JSON). Created if absent.")
-    var everSeenStore: String = "ever-seen.json"
+    @Option(name: .long, help: "Path to the persistent observed checksum store (JSON). Created if absent.")
+    var observedStore: String = "ever-seen.json"
 
     @Option(name: .long, help: "Path to the append-only deletion journal (JSONL).")
     var journal: String = "deletion-journal.jsonl"
@@ -353,7 +353,7 @@ struct Trash: AsyncParsableCommand {
     func run() async throws {
         let client = try loadClient(globals)
         let photos = ChecksumFilePhotoEnumerator(filePath: localChecksumsFile)
-        let store = JSONFileEverSeenStore(filePath: everSeenStore)
+        let store = JSONFileObservedStore(filePath: observedStore)
         let exclusions = JSONFileExclusionStore(filePath: exclusionsStore)
         let confirmed = JSONFileConfirmedDeletedStore(filePath: confirmedDeletedStore)
 
@@ -364,17 +364,17 @@ struct Trash: AsyncParsableCommand {
             confirmed: confirmed
         )
 
-        let everSeenBefore = try await store.snapshot()
+        let observedBefore = try await store.snapshot()
         let excludedSet = Set(try await exclusions.snapshot().keys)
         let confirmedMap = try await confirmed.snapshot()
-        let isFirstRun = everSeenBefore.isEmpty
+        let isFirstRun = observedBefore.isEmpty
 
         if isFirstRun {
-            throw RuntimeError("first run on a fresh ever-seen store must use `dry-run`, not `trash`. After dry-run seeds ever-seen, you can switch to trash.")
+            throw RuntimeError("first run on a fresh observed store must use `dry-run`, not `trash`. After dry-run seeds observed, you can switch to trash.")
         }
 
         print("local checksums: \(local.count)")
-        print("ever-seen (before): \(everSeenBefore.count)")
+        print("observed (before): \(observedBefore.count)")
         if !excludedSet.isEmpty { print("excluded checksums: \(excludedSet.count)") }
         print("confirmed-deleted: \(confirmedMap.count)  (+\(removed.count) confirmed, -\(added.count) un-confirmed on this scan)")
         print("strictness: \(strictness.rawValue)  quarantineDays: \(quarantineDays)")
@@ -385,7 +385,7 @@ struct Trash: AsyncParsableCommand {
         let recon = ReconciliationEngine.compute(.init(
             serverAssets: allServer,
             currentLocalChecksums: local,
-            everSeenChecksums: everSeenBefore,
+            observedChecksums: observedBefore,
             excludedChecksums: excludedSet,
             confirmedDeletedAt: confirmedMap,
             now: Date(),
@@ -483,7 +483,7 @@ struct Trash: AsyncParsableCommand {
         let summary = try await orchestrator.run(
             runId: resolvedRunId,
             candidates: recon.deleteCandidates,
-            assetsInPurview: recon.assetsInEverSeen,
+            assetsInPurview: recon.assetsInObserved,
             dryRun: false
         )
 
@@ -494,8 +494,8 @@ struct Trash: AsyncParsableCommand {
         print("journal: \(journal)")
 
         try await store.union(local)
-        let everSeenAfter = try await store.snapshot()
-        print("ever-seen (after): \(everSeenAfter.count)  → \(everSeenStore)")
+        let observedAfter = try await store.snapshot()
+        print("observed (after): \(observedAfter.count)  → \(observedStore)")
     }
 }
 

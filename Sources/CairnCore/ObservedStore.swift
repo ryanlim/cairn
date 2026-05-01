@@ -16,14 +16,14 @@ import Foundation
 /// `Set<String>` of `PHAssetCollection.localIdentifier` values — the
 /// selected-scope albums in which cairn most recently observed the
 /// asset. When `CairnSettings.indexingScope` is restricted, the
-/// reconciler filters EverSeen entries by `tags ∩ scope ≠ ∅`. Legacy
+/// reconciler filters Observed entries by `tags ∩ scope ≠ ∅`. Legacy
 /// entries written before scope-aware indexing existed have empty
 /// tags; under restricted scope they're treated as out-of-scope until
 /// re-observed. The plain `snapshot` / `union` API ignores tags
 /// (preserved for full-library callers and CLI use). New callers use
 /// `snapshotWithTags` / `recordObserved` / `setTags` to read and
 /// write the tag dimension.
-public protocol EverSeenStore: Sendable {
+public protocol ObservedStore: Sendable {
     /// Every checksum currently in the store.
     func snapshot() async throws -> Set<Checksum>
 
@@ -67,7 +67,7 @@ public protocol EverSeenStore: Sendable {
 /// (decoded with empty tags) but not backward — once a v2 file is
 /// written, an older cairn binary won't decode it. Acceptable because
 /// the CLI ships in lockstep with the iOS app.
-public actor JSONFileEverSeenStore: EverSeenStore {
+public actor JSONFileObservedStore: ObservedStore {
     public let path: URL
 
     public init(path: URL) {

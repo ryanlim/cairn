@@ -18,7 +18,7 @@ public struct SafetyConfig: Sendable {
     /// Abort if the local checksum set is empty. Usually means Photos
     /// permission was revoked or the library hasn't finished loading.
     public let abortOnEmptyLocalLibrary: Bool
-    /// Require the first run against a fresh ever-seen store to be a
+    /// Require the first run against a fresh observed store to be a
     /// dry-run. Forces the user to eyeball the candidate list before
     /// anything destructive happens.
     public let firstRunMustBeDryRun: Bool
@@ -57,8 +57,8 @@ public enum SafetyDecision: Sendable, Equatable {
         case emptyLocalLibrary
         /// Candidate count exceeds the percent cap, and is past the floor
         /// that suppresses the rail for tiny libraries.
-        case thresholdExceeded(candidateCount: Int, assetsInEverSeen: Int, percent: Double, limit: Double)
-        /// First run against a fresh ever-seen store wasn't a dry-run.
+        case thresholdExceeded(candidateCount: Int, assetsInObserved: Int, percent: Double, limit: Double)
+        /// First run against a fresh observed store wasn't a dry-run.
         case firstRunNotDryRun
 
         public var description: String {
@@ -68,7 +68,7 @@ public enum SafetyDecision: Sendable, Equatable {
             case .emptyLocalLibrary:
                 return "emptyLocalLibrary — local checksum set is empty (Photos permission revoked? Library not loaded?)"
             case .firstRunNotDryRun:
-                return "firstRunNotDryRun — the first run on a fresh ever-seen store must be a dry-run"
+                return "firstRunNotDryRun — the first run on a fresh observed store must be a dry-run"
             case .thresholdExceeded(let candidates, let total, let percent, let limit):
                 let p = String(format: "%.2f", percent * 100)
                 let l = String(format: "%.2f", limit * 100)
@@ -87,7 +87,7 @@ public enum SafetyRails {
     /// order, and the first one that trips short-circuits — so an empty
     /// server response is reported even if the percent rail would also fire.
     ///
-    /// The percent rail uses `reconciliation.assetsInEverSeen` (not the raw
+    /// The percent rail uses `reconciliation.assetsInObserved` (not the raw
     /// server total) as its denominator, so libraries that are partially
     /// unsynced don't look like candidate-heavy deletions.
     public static func evaluate(
@@ -111,17 +111,17 @@ public enum SafetyRails {
         }
 
         // Percent rail. Guarded by the floor so that a library with, say,
-        // 22 ever-seen assets doesn't trip on a single legitimate delete
+        // 22 observed assets doesn't trip on a single legitimate delete
         // (1/22 ≈ 4.5% > 1% default). The floor is strict-greater-than, so
         // `minDeleteCountForThreshold = 5` means counts of 6+ are gated.
-        let denominator = reconciliation.assetsInEverSeen
+        let denominator = reconciliation.assetsInObserved
         let candidateCount = reconciliation.deleteCandidates.count
         if denominator > 0, candidateCount > config.minDeleteCountForThreshold {
             let percent = Double(candidateCount) / Double(denominator)
             if percent > config.maxDeletePercent {
                 return .abort(reason: .thresholdExceeded(
                     candidateCount: candidateCount,
-                    assetsInEverSeen: denominator,
+                    assetsInObserved: denominator,
                     percent: percent,
                     limit: config.maxDeletePercent
                 ))
