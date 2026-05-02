@@ -1453,6 +1453,23 @@ public final class PhotoKitPersistentChangeReconciler {
     private func hashAllCurrentAssets(
         membership: PhotoKitScopeEnumerator.Membership? = nil
     ) async throws -> HashBatchResult {
+        // Sub-phase timing inside the prelude — what was previously a
+        // single ~60s gap between `[cairn.recon.timing] phase=scopeMembership`
+        // and `[cairn.hash] full-enum start` (the silent-prelude bug)
+        // breaks down here so a regression in any single sub-phase is
+        // localizable from a `log collect` archive without a profiler.
+        // Emits one `[cairn.recon.timing] phase=full-enum:X took=Yms`
+        // line per boundary, matching the existing `tick(...)` shape used
+        // in `runIncremental` / `runFullEnumeration`.
+        var phaseClock = Date()
+        let phaseEmit = onPhaseChange
+        func tick(_ phase: String) {
+            let ms = Int(Date().timeIntervalSince(phaseClock) * 1000)
+            phaseClock = Date()
+            Self.reconLog.info("[cairn.recon.timing] phase=full-enum:\(phase, privacy: .public) took=\(ms, privacy: .public)ms")
+            Task { await phaseEmit("full-enum:\(phase)", ms) }
+        }
+
         let options = PHFetchOptions()
         options.includeHiddenAssets = false
         options.includeAssetSourceTypes = [.typeUserLibrary]
@@ -1490,6 +1507,8 @@ public final class PhotoKitPersistentChangeReconciler {
         } else {
             fetchResult = PHAsset.fetchAssets(with: options)
         }
+        tick("fetchAssets")
+
         var assets: [PHAsset] = []
         assets.reserveCapacity(fetchResult.count)
         fetchResult.enumerateObjects { asset, _, _ in assets.append(asset) }
@@ -1511,12 +1530,14 @@ public final class PhotoKitPersistentChangeReconciler {
         if let cap = maxAssets, assets.count > cap {
             assets = Array(assets.prefix(cap))
         }
+        tick("enumerateSortCap")
 
         // Record metadata up-front for the entire enumeration set —
         // even if hashing is interrupted (cancellation, BG slot
         // expiration), we'll still have filename + creationDate for
         // every observed asset, ready for the orphan-correlation path.
         try await recordFullEnumerationMetadata(assets: assets)
+        tick("recordMetadata")
 
         // Resume: split assets into "already hashed" (skip) and "need
         // hashing" (actual work). The cached subset still counts toward
@@ -1557,6 +1578,7 @@ public final class PhotoKitPersistentChangeReconciler {
                 toHash.append(asset)
             }
         }
+        tick("classify")
 
         let total = assets.count
         let resumedFrom = cached.count
