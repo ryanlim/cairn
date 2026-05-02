@@ -514,10 +514,21 @@ public final class CairnAppModel {
     public struct SyncProgress: Sendable, Equatable {
         public let hashed: Int
         public let total: Int
+        /// Snapshot of `hashed` captured on the very first emit of the
+        /// current sync session — i.e., the count of assets resumed
+        /// from prior cache. Used by `InitialScanScreen.etaSeconds` to
+        /// compute a session-only rate: `elapsed / (hashed - initialHashed)`.
+        /// Without this baseline, a resumed scan that starts at
+        /// `hashed=3327` immediately reports `~0s remaining` because
+        /// the rate calc divides ~0 elapsed by 3327 cached → wildly
+        /// optimistic. Defaults to `0` for fresh syncs / call sites
+        /// that don't track baselines.
+        public let initialHashed: Int
 
-        public init(hashed: Int, total: Int) {
+        public init(hashed: Int, total: Int, initialHashed: Int = 0) {
             self.hashed = hashed
             self.total = total
+            self.initialHashed = initialHashed
         }
     }
 

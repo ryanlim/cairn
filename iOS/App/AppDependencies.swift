@@ -113,7 +113,11 @@ final class AppDependencies {
                     )
                 }
                 guard let hashStore = snap.hashStore else {
-                    await MainActor.run { self?.model.syncProgress = .init(hashed: done, total: total) }
+                    await MainActor.run {
+                        guard let self else { return }
+                        let baseline = self.model.syncProgress?.initialHashed ?? done
+                        self.model.syncProgress = .init(hashed: done, total: total, initialHashed: baseline)
+                    }
                     return
                 }
                 let indexed = (try? await hashStore.indexedCount()) ?? 0
@@ -141,7 +145,13 @@ final class AppDependencies {
                 }
                 await MainActor.run {
                     guard let self else { return }
-                    self.model.syncProgress = .init(hashed: done, total: total)
+                    // First emit of a session captures the resume baseline
+                    // (i.e. count of cached-from-prior-run assets). The ETA
+                    // computation on InitialScanScreen subtracts this so the
+                    // rate is calculated from session-only work, not work
+                    // that already finished on a prior launch.
+                    let baseline = self.model.syncProgress?.initialHashed ?? done
+                    self.model.syncProgress = .init(hashed: done, total: total, initialHashed: baseline)
                     let prevMatched = self.model.library.matched
                     self.model.library = self.model.library
                         .with(indexed: indexed, matched: prevMatched + batchMatched)

@@ -35,6 +35,12 @@ public struct InitialScanScreen: View {
     /// rather than a live `now - startedAt` computation. See
     /// `CairnAppModel.pausedSyncElapsedSeconds`.
     public let pausedElapsed: TimeInterval?
+    /// Count of `hashed` at the start of the current session — i.e.,
+    /// the resume baseline (cached entries from a prior run that we're
+    /// crediting toward progress for visual continuity). Subtract from
+    /// `hashed` for any rate / ETA computation; counting cached toward
+    /// elapsed-rate makes the ETA wildly optimistic.
+    public let initialHashed: Int
     /// Current high-level sync phase. Surfaced as a small label under
     /// the progress bar during pre-hashing (`.preparing`,
     /// `.fetchingServer`) so the user knows something is happening
@@ -51,6 +57,14 @@ public struct InitialScanScreen: View {
     @Environment(\.cairnTokens) private var t
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var optionsExpanded: Bool = false
+    /// Latched true the moment the user taps "Stop indexing." The
+    /// scan's actual cancellation can take a moment (the orchestrator
+    /// finishes the in-flight hash batch before honoring it), so the
+    /// UI flips to a "Stopping…" affordance with a spinner immediately
+    /// — the user sees their tap registered without waiting for
+    /// `isActive` to flip false. Reset on the next `isActive`
+    /// transition (in either direction) so a re-start works cleanly.
+    @State private var cancelRequested: Bool = false
 
     public init(
         total: Int,
@@ -60,6 +74,7 @@ public struct InitialScanScreen: View {
         isActive: Bool,
         startedAt: Date?,
         pausedElapsed: TimeInterval? = nil,
+        initialHashed: Int = 0,
         phase: CairnAppModel.SyncPhase = .idle,
         settings: Binding<CairnSettings> = .constant(.defaults),
         onStart: @escaping () -> Void = {},
@@ -74,6 +89,7 @@ public struct InitialScanScreen: View {
         self.isActive = isActive
         self.startedAt = startedAt
         self.pausedElapsed = pausedElapsed
+        self.initialHashed = initialHashed
         self.phase = phase
         self._settings = settings
         self.onStart = onStart
@@ -106,15 +122,52 @@ public struct InitialScanScreen: View {
         !isActive && hashed > 0
     }
 
-    /// Linear ETA — assumes remaining assets take the same average time
-    /// as the assets already hashed. For iCloud-optimized libraries
-    /// this underestimates early on (iCloud downloads vs locally-cached
-    /// hash have very different rates) but stabilizes as the sample
-    /// grows. Good enough to set expectations.
+    /// Minimum session-only assets that must hash before we publish
+    /// an ETA. Lower values produce wildly bumpy estimates because
+    /// the early sample is dominated by whichever assets PhotoKit
+    /// happened to surface first (small / locally-cached hash in
+    /// ~50ms, iCloud-fetched can take 8s+). 30 is empirically enough
+    /// for a stable rate across mixed-storage libraries.
+    private static let etaWarmupAssets: Int = 30
+    /// Minimum wall-clock seconds before we publish an ETA. Even with
+    /// 30 fast hashes, displaying "ETA = 1.2s" the first second of a
+    /// scan sets the wrong expectation. Combined with the asset-count
+    /// floor, this ensures the rate sample is wide enough to be honest.
+    private static let etaWarmupSeconds: TimeInterval = 5
+
+    /// Linear ETA, computed against **session-only** progress so a
+    /// resumed scan that starts at `hashed=3327` doesn't divide ~0
+    /// elapsed by a large cached count and report ~0s remaining.
+    /// Counts cached entries toward the visible counter (continuity)
+    /// but excludes them from the rate basis. Two warm-up gates keep
+    /// the early estimate from being noise:
+    ///   1. At least `etaWarmupAssets` actually-hashed-this-session.
+    ///   2. At least `etaWarmupSeconds` wall-clock since session start.
+    /// Returns `nil` until both pass; the timing strip renders "—"
+    /// in that window.
+    ///
+    /// `total - hashed` (rather than `total - sessionWork`) for the
+    /// remaining-work term: cached entries don't contribute to elapsed,
+    /// but they DO reduce the work that's left.
     private var etaSeconds: TimeInterval? {
-        guard let elapsed, hashed > 0, total > hashed else { return nil }
-        let perAsset = elapsed / Double(hashed)
+        guard let elapsed, total > hashed else { return nil }
+        let sessionWork = max(0, hashed - initialHashed)
+        guard sessionWork >= Self.etaWarmupAssets,
+              elapsed >= Self.etaWarmupSeconds else { return nil }
+        let perAsset = elapsed / Double(sessionWork)
         return perAsset * Double(total - hashed)
+    }
+
+    /// Display string for the "REMAINING" cell. Distinguishes between
+    /// "we haven't started yet" (pre-start), "still warming up the
+    /// rate sample" (active but ETA not yet computable), and a real
+    /// number. Keeps the user from seeing "0s" the moment they tap
+    /// Start — that was the over-optimism the old `elapsed / hashed`
+    /// formula produced when `hashed` started at the cached count.
+    private var remainingDisplay: String {
+        guard isActive || isPaused else { return "—" }
+        if let eta = etaSeconds { return Self.formatDuration(eta) }
+        return "estimating…"
     }
 
     // MARK: - Body
@@ -252,9 +305,9 @@ public struct InitialScanScreen: View {
                     .font(.system(size: 10, weight: .semibold))
                     .tracking(0.9)
                     .foregroundStyle(t.textHint)
-                Text(etaSeconds.map(Self.formatDuration) ?? "—")
+                Text(remainingDisplay)
                     .font(.system(size: 14, weight: .semibold).monospacedDigit())
-                    .foregroundStyle(t.textBody)
+                    .foregroundStyle(remainingDisplay == "estimating…" ? t.textMuted : t.textBody)
             }
             Spacer()
         }
@@ -374,21 +427,39 @@ public struct InitialScanScreen: View {
     }
 
     private var cancelButton: some View {
-        Button(action: onCancel) {
-            Text("Stop indexing")
-                .font(.system(size: 14, weight: .semibold))
-                .tracking(0.66)
-                .foregroundStyle(t.dangerInk)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 12)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .strokeBorder(t.divider, lineWidth: 0.5)
-                )
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        Button(action: {
+            cancelRequested = true
+            onCancel()
+        }) {
+            HStack(spacing: 8) {
+                if cancelRequested {
+                    ProgressView()
+                        .controlSize(.mini)
+                        .tint(t.textMuted)
+                }
+                Text(cancelRequested ? "Stopping…" : "Stop indexing")
+                    .font(.system(size: 14, weight: .semibold))
+                    .tracking(0.66)
+                    .foregroundStyle(cancelRequested ? t.textMuted : t.dangerInk)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 12)
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(t.divider, lineWidth: 0.5)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .contentShape(Rectangle())
         }
         .buttonStyle(CairnPressStyle())
-        .accessibilityLabel("Stop indexing")
+        .disabled(cancelRequested)
+        .accessibilityLabel(cancelRequested ? "Stopping indexing" : "Stop indexing")
+        .onChange(of: isActive) { _, _ in
+            // Reset on either transition so a fresh scan starts with a
+            // clean Stop button, and the spinner doesn't latch if the
+            // user cancels then starts again.
+            cancelRequested = false
+        }
     }
 
     /// Secondary "Start over" CTA visible only while paused. Distinct
