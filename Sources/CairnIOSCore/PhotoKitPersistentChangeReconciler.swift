@@ -1627,12 +1627,29 @@ public final class PhotoKitPersistentChangeReconciler {
     /// Bulk-record metadata for a list of PHAssets (full enumeration
     /// path). Same as `recordObservedMetadata(ids:)` but skips the
     /// PhotoKit fetch — we already have the assets in hand.
+    ///
+    /// Perf note: skips assets that already have metadata recorded.
+    /// `PHAssetResource.assetResources(for:)` is ~10ms per call on a
+    /// real device, so processing every asset in a 7k library was
+    /// taking ~65s every full enumeration — the dominant remaining
+    /// cost in the silent-prelude window after the per-asset modDate
+    /// query was batched (commit 92aa231). Metadata is stable across
+    /// syncs (filename is set at creation; size correlates with
+    /// modDate which the reconciler picks up separately), so the
+    /// skip is safe and idempotent. First-run pays the full cost;
+    /// subsequent runs only process newly-imported assets. On reset
+    /// the snapshot is empty so re-record happens correctly.
     private func recordFullEnumerationMetadata(assets: [PHAsset]) async throws {
         guard let metadataStore, !assets.isEmpty else { return }
+        let existing = try await metadataStore.snapshot()
+        let knownIds = Set(existing.map(\.localIdentifier))
+        let pending = assets.filter { !knownIds.contains($0.localIdentifier) }
+        guard !pending.isEmpty else { return }
+
         let now = clock()
         var entries: [LocalAssetMetadata] = []
-        entries.reserveCapacity(assets.count)
-        for asset in assets {
+        entries.reserveCapacity(pending.count)
+        for asset in pending {
             let resources = PHAssetResource.assetResources(for: asset)
             let primary = PhotoKitPhotoEnumerator.selectPrimaryResource(from: resources)
             let size = (primary?.value(forKey: "fileSize") as? NSNumber)?.int64Value
