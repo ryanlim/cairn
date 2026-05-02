@@ -66,6 +66,31 @@ public struct InitialScanScreen: View {
     /// transition (in either direction) so a re-start works cleanly.
     @State private var cancelRequested: Bool = false
 
+    // MARK: - ETA sample-and-hold state
+
+    /// Last published ETA value. Visible to the user as the REMAINING
+    /// cell. Held stable between re-publishes so the displayed number
+    /// doesn't bounce on every TimelineView tick — the underlying rate
+    /// computation re-runs on every body re-eval, but the user only
+    /// sees a fresh value when enough new evidence has accumulated.
+    @State private var publishedEta: TimeInterval? = nil
+    /// Wall-clock at the most recent ETA publish. Combined with
+    /// `publishedEtaHashed`, decides when the next publish is allowed.
+    @State private var publishedEtaAt: Date? = nil
+    /// `hashed` value at the most recent ETA publish. Re-publish gate is
+    /// "at least N more assets hashed since last publish OR M seconds
+    /// elapsed" — whichever fires first.
+    @State private var publishedEtaHashed: Int = 0
+    /// Republish when at least this many additional assets have
+    /// hashed since the last publish. Faster scans get more frequent
+    /// updates; slow iCloud-bound scans coast on the time floor below.
+    private static let etaRepublishMinAssets: Int = 50
+    /// Republish at least this often regardless of hash velocity, so
+    /// the user sees periodic refreshes during long iCloud-bound waits
+    /// even if no new asset has finished. Kept above 5s so the visible
+    /// value isn't visually thrashing.
+    private static let etaRepublishMinSeconds: TimeInterval = 8
+
     public init(
         total: Int,
         hashed: Int,
@@ -143,13 +168,17 @@ public struct InitialScanScreen: View {
     /// the early estimate from being noise:
     ///   1. At least `etaWarmupAssets` actually-hashed-this-session.
     ///   2. At least `etaWarmupSeconds` wall-clock since session start.
-    /// Returns `nil` until both pass; the timing strip renders "—"
-    /// in that window.
+    /// Returns `nil` until both pass.
+    ///
+    /// **This is the live computation.** `publishedEta` (below) is the
+    /// sample-and-hold variant the user actually sees — it only
+    /// republishes from this when enough new evidence has accumulated,
+    /// so the visible value doesn't thrash on every render.
     ///
     /// `total - hashed` (rather than `total - sessionWork`) for the
     /// remaining-work term: cached entries don't contribute to elapsed,
     /// but they DO reduce the work that's left.
-    private var etaSeconds: TimeInterval? {
+    private var liveEtaSeconds: TimeInterval? {
         guard let elapsed, total > hashed else { return nil }
         let sessionWork = max(0, hashed - initialHashed)
         guard sessionWork >= Self.etaWarmupAssets,
@@ -158,16 +187,92 @@ public struct InitialScanScreen: View {
         return perAsset * Double(total - hashed)
     }
 
+    /// Decide whether to publish the live ETA into the user-visible
+    /// `publishedEta` slot. Three independent rules; any can trigger:
+    ///   1. **First publish** — there's a live value but nothing's been
+    ///      shown yet. Switch immediately so the user sees a number
+    ///      the moment warmup ends rather than continuing to read
+    ///      "estimating…".
+    ///   2. **Asset delta** — at least `etaRepublishMinAssets` new
+    ///      assets hashed since last publish. Fast scans tick the
+    ///      number faster; the rate is also more reliable so we can
+    ///      afford to refresh it.
+    ///   3. **Time floor** — at least `etaRepublishMinSeconds` since
+    ///      last publish, regardless of asset velocity. Keeps the
+    ///      number from going stale during a long iCloud wait, but
+    ///      doesn't fire so often that the user notices.
+    /// Called from `.onChange(of: hashed)` (every progress emit) and
+    /// from a TimelineView tick to handle the time-floor case.
+    private func reconsiderPublishedEta(now: Date) {
+        guard let live = liveEtaSeconds else { return }
+        guard let lastAt = publishedEtaAt else {
+            publishedEta = live
+            publishedEtaAt = now
+            publishedEtaHashed = hashed
+            return
+        }
+        let assetDelta = hashed - publishedEtaHashed
+        let secondsDelta = now.timeIntervalSince(lastAt)
+        if assetDelta >= Self.etaRepublishMinAssets || secondsDelta >= Self.etaRepublishMinSeconds {
+            publishedEta = live
+            publishedEtaAt = now
+            publishedEtaHashed = hashed
+        }
+    }
+
+    /// Reset all sample-and-hold state. Called when the scan transitions
+    /// out of active (cancel, complete, dismiss) so the next session
+    /// starts with a clean warmup.
+    private func resetEtaPublishState() {
+        publishedEta = nil
+        publishedEtaAt = nil
+        publishedEtaHashed = 0
+    }
+
     /// Display string for the "REMAINING" cell. Distinguishes between
     /// "we haven't started yet" (pre-start), "still warming up the
     /// rate sample" (active but ETA not yet computable), and a real
-    /// number. Keeps the user from seeing "0s" the moment they tap
-    /// Start — that was the over-optimism the old `elapsed / hashed`
-    /// formula produced when `hashed` started at the cached count.
+    /// number. Reads `publishedEta` (sample-and-hold) so the visible
+    /// value doesn't bounce on every render.
     private var remainingDisplay: String {
         guard isActive || isPaused else { return "—" }
-        if let eta = etaSeconds { return Self.formatDuration(eta) }
+        if let eta = publishedEta { return Self.formatDuration(eta) }
         return "estimating…"
+    }
+
+    /// Confidence in the published ETA, used to color-code the
+    /// REMAINING cell:
+    ///   - `.unknown` — no published ETA (warmup or paused). Renders
+    ///     in `textMuted`. The "estimating…" copy carries the meaning.
+    ///   - `.low` — small sample. Either fewer than 100 session-work
+    ///     assets OR less than 5% through the session work. The
+    ///     estimate is real but its variance is high — color it
+    ///     pending-tone (orange) so the user reads it as "ballpark."
+    ///   - `.medium` — mid sample. Up to ~300 session assets OR up to
+    ///     ~20% through. The number is informative but not authoritative.
+    ///     Renders in textBody (neutral) — neither flagged nor blessed.
+    ///   - `.high` — well-warmed. ≥300 session assets AND ≥20% through.
+    ///     Renders verifiedInk (green) so the user trusts the figure.
+    private var etaConfidence: EtaConfidence {
+        guard publishedEta != nil else { return .unknown }
+        let sessionWork = max(0, hashed - initialHashed)
+        let totalSessionWork = max(1, total - initialHashed)
+        let progress = Double(sessionWork) / Double(totalSessionWork)
+        if sessionWork < 100 || progress < 0.05 { return .low }
+        if sessionWork < 300 || progress < 0.20 { return .medium }
+        return .high
+    }
+
+    private enum EtaConfidence { case unknown, low, medium, high }
+
+    /// Color for the REMAINING cell, derived from `etaConfidence`.
+    private var remainingColor: Color {
+        switch etaConfidence {
+        case .unknown: return t.textMuted
+        case .low:     return t.pendingInk
+        case .medium:  return t.textBody
+        case .high:    return t.verifiedInk
+        }
     }
 
     // MARK: - Body
@@ -200,6 +305,15 @@ public struct InitialScanScreen: View {
         // pull the numpad away, or tap empty chrome.
         .scrollDismissesKeyboard(.interactively)
         .cairnDismissKeyboardOnBackgroundTap()
+        // ETA sample-and-hold:
+        // - On every progress emit, reconsider whether to republish
+        //   (the asset-delta gate triggers fast scans).
+        // - When the session ends (cancel / complete / sign-out), drop
+        //   the held value so the next session starts clean.
+        .onChange(of: hashed) { _, _ in reconsiderPublishedEta(now: Date()) }
+        .onChange(of: isActive) { _, active in
+            if !active { resetEtaPublishState() }
+        }
     }
 
     private var heroMark: some View {
@@ -305,9 +419,19 @@ public struct InitialScanScreen: View {
                     .font(.system(size: 10, weight: .semibold))
                     .tracking(0.9)
                     .foregroundStyle(t.textHint)
-                Text(remainingDisplay)
-                    .font(.system(size: 14, weight: .semibold).monospacedDigit())
-                    .foregroundStyle(remainingDisplay == "estimating…" ? t.textMuted : t.textBody)
+                TimelineView(.periodic(from: Date(), by: 1.0)) { context in
+                    // Periodic tick handles the "no asset progress in 8s
+                    // but it's been long enough to refresh anyway" case
+                    // — strict `.onChange(of: hashed)` would never fire
+                    // during a long iCloud wait and the displayed value
+                    // would silently go stale.
+                    Text(remainingDisplay)
+                        .font(.system(size: 14, weight: .semibold).monospacedDigit())
+                        .foregroundStyle(remainingColor)
+                        .onChange(of: context.date) { _, now in
+                            reconsiderPublishedEta(now: now)
+                        }
+                }
             }
             Spacer()
         }
