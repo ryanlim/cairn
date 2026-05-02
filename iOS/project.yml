@@ -47,7 +47,7 @@ targets:
       properties:
         CFBundleDisplayName: cairn
         CFBundleShortVersionString: "0.1.0"
-        CFBundleVersion: "8"
+        CFBundleVersion: "25"
         # Required for PhotoKit access. The string is shown in the iOS
         # permission prompt and on the app's Settings page — keep it honest
         # and specific so reviewers and users understand what we do with it.
@@ -82,6 +82,22 @@ targets:
           - UIInterfaceOrientationPortrait
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
+        # Persist `.info`-level os.Logger entries in the device archive
+        # so `log collect --device` retroactively captures the
+        # `[cairn.recon.timing]` and `[cairn.sync] ...` lines (both
+        # logged at .info). Without this, iOS only persists `.notice`
+        # and above — Console.app's live stream sees everything, but
+        # the persistent archive that `log collect` reads from drops
+        # info-level entries. The cost is a slightly larger device log
+        # buffer; the benefit is that diagnosing a sync that ran ten
+        # minutes ago doesn't require a live capture session.
+        OSLogPreferences:
+          app.cairn.ios:
+            DEFAULT-OPTIONS:
+              Enable-Private-Data: true
+              Level:
+                Enable: Info
+                Persist: Info
     settings:
       base:
         TARGETED_DEVICE_FAMILY: "1"            # iPhone only (no iPad for v1)
