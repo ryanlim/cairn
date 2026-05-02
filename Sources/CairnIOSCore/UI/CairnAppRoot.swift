@@ -256,6 +256,7 @@ public struct CairnAppRoot: View {
             startedAt: model.syncStartedAt,
             pausedElapsed: model.pausedSyncElapsedSeconds,
             initialHashed: model.syncProgress?.initialHashed ?? 0,
+            persistedRate: model.persistedSyncRate,
             phase: model.syncPhase,
             settings: $model.settings,
             onStart: { startTrackedSync() },

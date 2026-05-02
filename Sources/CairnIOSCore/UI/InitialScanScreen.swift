@@ -41,6 +41,12 @@ public struct InitialScanScreen: View {
     /// `hashed` for any rate / ETA computation; counting cached toward
     /// elapsed-rate makes the ETA wildly optimistic.
     public let initialHashed: Int
+    /// Persisted per-asset hash duration (ms) from prior sessions on
+    /// this device. When non-nil, shown as a bootstrap ETA on tap-
+    /// Start before the live rate has warmed up — at the low-
+    /// confidence (orange) tier so the user reads it as provisional.
+    /// `nil` only on a fresh install.
+    public let persistedRate: Double?
     /// Current high-level sync phase. Surfaced as a small label under
     /// the progress bar during pre-hashing (`.preparing`,
     /// `.fetchingServer`) so the user knows something is happening
@@ -100,6 +106,7 @@ public struct InitialScanScreen: View {
         startedAt: Date?,
         pausedElapsed: TimeInterval? = nil,
         initialHashed: Int = 0,
+        persistedRate: Double? = nil,
         phase: CairnAppModel.SyncPhase = .idle,
         settings: Binding<CairnSettings> = .constant(.defaults),
         onStart: @escaping () -> Void = {},
@@ -115,6 +122,7 @@ public struct InitialScanScreen: View {
         self.startedAt = startedAt
         self.pausedElapsed = pausedElapsed
         self.initialHashed = initialHashed
+        self.persistedRate = persistedRate
         self.phase = phase
         self._settings = settings
         self.onStart = onStart
@@ -187,6 +195,28 @@ public struct InitialScanScreen: View {
         return perAsset * Double(total - hashed)
     }
 
+    /// Bootstrap ETA derived from the device's last persisted per-
+    /// asset rate (`persistedRate`, in ms). Available the moment the
+    /// user taps Start — before any session-only data has been
+    /// gathered — so the REMAINING cell shows a provisional number
+    /// instead of "estimating…". Always rendered at low confidence
+    /// (`.low` → orange) since the rate may be stale (different
+    /// network, different remaining-asset composition). Returns `nil`
+    /// on fresh installs (no prior runs) and when there's no work
+    /// left.
+    private var bootstrapEtaSeconds: TimeInterval? {
+        guard let persistedRate, total > hashed else { return nil }
+        return persistedRate / 1000.0 * Double(total - hashed)
+    }
+
+    /// What the publish loop considers the "current best ETA": live
+    /// when warmup is complete, bootstrap otherwise. The live value
+    /// always wins when available so a stale persisted rate doesn't
+    /// keep masking real session data.
+    private var candidateEtaSeconds: TimeInterval? {
+        liveEtaSeconds ?? bootstrapEtaSeconds
+    }
+
     /// Decide whether to publish the live ETA into the user-visible
     /// `publishedEta` slot. Three independent rules; any can trigger:
     ///   1. **First publish** — there's a live value but nothing's been
@@ -204,9 +234,9 @@ public struct InitialScanScreen: View {
     /// Called from `.onChange(of: hashed)` (every progress emit) and
     /// from a TimelineView tick to handle the time-floor case.
     private func reconsiderPublishedEta(now: Date) {
-        guard let live = liveEtaSeconds else { return }
+        guard let candidate = candidateEtaSeconds else { return }
         guard let lastAt = publishedEtaAt else {
-            publishedEta = live
+            publishedEta = candidate
             publishedEtaAt = now
             publishedEtaHashed = hashed
             return
@@ -214,7 +244,7 @@ public struct InitialScanScreen: View {
         let assetDelta = hashed - publishedEtaHashed
         let secondsDelta = now.timeIntervalSince(lastAt)
         if assetDelta >= Self.etaRepublishMinAssets || secondsDelta >= Self.etaRepublishMinSeconds {
-            publishedEta = live
+            publishedEta = candidate
             publishedEtaAt = now
             publishedEtaHashed = hashed
         }
@@ -255,6 +285,11 @@ public struct InitialScanScreen: View {
     ///     Renders verifiedInk (green) so the user trusts the figure.
     private var etaConfidence: EtaConfidence {
         guard publishedEta != nil else { return .unknown }
+        // Bootstrap-only (no live data yet): always low. The persisted
+        // rate may be from a different network / library composition,
+        // so we mark it provisional via color even though the number
+        // itself is the most informed guess we have.
+        guard liveEtaSeconds != nil else { return .low }
         let sessionWork = max(0, hashed - initialHashed)
         let totalSessionWork = max(1, total - initialHashed)
         let progress = Double(sessionWork) / Double(totalSessionWork)

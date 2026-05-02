@@ -170,6 +170,24 @@ final class AppDependencies {
                     if self.model.syncPhase == .preparing {
                         self.model.transitionSyncPhase(to: .hashing)
                     }
+                    // Persist a fresh per-asset rate to UserDefaults
+                    // for the next session's bootstrap ETA. Same warmup
+                    // gates as the on-screen publish (30 assets, 5s) so
+                    // we don't persist noise from the very first emits.
+                    // Live update — the persisted value tracks the
+                    // current session as it progresses, so a relaunch
+                    // mid-scan picks up the freshest rate. UserDefaults
+                    // writes are cheap; no throttling needed.
+                    if let started = self.model.syncStartedAt {
+                        let elapsed = Date().timeIntervalSince(started)
+                        let baseline = self.model.syncProgress?.initialHashed ?? 0
+                        let sessionWork = max(0, done - baseline)
+                        if sessionWork >= 30 && elapsed >= 5 {
+                            let perAssetMs = (elapsed * 1000.0) / Double(sessionWork)
+                            Self.savePersistedSyncRate(perAssetMs)
+                            self.model.persistedSyncRate = perAssetMs
+                        }
+                    }
                     // Throttled activity-feed emit. `onHashProgress` itself
                     // is already throttled (every N or every Yms — see
                     // `progressEveryN` / `progressEveryMs` in the
@@ -376,6 +394,12 @@ final class AppDependencies {
         }
         #endif
 
+        // Hydrate the persisted per-asset rate from prior sessions so
+        // `InitialScanScreen` can show a bootstrap ETA on tap-Start
+        // rather than waiting through 30 assets of warmup. The value
+        // displays at low-confidence tier until session-only data
+        // dominates — see comments on `model.persistedSyncRate`.
+        model.persistedSyncRate = Self.loadPersistedSyncRate()
 
         var url = try? secretStore.serverURL()
         var apiKey = try? secretStore.apiKey()
@@ -1804,6 +1828,26 @@ final class AppDependencies {
 
     nonisolated fileprivate static func resetLimitedPhotosNotice() {
         UserDefaults.standard.removeObject(forKey: limitedPhotosNoticeKey)
+    }
+
+    /// Persisted per-asset hash duration (milliseconds) from the most
+    /// recent session that produced a reliable rate. Used by
+    /// `InitialScanScreen` as a bootstrap ETA before the live rate
+    /// warms up. Persisting across sessions means a relaunched scan
+    /// shows a number immediately rather than "estimating…" for the
+    /// first 30 assets / 5 seconds. The bootstrap value displays at
+    /// the low-confidence (orange) tier until live data takes over,
+    /// so a stale persisted rate (e.g., yesterday's wifi vs today's
+    /// cell) is signalled as provisional.
+    nonisolated private static let persistedSyncRateKey = "cairn.session.perAssetMs"
+
+    nonisolated fileprivate static func loadPersistedSyncRate() -> Double? {
+        let value = UserDefaults.standard.double(forKey: persistedSyncRateKey)
+        return value > 0 ? value : nil
+    }
+
+    nonisolated fileprivate static func savePersistedSyncRate(_ perAssetMs: Double) {
+        UserDefaults.standard.set(perAssetMs, forKey: persistedSyncRateKey)
     }
 
     /// Stable, anonymous-ish identifier for an API key. SHA256 of the

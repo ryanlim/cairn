@@ -511,6 +511,16 @@ public final class CairnAppModel {
     /// ETA computation (remaining ≈ elapsed * (total - done) / done).
     public var syncStartedAt: Date?
 
+    /// Persisted per-asset hash duration (milliseconds) from prior
+    /// sessions on this device. Loaded from UserDefaults at bootstrap
+    /// and updated continuously as new emits arrive (see
+    /// `AppDependencies` `onHashProgress` callback). Used by
+    /// `InitialScanScreen` as a bootstrap ETA value before the live
+    /// rate has warmed up — the user sees a number immediately on tap-
+    /// Start, displayed at "low confidence" tier until session-only
+    /// data dominates. `nil` only on a fresh install (no prior runs).
+    public var persistedSyncRate: Double?
+
     public struct SyncProgress: Sendable, Equatable {
         public let hashed: Int
         public let total: Int
