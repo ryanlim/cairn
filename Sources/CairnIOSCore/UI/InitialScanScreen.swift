@@ -97,6 +97,26 @@ public struct InitialScanScreen: View {
     /// value isn't visually thrashing.
     private static let etaRepublishMinSeconds: TimeInterval = 8
 
+    /// Rolling window of recent published ETAs. Used to compute the
+    /// coefficient of variation that drives the confidence color —
+    /// a stable estimate (low CV) reads as confident, a bouncing one
+    /// reads as low-confidence regardless of sample size. Larger
+    /// windows smooth more but lag behind real changes; 5 is a
+    /// pragmatic compromise (~40s of recent estimates given the 8s
+    /// republish floor).
+    @State private var recentPublishedEtas: [TimeInterval] = []
+    private static let etaSampleWindowSize: Int = 5
+    /// Minimum samples before CV is meaningful. With 2 samples the
+    /// CV is just `|a-b| / ((a+b)/2)` — too noisy. 3 is the smallest
+    /// useful window.
+    private static let etaCvMinSamples: Int = 3
+    /// CV thresholds for confidence tiering. Values were picked from
+    /// what feels right for a long-running ETA — 5% drift across 5
+    /// samples is "stable", 15%+ is "bouncing." Tunable once we see
+    /// these in the wild.
+    private static let etaCvHighConfidenceMax: Double = 0.05
+    private static let etaCvMediumConfidenceMax: Double = 0.15
+
     public init(
         total: Int,
         hashed: Int,
@@ -236,17 +256,26 @@ public struct InitialScanScreen: View {
     private func reconsiderPublishedEta(now: Date) {
         guard let candidate = candidateEtaSeconds else { return }
         guard let lastAt = publishedEtaAt else {
-            publishedEta = candidate
-            publishedEtaAt = now
-            publishedEtaHashed = hashed
+            publishEta(candidate, at: now)
             return
         }
         let assetDelta = hashed - publishedEtaHashed
         let secondsDelta = now.timeIntervalSince(lastAt)
         if assetDelta >= Self.etaRepublishMinAssets || secondsDelta >= Self.etaRepublishMinSeconds {
-            publishedEta = candidate
-            publishedEtaAt = now
-            publishedEtaHashed = hashed
+            publishEta(candidate, at: now)
+        }
+    }
+
+    /// Single point that mutates the published-ETA state. Pushes the
+    /// new value into the rolling sample window for CV-based
+    /// confidence; trims to `etaSampleWindowSize`.
+    private func publishEta(_ value: TimeInterval, at now: Date) {
+        publishedEta = value
+        publishedEtaAt = now
+        publishedEtaHashed = hashed
+        recentPublishedEtas.append(value)
+        if recentPublishedEtas.count > Self.etaSampleWindowSize {
+            recentPublishedEtas.removeFirst(recentPublishedEtas.count - Self.etaSampleWindowSize)
         }
     }
 
@@ -257,6 +286,7 @@ public struct InitialScanScreen: View {
         publishedEta = nil
         publishedEtaAt = nil
         publishedEtaHashed = 0
+        recentPublishedEtas.removeAll(keepingCapacity: true)
     }
 
     /// Display string for the "REMAINING" cell. Distinguishes between
@@ -270,32 +300,68 @@ public struct InitialScanScreen: View {
         return "estimating…"
     }
 
-    /// Confidence in the published ETA, used to color-code the
-    /// REMAINING cell:
+    /// Coefficient of variation across the recent published-ETA
+    /// window. Returns `nil` when fewer than `etaCvMinSamples` are
+    /// in the window or when the mean is non-positive (degenerate).
+    /// Used as the primary confidence signal: stability of the
+    /// estimate is what "confident" actually means — sample size
+    /// alone says "we have data," not "the data agrees."
+    private var etaCoefficientOfVariation: Double? {
+        Self.coefficientOfVariation(of: recentPublishedEtas, minSamples: Self.etaCvMinSamples)
+    }
+
+    /// Pure computation extracted for unit-testing without
+    /// instantiating a SwiftUI view. CV = stddev / mean. Returns
+    /// `nil` when below `minSamples` or when mean is non-positive
+    /// (CV would be undefined or negative).
+    static func coefficientOfVariation(of samples: [TimeInterval], minSamples: Int) -> Double? {
+        guard samples.count >= minSamples else { return nil }
+        let n = Double(samples.count)
+        let mean = samples.reduce(0, +) / n
+        guard mean > 0 else { return nil }
+        let variance = samples.reduce(0.0) { acc, x in
+            acc + ((x - mean) * (x - mean))
+        } / n
+        return variance.squareRoot() / mean
+    }
+
+    /// Confidence in the published ETA, drives the REMAINING cell color:
     ///   - `.unknown` — no published ETA (warmup or paused). Renders
     ///     in `textMuted`. The "estimating…" copy carries the meaning.
-    ///   - `.low` — small sample. Either fewer than 100 session-work
-    ///     assets OR less than 5% through the session work. The
-    ///     estimate is real but its variance is high — color it
-    ///     pending-tone (orange) so the user reads it as "ballpark."
-    ///   - `.medium` — mid sample. Up to ~300 session assets OR up to
-    ///     ~20% through. The number is informative but not authoritative.
-    ///     Renders in textBody (neutral) — neither flagged nor blessed.
-    ///   - `.high` — well-warmed. ≥300 session assets AND ≥20% through.
-    ///     Renders verifiedInk (green) so the user trusts the figure.
+    ///   - `.low` — bootstrap-only (no live data yet) OR small session
+    ///     sample (<100 assets) OR high CV across recent estimates
+    ///     (≥15%, the value is bouncing). Pending-tone (orange) reads
+    ///     as "ballpark, take with grain of salt."
+    ///   - `.medium` — moderate stability (CV in 5%-15% range).
+    ///     Neutral textBody — informative but not authoritative.
+    ///   - `.high` — stable (CV <5%) and adequate sample. Verified-
+    ///     tone (green) — the figure has been holding steady.
+    ///
+    /// CV thresholds: 5% / 15% — picked empirically. A 10-minute ETA
+    /// with CV=15% means recent estimates are spread by ±90s; that's
+    /// worth flagging. CV=5% means ±30s on the same estimate — tight.
     private var etaConfidence: EtaConfidence {
         guard publishedEta != nil else { return .unknown }
         // Bootstrap-only (no live data yet): always low. The persisted
         // rate may be from a different network / library composition,
-        // so we mark it provisional via color even though the number
-        // itself is the most informed guess we have.
+        // so we mark it provisional even though it's the most informed
+        // guess we have.
         guard liveEtaSeconds != nil else { return .low }
+        // Sample-size floor: under 100 assets the CV across only a few
+        // samples can look spuriously stable (e.g., two early local-
+        // hashes give CV ~0). Require enough total session work before
+        // we trust the CV signal.
         let sessionWork = max(0, hashed - initialHashed)
-        let totalSessionWork = max(1, total - initialHashed)
-        let progress = Double(sessionWork) / Double(totalSessionWork)
-        if sessionWork < 100 || progress < 0.05 { return .low }
-        if sessionWork < 300 || progress < 0.20 { return .medium }
-        return .high
+        if sessionWork < 100 { return .low }
+        // Not enough samples accumulated yet for CV — fall back to
+        // size-based tiering until the window fills. Most syncs hit
+        // CV-eligibility within ~24s (3 samples × 8s republish floor).
+        guard let cv = etaCoefficientOfVariation else {
+            return sessionWork >= 300 ? .medium : .low
+        }
+        if cv < Self.etaCvHighConfidenceMax  { return .high }
+        if cv < Self.etaCvMediumConfidenceMax { return .medium }
+        return .low
     }
 
     private enum EtaConfidence { case unknown, low, medium, high }

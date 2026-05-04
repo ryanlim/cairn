@@ -139,4 +139,44 @@ struct SyncActivityTests {
         #expect(SyncDetailSheet.formatDuration(ms: 90_500) == "1m 30s")
         #expect(SyncDetailSheet.formatDuration(ms: 600_000) == "10m 0s")
     }
+
+    // MARK: - ETA coefficient-of-variation
+
+    @Test("CV — below minSamples returns nil")
+    func cvBelowMin() {
+        #expect(InitialScanScreen.coefficientOfVariation(of: [], minSamples: 3) == nil)
+        #expect(InitialScanScreen.coefficientOfVariation(of: [10], minSamples: 3) == nil)
+        #expect(InitialScanScreen.coefficientOfVariation(of: [10, 12], minSamples: 3) == nil)
+    }
+
+    @Test("CV — identical samples produce 0")
+    func cvIdentical() {
+        let cv = InitialScanScreen.coefficientOfVariation(of: [60, 60, 60, 60, 60], minSamples: 3)
+        #expect(cv == 0.0)
+    }
+
+    @Test("CV — small drift gives small CV (< 5%)")
+    func cvSmallDrift() {
+        // ETAs of 600 ± ~3% (590, 605, 600, 595, 610). CV should be
+        // well under 5% — high confidence territory.
+        let samples: [TimeInterval] = [590, 605, 600, 595, 610]
+        let cv = InitialScanScreen.coefficientOfVariation(of: samples, minSamples: 3) ?? 1.0
+        #expect(cv < 0.05)
+    }
+
+    @Test("CV — bouncing samples push past 15%")
+    func cvBouncing() {
+        // ETA bouncing between 300 and 800. CV should clear the 15%
+        // threshold easily — low confidence territory.
+        let samples: [TimeInterval] = [300, 800, 400, 750, 350]
+        let cv = InitialScanScreen.coefficientOfVariation(of: samples, minSamples: 3) ?? 0.0
+        #expect(cv > 0.15)
+    }
+
+    @Test("CV — non-positive mean returns nil")
+    func cvNonPositiveMean() {
+        // Degenerate (negative ETA shouldn't happen but guard works).
+        let cv = InitialScanScreen.coefficientOfVariation(of: [-10, -10, -10], minSamples: 3)
+        #expect(cv == nil)
+    }
 }
