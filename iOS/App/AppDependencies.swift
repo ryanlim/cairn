@@ -145,6 +145,16 @@ final class AppDependencies {
                 }
                 await MainActor.run {
                     guard let self else { return }
+                    // Optimistic-cancel guard: when the user taps Stop,
+                    // `cancelActiveSync` flips `isSyncing` to false
+                    // immediately, but the reconciler is still unwinding
+                    // and may emit a few more progress callbacks. Don't
+                    // let those re-flip syncProgress / library and cause
+                    // the visible counter to keep ticking after the user
+                    // thinks they stopped. The cache write inside the
+                    // reconciler is independent of this branch — work
+                    // already started still persists.
+                    guard self.model.isSyncing else { return }
                     // First emit of a session captures the resume baseline
                     // (i.e. count of cached-from-prior-run assets). The ETA
                     // computation on InitialScanScreen subtracts this so the
@@ -2054,13 +2064,23 @@ final class AppDependencies {
                     }
                 } catch is CancellationError {
                     await MainActor.run {
-                        let elapsed = self.model.syncStartedAt.map {
-                            Date().timeIntervalSince($0)
-                        } ?? 0
-                        self.model.pausedSyncElapsedSeconds = max(0, elapsed)
-                        self.model.syncStartedAt = nil
-                        self.model.isSyncing = false
-                        self.model.transitionSyncPhase(to: .idle)
+                        // Idempotent unwind. `CairnAppRoot.cancelActiveSync`
+                        // optimistically flips UI state on the user's tap
+                        // and nil's `syncStartedAt`; if it already did so,
+                        // skip the model update here so we don't re-stomp
+                        // pausedSyncElapsedSeconds or transition the phase
+                        // a second time. System-initiated cancellations
+                        // (BG slot expiry, etc.) hit this with
+                        // syncStartedAt still set and run the full update.
+                        if self.model.syncStartedAt != nil {
+                            let elapsed = self.model.syncStartedAt.map {
+                                Date().timeIntervalSince($0)
+                            } ?? 0
+                            self.model.pausedSyncElapsedSeconds = max(0, elapsed)
+                            self.model.syncStartedAt = nil
+                            self.model.isSyncing = false
+                            self.model.transitionSyncPhase(to: .idle)
+                        }
                         self.lastSyncEndedAt = Date()
                     }
                 } catch {
@@ -3212,13 +3232,19 @@ final class AppDependencies {
                     await self.refreshDeferredQueueSummary()
                 } catch is CancellationError {
                     await MainActor.run {
-                        let elapsed = self.model.syncStartedAt.map {
-                            Date().timeIntervalSince($0)
-                        } ?? 0
-                        self.model.pausedSyncElapsedSeconds = max(0, elapsed)
-                        self.model.syncStartedAt = nil
-                        self.model.isSyncing = false
-                        self.model.transitionSyncPhase(to: .idle)
+                        // Same idempotency contract as `requestSync` —
+                        // see comment there. The optimistic UI path in
+                        // `CairnAppRoot.cancelActiveSync` may already
+                        // have applied the stop state.
+                        if self.model.syncStartedAt != nil {
+                            let elapsed = self.model.syncStartedAt.map {
+                                Date().timeIntervalSince($0)
+                            } ?? 0
+                            self.model.pausedSyncElapsedSeconds = max(0, elapsed)
+                            self.model.syncStartedAt = nil
+                            self.model.isSyncing = false
+                            self.model.transitionSyncPhase(to: .idle)
+                        }
                     }
                     await self.refreshDeferredQueueSummary()
                 } catch {

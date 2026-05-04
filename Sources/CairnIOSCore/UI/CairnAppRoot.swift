@@ -360,6 +360,34 @@ public struct CairnAppRoot: View {
     }
 
     private func cancelActiveSync() {
+        // Optimistic UI: flip the visible scan state to stopped/paused
+        // *immediately* on tap, then send the cancellation signal.
+        // The actual reconciler unwind is asynchronous and best-effort
+        // — PhotoKit's `cancelDataRequest` waits for the in-flight
+        // network buffer to drain on large iCloud transfers, and the
+        // metadata loop checks cancellation every 50 iterations. None
+        // of that should keep the user waiting.
+        //
+        // Any per-asset hashes that complete during the unwind window
+        // still persist to LocalHashStore — the cache continues to
+        // accrete, the resume picks up from a slightly-better baseline,
+        // no work is lost. The `onHashProgress` callback in
+        // `AppDependencies` guards on `isSyncing` so the visible
+        // counter doesn't keep ticking after the user thinks they
+        // stopped.
+        //
+        // Idempotency: the AppDependencies catch handler checks
+        // `syncStartedAt` before updating state — if we've already
+        // nil'd it here, the catch handler skips its update. So the
+        // "user-tapped-cancel" and "BG-expired-cancel" paths don't
+        // step on each other.
+        if let started = model.syncStartedAt {
+            let elapsed = Date().timeIntervalSince(started)
+            model.pausedSyncElapsedSeconds = max(0, elapsed)
+        }
+        model.syncStartedAt = nil
+        model.isSyncing = false
+        model.transitionSyncPhase(to: .idle)
         activeSyncTask?.cancel()
     }
 
