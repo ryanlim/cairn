@@ -58,8 +58,6 @@ and not a defect.
 To exit review mode: Settings → Sign out. Onboarding will
 restart for normal use.
 
-A screen recording of the review-mode walkthrough is attached.
-
 FAQ
 — "Permanently deleted?" No. Trash only. 30-day retention on
   Immich. Every cairn action is reversible from the Runs tab or
@@ -83,14 +81,15 @@ Before pasting this into App Store Connect:
 - [ ] Confirm the app version and build number match what's being
       submitted.
 - [ ] Update contact email if needed.
-- [ ] Record a screen recording walking through the review-mode
-      flow (welcome → enter magic URL → land on populated Status
-      tab → tap through Pending Review / Runs / Settings → sign
-      out). 60-90 seconds. Attach as App Review Attachment in
-      App Store Connect.
 - [ ] Verify on a clean install that typing the magic URL produces
       a populated Status tab. (`make beta` then install the
       TestFlight build on a device with no prior cairn data.)
+- [ ] **Optional:** record a 60-90s walkthrough if the review-mode
+      flow ever grows complex enough to be ambiguous from the
+      written notes. Today the flow is short enough (type URL,
+      tap through tabs, sign out) that the notes carry all the
+      information; a video adds capture-and-edit friction without
+      adding clarity.
 
 ## How review mode works (technical)
 
