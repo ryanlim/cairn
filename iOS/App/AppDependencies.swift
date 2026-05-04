@@ -3765,7 +3765,9 @@ final class AppDependencies {
     #endif
 }
 
-#if DEBUG
+// Pure data conversion used by `seedFromFixtures` (DEBUG screenshot
+// pipeline) and `seedReviewMode` (App Store review mode, production).
+// Not DEBUG-gated because review mode runs in release builds.
 private extension CairnFixtures.CandidateFixture {
     var asServerAsset: ServerAsset {
         ServerAsset(
@@ -3778,6 +3780,5 @@ private extension CairnFixtures.CandidateFixture {
         )
     }
 }
-#endif
 
 import UIKit
