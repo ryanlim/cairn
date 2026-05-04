@@ -97,14 +97,17 @@ public struct InitialScanScreen: View {
     /// value isn't visually thrashing.
     private static let etaRepublishMinSeconds: TimeInterval = 8
 
-    /// Rolling window of recent published ETAs. Used to compute the
-    /// coefficient of variation that drives the confidence color —
-    /// a stable estimate (low CV) reads as confident, a bouncing one
-    /// reads as low-confidence regardless of sample size. Larger
-    /// windows smooth more but lag behind real changes; 5 is a
-    /// pragmatic compromise (~40s of recent estimates given the 8s
-    /// republish floor).
-    @State private var recentPublishedEtas: [TimeInterval] = []
+    /// Rolling window of recent **raw** live ETAs (one per publish
+    /// tick). Used for two purposes:
+    ///   1. Computing CV → drives confidence color. The CV needs to
+    ///      reflect actual volatility of the underlying rate, so it
+    ///      operates on the un-smoothed values.
+    ///   2. Computing the median → published value (display). Median
+    ///      is robust to single outlier bursts (e.g., one fast batch
+    ///      of cached hashes after a slow iCloud wait), so the user
+    ///      sees a stable number even when the cumulative rate is
+    ///      jumpy on a heterogeneous workload.
+    @State private var recentLiveEtas: [TimeInterval] = []
     private static let etaSampleWindowSize: Int = 5
     /// Minimum samples before CV is meaningful. With 2 samples the
     /// CV is just `|a-b| / ((a+b)/2)` — too noisy. 3 is the smallest
@@ -254,6 +257,13 @@ public struct InitialScanScreen: View {
     /// Called from `.onChange(of: hashed)` (every progress emit) and
     /// from a TimelineView tick to handle the time-floor case.
     private func reconsiderPublishedEta(now: Date) {
+        // Gate on active state — when the user pauses/cancels, the
+        // TimelineView keeps ticking and we don't want to keep
+        // republishing while there's no live data feeding the
+        // computation. Without this guard, a paused screen would
+        // flicker between the existing published value and the
+        // bootstrap value as the periodic tick re-derived candidates.
+        guard isActive else { return }
         guard let candidate = candidateEtaSeconds else { return }
         guard let lastAt = publishedEtaAt else {
             publishEta(candidate, at: now)
@@ -266,17 +276,32 @@ public struct InitialScanScreen: View {
         }
     }
 
-    /// Single point that mutates the published-ETA state. Pushes the
-    /// new value into the rolling sample window for CV-based
-    /// confidence; trims to `etaSampleWindowSize`.
+    /// Single point that mutates the published-ETA state. Adds the
+    /// raw live value to the sample window (for CV) and publishes
+    /// the median of that window (for display). The median is robust
+    /// against single-burst outliers — one fast batch of cached
+    /// hashes after a long iCloud wait won't drag the displayed value
+    /// from "30min" to "55s" the way a raw cumulative rate would.
     private func publishEta(_ value: TimeInterval, at now: Date) {
-        publishedEta = value
+        recentLiveEtas.append(value)
+        if recentLiveEtas.count > Self.etaSampleWindowSize {
+            recentLiveEtas.removeFirst(recentLiveEtas.count - Self.etaSampleWindowSize)
+        }
+        publishedEta = Self.median(of: recentLiveEtas) ?? value
         publishedEtaAt = now
         publishedEtaHashed = hashed
-        recentPublishedEtas.append(value)
-        if recentPublishedEtas.count > Self.etaSampleWindowSize {
-            recentPublishedEtas.removeFirst(recentPublishedEtas.count - Self.etaSampleWindowSize)
-        }
+    }
+
+    /// Median of a `TimeInterval` array. Used for outlier-robust
+    /// publishing; CV uses mean/stddev so they coexist on the same
+    /// underlying buffer (`recentLiveEtas`). Returns `nil` for empty
+    /// input. Even-sized arrays return the average of the two middles.
+    static func median(of samples: [TimeInterval]) -> TimeInterval? {
+        guard !samples.isEmpty else { return nil }
+        let sorted = samples.sorted()
+        let n = sorted.count
+        if n % 2 == 1 { return sorted[n / 2] }
+        return (sorted[n / 2 - 1] + sorted[n / 2]) / 2.0
     }
 
     /// Reset all sample-and-hold state. Called when the scan transitions
@@ -286,7 +311,7 @@ public struct InitialScanScreen: View {
         publishedEta = nil
         publishedEtaAt = nil
         publishedEtaHashed = 0
-        recentPublishedEtas.removeAll(keepingCapacity: true)
+        recentLiveEtas.removeAll(keepingCapacity: true)
     }
 
     /// Display string for the "REMAINING" cell. Distinguishes between
@@ -307,7 +332,7 @@ public struct InitialScanScreen: View {
     /// estimate is what "confident" actually means — sample size
     /// alone says "we have data," not "the data agrees."
     private var etaCoefficientOfVariation: Double? {
-        Self.coefficientOfVariation(of: recentPublishedEtas, minSamples: Self.etaCvMinSamples)
+        Self.coefficientOfVariation(of: recentLiveEtas, minSamples: Self.etaCvMinSamples)
     }
 
     /// Pure computation extracted for unit-testing without
@@ -413,11 +438,18 @@ public struct InitialScanScreen: View {
         // ETA sample-and-hold:
         // - On every progress emit, reconsider whether to republish
         //   (the asset-delta gate triggers fast scans).
-        // - When the session ends (cancel / complete / sign-out), drop
-        //   the held value so the next session starts clean.
-        .onChange(of: hashed) { _, _ in reconsiderPublishedEta(now: Date()) }
-        .onChange(of: isActive) { _, active in
-            if !active { resetEtaPublishState() }
+        // - On a hard reset (hashed → 0), drop the held value so a
+        //   fresh sign-in or start-over begins with a clean warmup.
+        //   We do NOT reset on `isActive → false` (pause/cancel) —
+        //   keeping the last published value visible during pause
+        //   gives the user context for what they're resuming, and
+        //   avoids the flicker → bootstrap-republish dance the user
+        //   was seeing on Stop.
+        .onChange(of: hashed) { old, new in
+            if new == 0 && old > 0 {
+                resetEtaPublishState()
+            }
+            reconsiderPublishedEta(now: Date())
         }
     }
 

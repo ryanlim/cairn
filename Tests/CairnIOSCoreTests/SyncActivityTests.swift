@@ -179,4 +179,32 @@ struct SyncActivityTests {
         let cv = InitialScanScreen.coefficientOfVariation(of: [-10, -10, -10], minSamples: 3)
         #expect(cv == nil)
     }
+
+    // MARK: - ETA median (display smoothing)
+
+    @Test("median — empty returns nil")
+    func medianEmpty() {
+        #expect(InitialScanScreen.median(of: []) == nil)
+    }
+
+    @Test("median — odd length returns middle")
+    func medianOdd() {
+        #expect(InitialScanScreen.median(of: [10, 20, 30]) == 20)
+        #expect(InitialScanScreen.median(of: [3, 1, 2]) == 2)
+    }
+
+    @Test("median — even length averages the two middles")
+    func medianEven() {
+        #expect(InitialScanScreen.median(of: [10, 20, 30, 40]) == 25)
+    }
+
+    @Test("median — single outlier doesn't drag (the bouncing-ETA case)")
+    func medianRobustToOutlier() {
+        // Simulates 5 samples where one is a wild outlier (the "30min,
+        // then 55s, then 3:14" pattern). Median should track the bulk
+        // of the samples, not the spike.
+        let samples: [TimeInterval] = [180, 200, 1800, 220, 195]
+        // Sorted: 180, 195, 200, 220, 1800. Middle = 200.
+        #expect(InitialScanScreen.median(of: samples) == 200)
+    }
 }
