@@ -404,6 +404,17 @@ final class AppDependencies {
         }
         #endif
 
+        // App Store review mode. Activated by the magic URL in
+        // verifyServer; the flag persists in UserDefaults so a
+        // reviewer who backgrounds the app and returns lands in the
+        // same fixture state. Sign-out clears the flag.
+        if Self.isReviewModeActive() {
+            await MainActor.run {
+                AppDependencies.seedReviewMode(into: model)
+            }
+            return
+        }
+
         // Hydrate the persisted per-asset rate from prior sessions so
         // `InitialScanScreen` can show a bootstrap ETA on tap-Start
         // rather than waiting through 30 assets of warmup. The value
@@ -1851,6 +1862,36 @@ final class AppDependencies {
     /// cell) is signalled as provisional.
     nonisolated private static let persistedSyncRateKey = "cairn.session.perAssetMs"
 
+    // MARK: - App Store review mode
+
+    /// Magic onboarding URL that activates fixture-only review mode.
+    /// Documented in `docs/app-store-review-notes.md`. Uses the IETF-
+    /// reserved `.invalid` TLD (RFC 6761) so it can never resolve in
+    /// production DNS — a normal user typing a real URL has no path
+    /// to land here. The reviewer types this URL + any non-empty
+    /// API key during onboarding; verifyServer short-circuits to a
+    /// fixture-populated app state without hitting any network.
+    nonisolated static let reviewModeMagicURL = "https://review.cairn.invalid"
+
+    /// UserDefaults key for the persisted "review mode active" flag.
+    /// Set when verifyServer accepts the magic URL; cleared on sign-
+    /// out. Bootstrap reads this flag and skips the real activation
+    /// path when set, so the reviewer can backgrounded/re-foreground
+    /// without losing state.
+    nonisolated private static let reviewModeActiveKey = "cairn.review.modeActive"
+
+    nonisolated fileprivate static func isReviewModeActive() -> Bool {
+        UserDefaults.standard.bool(forKey: reviewModeActiveKey)
+    }
+
+    nonisolated fileprivate static func setReviewModeActive(_ active: Bool) {
+        if active {
+            UserDefaults.standard.set(true, forKey: reviewModeActiveKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: reviewModeActiveKey)
+        }
+    }
+
     nonisolated fileprivate static func loadPersistedSyncRate() -> Double? {
         let value = UserDefaults.standard.double(forKey: persistedSyncRateKey)
         return value > 0 ? value : nil
@@ -2724,6 +2765,28 @@ final class AppDependencies {
                 }
             },
             verifyServer: { [weak self] urlString, key in
+                // App Store review mode. The reviewer types this URL +
+                // any non-empty API key during onboarding (documented in
+                // `docs/app-store-review-notes.md`). Skip the real
+                // network probe, persist the flag, and seed fixtures
+                // into the model. The .invalid TLD never resolves in
+                // production DNS, so a normal user typing a real URL
+                // can never accidentally land here.
+                let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
+                if trimmed == AppDependencies.reviewModeMagicURL && !key.isEmpty {
+                    AppDependencies.setReviewModeActive(true)
+                    if let self {
+                        await MainActor.run {
+                            AppDependencies.seedReviewMode(into: self.model)
+                        }
+                    }
+                    return SetupScreen.ServerVerifyResult(
+                        success: true,
+                        assetCount: CairnFixtures.medium.server,
+                        errorMessage: nil
+                    )
+                }
+
                 guard let url = ImmichClient.parseServerURL(urlString) else {
                     return SetupScreen.ServerVerifyResult(
                         success: false,
@@ -3064,6 +3127,10 @@ final class AppDependencies {
                 // user on a shared device) sees the heads-up again
                 // on their first .limited sync.
                 AppDependencies.resetLimitedPhotosNotice()
+                // Clear App Store review-mode flag if it was set —
+                // sign-out is the documented exit path back to real
+                // onboarding.
+                AppDependencies.setReviewModeActive(false)
                 await self?.thumbnailLoader?.clearCache()
                 await MainActor.run {
                     guard let self else { return }
@@ -3464,6 +3531,61 @@ final class AppDependencies {
 
     private static func makePreviewActions() -> CairnAppActions {
         CairnAppActions()
+    }
+
+    /// Populate the model with a representative fixture state for App
+    /// Store review. Production-safe (not gated `#if DEBUG`) because
+    /// the reviewer runs the release binary. Activated via the magic
+    /// URL in `verifyServer`; persisted across launches via
+    /// `reviewModeActiveKey`.
+    ///
+    /// What the reviewer sees after seeding:
+    ///   - Onboarding skipped, main tabs visible
+    ///   - Status: realistic library counts + recent runs + journal
+    ///     tail
+    ///   - Pending Review: a few candidates so the reviewer can tap
+    ///     through approve/exclude flows without needing real photos
+    ///   - Settings: connection status healthy, all controls live
+    ///
+    /// All actions remain wired — but read-only against the fixture
+    /// state. A real sync against `review.cairn.invalid` would
+    /// produce a network error (the URL doesn't resolve), so the
+    /// reviewer's tap on "Sync" silently no-ops without false
+    /// promises.
+    @MainActor
+    static func seedReviewMode(into model: CairnAppModel) {
+        model.actions = CairnAppActions()
+        model.didAutoSyncThisSession = true
+        model.isBootstrapping = false
+        model.needsOnboarding = false
+        model.hasCompletedInitialScan = true
+
+        model.serverHost = "review.cairn.invalid"
+        model.serverURL = URL(string: reviewModeMagicURL)
+        model.apiKey = "(review mode)"
+        model.apiKeyMasked = "(review mode)"
+        model.connectionStatus = .healthy(latencyMs: 12)
+
+        model.library = CairnFixtures.medium
+        model.runs = CairnFixtures.runs
+        model.journalTail = CairnFixtures.journalTail
+
+        let heldFixtures = Array(CairnFixtures.candidates.prefix(3))
+        let pendingFixtures = Array(CairnFixtures.candidates.prefix(5))
+        let confirmedAt: [Checksum: Date] = Dictionary(
+            uniqueKeysWithValues: heldFixtures.enumerated().compactMap { idx, c in
+                c.checksum.map {
+                    (Checksum(base64: $0), Date(timeIntervalSinceNow: -TimeInterval(idx) * 86_400))
+                }
+            }
+        )
+        model.reconciliation = .init(
+            deleteCandidates: pendingFixtures.map { $0.asServerAsset },
+            pendingReviewCandidates: pendingFixtures.map { $0.asServerAsset },
+            heldByQuarantineCandidates: heldFixtures.map { $0.asServerAsset },
+            confirmedDeletedAt: confirmedAt,
+            quarantineDays: 14
+        )
     }
 
     #if DEBUG
