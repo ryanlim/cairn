@@ -1649,7 +1649,17 @@ public final class PhotoKitPersistentChangeReconciler {
         let now = clock()
         var entries: [LocalAssetMetadata] = []
         entries.reserveCapacity(pending.count)
-        for asset in pending {
+        for (index, asset) in pending.enumerated() {
+            // Cooperate with cancellation. `PHAssetResource.assetResources(for:)`
+            // is ~10ms per call on a real device, so a fresh-install enum
+            // of 7k assets blocks here for ~70s. Without this check, a
+            // user tap on Stop indexing would have to wait the full pass
+            // out before the orchestrator unwinds. Check every 50
+            // iterations — checkCancellation is cheap but we don't need
+            // to pay it on every tick.
+            if index % 50 == 0 {
+                try Task.checkCancellation()
+            }
             let resources = PHAssetResource.assetResources(for: asset)
             let primary = PhotoKitPhotoEnumerator.selectPrimaryResource(from: resources)
             let size = (primary?.value(forKey: "fileSize") as? NSNumber)?.int64Value

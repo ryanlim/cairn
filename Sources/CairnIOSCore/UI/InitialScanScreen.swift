@@ -367,12 +367,16 @@ public struct InitialScanScreen: View {
     private enum EtaConfidence { case unknown, low, medium, high }
 
     /// Color for the REMAINING cell, derived from `etaConfidence`.
+    /// Three-tier traffic-light gradient — orange → yellow → green —
+    /// so each tier is visually distinct rather than collapsing
+    /// medium into "neutral text" (which read as confident at a
+    /// glance even when the underlying CV was high).
     private var remainingColor: Color {
         switch etaConfidence {
-        case .unknown: return t.textMuted
-        case .low:     return t.pendingInk
-        case .medium:  return t.textBody
-        case .high:    return t.verifiedInk
+        case .unknown: return t.textMuted   // estimating…
+        case .low:     return t.accentInk   // carrot orange — bouncing
+        case .medium:  return t.pendingInk  // tuscan sun — moderate drift
+        case .high:    return t.verifiedInk // seaweed green — stable
         }
     }
 
