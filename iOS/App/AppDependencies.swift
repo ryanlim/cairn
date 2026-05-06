@@ -3554,7 +3554,6 @@ final class AppDependencies {
     /// promises.
     @MainActor
     static func seedReviewMode(into model: CairnAppModel) {
-        model.actions = CairnAppActions()
         model.didAutoSyncThisSession = true
         model.isBootstrapping = false
         model.needsOnboarding = false
@@ -3586,6 +3585,202 @@ final class AppDependencies {
             confirmedDeletedAt: confirmedAt,
             quarantineDays: 14
         )
+
+        // Wire actions that mutate the local model only — no network,
+        // no Immich client, no SwiftData. Gives the reviewer a working
+        // flow they can tap through (trash, exclude, restore, etc.)
+        // even though nothing leaves the device.
+        model.actions = makeReviewModeActions(model: model)
+    }
+
+    /// Action bundle for App Store review mode. Each closure simulates
+    /// its production effect by mutating the local model directly —
+    /// no orchestrators, no network, no stores. Lets the reviewer
+    /// exercise the full UI flow against fixture state.
+    @MainActor
+    private static func makeReviewModeActions(model: CairnAppModel) -> CairnAppActions {
+        CairnAppActions(
+            requestSync: { [weak model] in
+                // No-op: the magic URL has no DNS resolution and the
+                // model already has fixture state, so a "sync" should
+                // do nothing visible. Set a friendly toast so the user
+                // sees their tap registered.
+                await MainActor.run {
+                    guard let model else { return }
+                    model.syncToast = .upToDate(
+                        indexed: model.library.indexed,
+                        total: model.library.local
+                    )
+                    model.lastCheckedAt = Date()
+                }
+            },
+            confirmTrash: { [weak model] in
+                await MainActor.run {
+                    guard let model, let live = model.reconciliation else { return }
+                    let trashedCount = live.deleteCandidates.count
+                    guard trashedCount > 0 else { return }
+                    Self.simulateTrashRun(
+                        in: model,
+                        trashedCount: trashedCount,
+                        clearReconciliation: true
+                    )
+                }
+            },
+            restore: { [weak model] _, runId in
+                // Mark the named run as restored — visible feedback in
+                // the Runs tab without modifying server state. Rebuild
+                // the fixture with the new status (RunFixture has no
+                // `.with(...)` mutator, so this is a re-construction).
+                await MainActor.run {
+                    guard let model, !model.runs.isEmpty else { return }
+                    if let idx = model.runs.firstIndex(where: { $0.id == runId }) {
+                        let r = model.runs[idx]
+                        model.runs[idx] = CairnFixtures.RunFixture(
+                            id: r.id,
+                            startedAt: r.startedAt,
+                            durationMs: r.durationMs,
+                            trashed: r.trashed,
+                            restored: r.trashed,
+                            dryRun: r.dryRun,
+                            status: .restored,
+                            tag: r.tag,
+                            notes: r.notes
+                        )
+                    }
+                }
+            },
+            exclude: { [weak model] checksums, filenames, runId in
+                await MainActor.run {
+                    guard let model else { return }
+                    let entries = zip(filenames, checksums).map { name, ck in
+                        ExcludedScreenEntry(
+                            filename: name,
+                            bytes: 2_400_000,
+                            kind: .photo,
+                            isLivePair: false,
+                            metadata: ExclusionMetadata(
+                                addedAt: Date(),
+                                fromRunId: runId
+                            )
+                        )
+                    }
+                    model.excludedEntries.append(contentsOf: entries)
+                    model.excludedChecksums.formUnion(checksums)
+                }
+            },
+            unexclude: { [weak model] checksums in
+                await MainActor.run {
+                    guard let model else { return }
+                    let drop = Set(checksums)
+                    // ExcludedScreenEntry has no checksum field — match
+                    // by the displayed filename. Review mode pairs them
+                    // 1:1 in `exclude`, so this round-trips cleanly.
+                    let removedFilenames = model.excludedEntries
+                        .filter { drop.contains($0.filename) }
+                        .map(\.filename)
+                    model.excludedEntries.removeAll { removedFilenames.contains($0.filename) }
+                    model.excludedChecksums.subtract(drop)
+                }
+            },
+            approvePending: { [weak model] checksums in
+                await MainActor.run {
+                    guard let model, let live = model.reconciliation else { return }
+                    let drop = Set(checksums)
+                    let remainingPending = live.pendingReviewCandidates.filter { !drop.contains($0.checksum.base64) }
+                    let remainingHeld = live.heldByQuarantineCandidates.filter { !drop.contains($0.checksum.base64) }
+                    model.reconciliation = .init(
+                        deleteCandidates: live.deleteCandidates,
+                        pendingReviewCandidates: remainingPending,
+                        heldByQuarantineCandidates: remainingHeld,
+                        confirmedDeletedAt: live.confirmedDeletedAt,
+                        quarantineDays: live.quarantineDays
+                    )
+                    Self.simulateTrashRun(
+                        in: model,
+                        trashedCount: drop.count,
+                        clearReconciliation: false
+                    )
+                }
+            },
+            excludePending: { [weak model] checksums in
+                await MainActor.run {
+                    guard let model, let live = model.reconciliation else { return }
+                    let drop = Set(checksums)
+                    let remainingPending = live.pendingReviewCandidates.filter { !drop.contains($0.checksum.base64) }
+                    let remainingHeld = live.heldByQuarantineCandidates.filter { !drop.contains($0.checksum.base64) }
+                    let added: [ExcludedScreenEntry] = live.pendingReviewCandidates
+                        .filter { drop.contains($0.checksum.base64) }
+                        .map { asset in
+                            ExcludedScreenEntry(
+                                filename: asset.originalFileName ?? "asset",
+                                bytes: 2_400_000,
+                                kind: .photo,
+                                isLivePair: false,
+                                metadata: ExclusionMetadata(addedAt: Date())
+                            )
+                        }
+                    model.excludedEntries.append(contentsOf: added)
+                    model.excludedChecksums.formUnion(drop)
+                    model.reconciliation = .init(
+                        deleteCandidates: live.deleteCandidates,
+                        pendingReviewCandidates: remainingPending,
+                        heldByQuarantineCandidates: remainingHeld,
+                        confirmedDeletedAt: live.confirmedDeletedAt,
+                        quarantineDays: live.quarantineDays
+                    )
+                }
+            },
+            dismissPending: { [weak model] checksums in
+                await MainActor.run {
+                    guard let model, let live = model.reconciliation else { return }
+                    let drop = Set(checksums)
+                    let remainingPending = live.pendingReviewCandidates.filter { !drop.contains($0.checksum.base64) }
+                    let remainingHeld = live.heldByQuarantineCandidates.filter { !drop.contains($0.checksum.base64) }
+                    model.reconciliation = .init(
+                        deleteCandidates: live.deleteCandidates,
+                        pendingReviewCandidates: remainingPending,
+                        heldByQuarantineCandidates: remainingHeld,
+                        confirmedDeletedAt: live.confirmedDeletedAt,
+                        quarantineDays: live.quarantineDays
+                    )
+                }
+            }
+        )
+    }
+
+    /// Simulate the visible effects of a successful trash run: insert
+    /// a fake completed run, append a journal entry, and (optionally)
+    /// drop the active reconciliation. Used by review-mode actions.
+    @MainActor
+    private static func simulateTrashRun(
+        in model: CairnAppModel,
+        trashedCount: Int,
+        clearReconciliation: Bool
+    ) {
+        let runId = "review-\(UUID().uuidString.prefix(8))"
+        let fixture = CairnFixtures.RunFixture(
+            id: runId,
+            startedAt: Date(),
+            durationMs: 6_000,
+            trashed: trashedCount,
+            restored: 0,
+            dryRun: false,
+            status: .complete,
+            tag: "cairn/v1/run/\(runId)",
+            notes: "review-mode simulation"
+        )
+        model.runs.insert(fixture, at: 0)
+
+        let lib = model.library
+        model.library = lib.with(
+            server: max(0, lib.server - trashedCount),
+            matched: max(0, lib.matched - trashedCount),
+            candidates: 0
+        )
+
+        if clearReconciliation {
+            model.reconciliation = nil
+        }
     }
 
     #if DEBUG
