@@ -3628,16 +3628,29 @@ final class AppDependencies {
     private static func makeReviewModeActions(model: CairnAppModel) -> CairnAppActions {
         CairnAppActions(
             requestSync: { [weak model] in
-                // Re-seed the fixture reconciliation on every Sync.
-                // Lets the reviewer (and anyone testing review mode)
-                // run the trash flow repeatedly without rebuilding —
-                // without it, a single trash empties the candidate
-                // bucket permanently and Sync becomes a dead button.
-                // Show the friendly toast either way so the tap
-                // always registers visually.
+                // Two paths depending on whether candidates are
+                // currently visible:
+                //   1. Reconciliation is nil/empty (post-trash, or
+                //      after the user dismissed everything) → re-seed
+                //      5 candidates. Mimics "you deleted more photos
+                //      and cairn found them on the next sync." Lets
+                //      the reviewer (and anyone testing review mode)
+                //      run the trash flow repeatedly without
+                //      rebuilding — without re-seeding here, Sync
+                //      becomes a dead button after the first trash.
+                //   2. Candidates already present → leave them alone
+                //      and report "up to date." Re-seeding while the
+                //      bucket is full would resurrect items the user
+                //      just decided to keep, which reads as a bug.
+                // Either way, set lastCheckedAt + the toast so the
+                // tap registers visually.
                 await MainActor.run {
                     guard let model else { return }
-                    Self.applyReviewReconciliation(to: model)
+                    let bucketIsEmpty = (model.reconciliation?.deleteCandidates.isEmpty ?? true)
+                        && (model.reconciliation?.pendingReviewCandidates.isEmpty ?? true)
+                    if bucketIsEmpty {
+                        Self.applyReviewReconciliation(to: model)
+                    }
                     model.lastCheckedAt = Date()
                     model.syncToast = .upToDate(
                         indexed: model.library.indexed,
