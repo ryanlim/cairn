@@ -741,12 +741,20 @@ public struct CairnAppRoot: View {
         // Run reconciliation first, then route based on what
         // came back. Post-sync outcomes:
         //
-        //   1. `deleteCandidates` non-empty → present DryRunSheet.
-        //   2. Unconfirmed pending items (strict mode) → PendingReview.
-        //   3. Only quarantine items → no auto-present; the quarantine
+        //   1. `deleteCandidates` non-empty AND set has new items
+        //      since the last auto-present → present DryRunSheet.
+        //   2. Unconfirmed pending items (strict mode) AND new since
+        //      last auto-present → PendingReview.
+        //   3. Set is unchanged from what the user already saw → no
+        //      auto-present (the user already decided once; tapping
+        //      Sync to "check for new" shouldn't re-pop the same
+        //      dialog they just dismissed). They can still navigate
+        //      manually via the quarantine badge / "ready to trash"
+        //      tap on Status.
+        //   4. Only quarantine items → no auto-present; the quarantine
         //      badge in the sync card updates and the user taps in if
         //      they want to act.
-        //   4. Both empty → no-op (Status toast handles feedback).
+        //   5. Both empty → no-op (Status toast handles feedback).
         startTrackedSync {
             let isPreview = ProcessInfo.processInfo.environment["XCODE_RUNNING_FOR_PREVIEWS"] == "1"
             if isPreview {
@@ -754,10 +762,24 @@ public struct CairnAppRoot: View {
                 return
             }
             guard let live = model.reconciliation else { return }
-            if !live.deleteCandidates.isEmpty {
+
+            // Decide whether the current candidate set has anything
+            // the user hasn't been auto-shown yet. Subset-of-acknowledged
+            // means "no new info" — skip the auto-pop. The Status
+            // surfaces (ready-to-trash chip, quarantine line) update
+            // their counts independently.
+            let currentChecksums = Set(
+                live.deleteCandidates.map(\.checksum.base64)
+                    + live.pendingReviewCandidates.map(\.checksum.base64)
+            )
+            let hasNewSinceLastAutoPresent = !currentChecksums.isSubset(of: model.acknowledgedCandidateChecksums)
+
+            if !live.deleteCandidates.isEmpty, hasNewSinceLastAutoPresent {
                 model.presentedSheet = .dryRun(forceTripped: forceTripped)
-            } else if live.pendingReviewCandidates.count > live.heldByQuarantineCandidates.count {
+                model.acknowledgedCandidateChecksums = currentChecksums
+            } else if live.pendingReviewCandidates.count > live.heldByQuarantineCandidates.count, hasNewSinceLastAutoPresent {
                 model.presentedSheet = .pendingReview
+                model.acknowledgedCandidateChecksums = currentChecksums
             }
         }
     }

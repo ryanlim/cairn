@@ -1680,6 +1680,7 @@ final class AppDependencies {
         self.model.runs = []
         self.model.runAssets = [:]
         self.model.lastCheckedAt = nil
+        self.model.acknowledgedCandidateChecksums = []
     }
 
     /// Walk every per-(URL, userId) partition directory under

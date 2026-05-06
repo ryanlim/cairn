@@ -198,6 +198,19 @@ public final class CairnAppModel {
     /// Falls back to `reconciliation?.computedAt` when present.
     public var lastCheckedAt: Date?
 
+    /// Set of candidate checksums (delete + pending-review buckets
+    /// merged) the user has been auto-presented with via the post-
+    /// sync routing — i.e., whatever `presentDryRunSheet` last
+    /// auto-popped on the user's behalf. The auto-present skips when
+    /// the current candidate set is a subset of this acknowledged
+    /// set, so tapping Sync after dismissing a sheet doesn't
+    /// re-pop the same items. New items (not in the set) re-trigger
+    /// the auto-present.
+    ///
+    /// Cleared by sign-out and by Reset Index. Otherwise persists
+    /// for the app session — survives backgrounding and re-foregrounding.
+    public var acknowledgedCandidateChecksums: Set<String> = []
+
     /// Threshold above which `lastScanBurstCount` triggers the mass-offload
     /// banner. Hard-coded for now; a settings-driven tuning knob could
     /// replace this if field data suggests 50 is wrong.
