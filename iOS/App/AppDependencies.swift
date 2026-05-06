@@ -3601,17 +3601,36 @@ final class AppDependencies {
     private static func makeReviewModeActions(model: CairnAppModel) -> CairnAppActions {
         CairnAppActions(
             requestSync: { [weak model] in
-                // No-op: the magic URL has no DNS resolution and the
-                // model already has fixture state, so a "sync" should
-                // do nothing visible. Set a friendly toast so the user
-                // sees their tap registered.
+                // Re-seed the fixture reconciliation on every Sync.
+                // Lets the reviewer (and anyone testing review mode)
+                // run the trash flow repeatedly without rebuilding —
+                // without it, a single trash empties the candidate
+                // bucket permanently and Sync becomes a dead button.
+                // Show the friendly toast either way so the tap
+                // always registers visually.
                 await MainActor.run {
                     guard let model else { return }
+                    let heldFixtures = Array(CairnFixtures.candidates.prefix(3))
+                    let pendingFixtures = Array(CairnFixtures.candidates.prefix(5))
+                    let confirmedAt: [Checksum: Date] = Dictionary(
+                        uniqueKeysWithValues: heldFixtures.enumerated().compactMap { idx, c in
+                            c.checksum.map {
+                                (Checksum(base64: $0), Date(timeIntervalSinceNow: -TimeInterval(idx) * 86_400))
+                            }
+                        }
+                    )
+                    model.reconciliation = .init(
+                        deleteCandidates: pendingFixtures.map { $0.asServerAsset },
+                        pendingReviewCandidates: pendingFixtures.map { $0.asServerAsset },
+                        heldByQuarantineCandidates: heldFixtures.map { $0.asServerAsset },
+                        confirmedDeletedAt: confirmedAt,
+                        quarantineDays: 14
+                    )
+                    model.lastCheckedAt = Date()
                     model.syncToast = .upToDate(
                         indexed: model.library.indexed,
                         total: model.library.local
                     )
-                    model.lastCheckedAt = Date()
                 }
             },
             confirmTrash: { [weak model] in
