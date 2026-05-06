@@ -3565,10 +3565,39 @@ final class AppDependencies {
         model.apiKeyMasked = "(review mode)"
         model.connectionStatus = .healthy(latencyMs: 12)
 
-        model.library = CairnFixtures.medium
+        // Library counts deliberately constructed so the surfaces are
+        // mutually consistent: 50 photos on iPhone, 55 on Immich, 5 of
+        // those don't match anything on iPhone (the deletion
+        // candidates). Using the much-larger CairnFixtures.medium
+        // here would put `candidates: 14` in the library while
+        // reconciliation only has 5 — Status would then read "14
+        // ready to trash" big with a 5-candidate dry-run sheet,
+        // which is the inconsistency that prompted this rework.
+        model.library = CairnFixtures.LibrarySize(
+            local: 50,
+            indexed: 55,
+            server: 55,
+            matched: 55,
+            candidates: 5
+        )
         model.runs = CairnFixtures.runs
         model.journalTail = CairnFixtures.journalTail
 
+        Self.applyReviewReconciliation(to: model)
+
+        // Wire actions that mutate the local model only — no network,
+        // no Immich client, no SwiftData. Gives the reviewer a working
+        // flow they can tap through (trash, exclude, restore, etc.)
+        // even though nothing leaves the device.
+        model.actions = makeReviewModeActions(model: model)
+    }
+
+    /// Build the review-mode reconciliation fixture and stamp it onto
+    /// the model. Extracted so both initial seed and Sync re-seed use
+    /// the same shape, avoiding duplicate construction. 5 pending
+    /// review candidates of which 3 are held by quarantine clock.
+    @MainActor
+    private static func applyReviewReconciliation(to model: CairnAppModel) {
         let heldFixtures = Array(CairnFixtures.candidates.prefix(3))
         let pendingFixtures = Array(CairnFixtures.candidates.prefix(5))
         let confirmedAt: [Checksum: Date] = Dictionary(
@@ -3585,12 +3614,10 @@ final class AppDependencies {
             confirmedDeletedAt: confirmedAt,
             quarantineDays: 14
         )
-
-        // Wire actions that mutate the local model only — no network,
-        // no Immich client, no SwiftData. Gives the reviewer a working
-        // flow they can tap through (trash, exclude, restore, etc.)
-        // even though nothing leaves the device.
-        model.actions = makeReviewModeActions(model: model)
+        // Keep the library's `candidates` field in sync with the
+        // reconciliation so the Status "ready to trash" number matches
+        // what the dry-run sheet will list.
+        model.library = model.library.with(candidates: 5)
     }
 
     /// Action bundle for App Store review mode. Each closure simulates
@@ -3610,22 +3637,7 @@ final class AppDependencies {
                 // always registers visually.
                 await MainActor.run {
                     guard let model else { return }
-                    let heldFixtures = Array(CairnFixtures.candidates.prefix(3))
-                    let pendingFixtures = Array(CairnFixtures.candidates.prefix(5))
-                    let confirmedAt: [Checksum: Date] = Dictionary(
-                        uniqueKeysWithValues: heldFixtures.enumerated().compactMap { idx, c in
-                            c.checksum.map {
-                                (Checksum(base64: $0), Date(timeIntervalSinceNow: -TimeInterval(idx) * 86_400))
-                            }
-                        }
-                    )
-                    model.reconciliation = .init(
-                        deleteCandidates: pendingFixtures.map { $0.asServerAsset },
-                        pendingReviewCandidates: pendingFixtures.map { $0.asServerAsset },
-                        heldByQuarantineCandidates: heldFixtures.map { $0.asServerAsset },
-                        confirmedDeletedAt: confirmedAt,
-                        quarantineDays: 14
-                    )
+                    Self.applyReviewReconciliation(to: model)
                     model.lastCheckedAt = Date()
                     model.syncToast = .upToDate(
                         indexed: model.library.indexed,

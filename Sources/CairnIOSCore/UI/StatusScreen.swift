@@ -1093,14 +1093,21 @@ public struct StatusScreen: View {
     private var quarantineLine: some View {
         // Three display modes depending on what's actually in the
         // pendingReview bucket:
-        //   - Held only (the original case): "N in quarantine"
+        //   - Held only (quarantineCount == pendingReview): "N in quarantine"
         //   - Mixed held + unconfirmed: "N awaiting review · K in quarantine"
-        //   - Unconfirmed only: "N awaiting review"
-        // The icon switches from clock (held — there's a countdown
-        // to render) to question mark (unconfirmed — no countdown,
-        // user input required).
-        let isUnconfirmedOnly = quarantineCount == 0 && pendingReviewCount > 0
-        let iconName = isUnconfirmedOnly ? "questionmark.circle" : "clock"
+        //   - Unconfirmed only (quarantineCount == 0): "N awaiting review"
+        // Earlier code only distinguished "unconfirmed-only" from the
+        // rest, which meant the mixed case said "N in quarantine" big
+        // (wrong — the big number includes unconfirmed items) with
+        // "K in quarantine" small (the actual quarantine count). The
+        // resulting "5 in quarantine · 3 in quarantine" reads as
+        // contradictory. Now: any time pendingReview > quarantine,
+        // the big label is "awaiting review" — only the all-held
+        // case keeps "in quarantine."
+        let allHeld = quarantineCount == pendingReviewCount && quarantineCount > 0
+        let allUnconfirmed = quarantineCount == 0 && pendingReviewCount > 0
+        let bigLabel = allHeld ? "in quarantine" : "awaiting review"
+        let iconName = allUnconfirmed ? "questionmark.circle" : "clock"
         return Button(action: onOpenPendingReview) {
             HStack(spacing: 12) {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
@@ -1110,13 +1117,13 @@ public struct StatusScreen: View {
                     Text("\(pendingReviewCount)")
                         .font(.system(size: 28, weight: .semibold).monospacedDigit())
                         .foregroundStyle(t.pendingInk)
-                    Text(isUnconfirmedOnly ? "awaiting review" : "in quarantine")
+                    Text(bigLabel)
                         .font(.system(size: 14, weight: .medium))
                         .foregroundStyle(t.pendingInk)
                 }
                 Spacer()
                 VStack(alignment: .trailing, spacing: 2) {
-                    if !isUnconfirmedOnly, let earliest = earliestQuarantineEligible {
+                    if allHeld, let earliest = earliestQuarantineEligible {
                         Text("next in \(Self.relativeDay(earliest))")
                             .font(.system(size: 11, weight: .medium))
                             .foregroundStyle(t.textMuted)
