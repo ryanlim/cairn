@@ -478,9 +478,11 @@ public struct CairnAppRoot: View {
                     model.activeTab = .runs
                 },
                 onOpenPendingReview: {
+                    acknowledgeCurrentCandidates()
                     model.presentedSheet = .pendingReview
                 },
                 onOpenDeleteQueue: {
+                    acknowledgeCurrentCandidates()
                     model.presentedSheet = .dryRun(forceTripped: model.appState == .thresholdTripped)
                 },
                 onOpenDeferredQueue: {
@@ -736,6 +738,22 @@ public struct CairnAppRoot: View {
     }
 
     // MARK: - Sheet helpers
+
+    /// Stamp `model.acknowledgedCandidateChecksums` with whatever's
+    /// currently in the candidate buckets. Called from both the
+    /// auto-present path and the manual-navigation paths
+    /// (`onOpenPendingReview`, `onOpenDeleteQueue`) so a user who
+    /// drills in manually is treated identically to one whose Sync
+    /// auto-popped the same dialog: subsequent Sync taps don't
+    /// re-pop unless something genuinely new comes in.
+    private func acknowledgeCurrentCandidates() {
+        guard let live = model.reconciliation else { return }
+        let checksums = Set(
+            live.deleteCandidates.map(\.checksum.base64)
+                + live.pendingReviewCandidates.map(\.checksum.base64)
+        )
+        model.acknowledgedCandidateChecksums = checksums
+    }
 
     private func presentDryRunSheet(forceTripped: Bool) {
         // Run reconciliation first, then route based on what

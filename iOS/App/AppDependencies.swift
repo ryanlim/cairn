@@ -2159,6 +2159,13 @@ final class AppDependencies {
                     let trashedCount = result.trashedAssetIds.count
                     await MainActor.run {
                         self.model.reconciliation = nil
+                        // Reset acknowledged set: trashed candidates'
+                        // checksums are no longer relevant. Pairs with
+                        // CairnAppRoot.presentDryRunSheet's subset
+                        // suppression — without this, the next sync's
+                        // candidate set could still be incorrectly
+                        // suppressed by stale acknowledgements.
+                        self.model.acknowledgedCandidateChecksums = []
                         if trashedCount > 0 {
                             let current = self.model.library
                             self.model.library = current.with(
@@ -3669,6 +3676,12 @@ final class AppDependencies {
                         trashedCount: trashedCount,
                         clearReconciliation: true
                     )
+                    // Reset acknowledged set: the items the user just
+                    // trashed are no longer relevant to acknowledge.
+                    // Without this, review mode's same-checksum re-seed
+                    // on the next Sync would be wrongly suppressed by
+                    // the stale acknowledged set.
+                    model.acknowledgedCandidateChecksums = []
                 }
             },
             restore: { [weak model] _, runId in
@@ -3745,6 +3758,10 @@ final class AppDependencies {
                         trashedCount: drop.count,
                         clearReconciliation: false
                     )
+                    // Subtract approved checksums from the acknowledged
+                    // set; remaining acknowledgements still apply to
+                    // items the user hasn't acted on yet.
+                    model.acknowledgedCandidateChecksums.subtract(drop)
                 }
             },
             excludePending: { [weak model] checksums in
