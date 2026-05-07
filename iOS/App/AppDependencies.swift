@@ -3744,10 +3744,18 @@ final class AppDependencies {
                 await MainActor.run {
                     guard let model, let live = model.reconciliation else { return }
                     let drop = Set(checksums)
+                    // Same shape as dismissPending: drop from all three
+                    // buckets, not just pending/held. Without filtering
+                    // `deleteCandidates`, partial trashes through the
+                    // PendingReview "Trash N" path leave stale entries
+                    // there; the next Sync's `bucketIsEmpty` gate stays
+                    // false → no re-seed → button reads as dead after
+                    // a few rounds.
+                    let remainingDelete = live.deleteCandidates.filter { !drop.contains($0.checksum.base64) }
                     let remainingPending = live.pendingReviewCandidates.filter { !drop.contains($0.checksum.base64) }
                     let remainingHeld = live.heldByQuarantineCandidates.filter { !drop.contains($0.checksum.base64) }
                     model.reconciliation = .init(
-                        deleteCandidates: live.deleteCandidates,
+                        deleteCandidates: remainingDelete,
                         pendingReviewCandidates: remainingPending,
                         heldByQuarantineCandidates: remainingHeld,
                         confirmedDeletedAt: live.confirmedDeletedAt,
@@ -3758,6 +3766,12 @@ final class AppDependencies {
                         trashedCount: drop.count,
                         clearReconciliation: false
                     )
+                    // simulateTrashRun forces library.candidates to 0
+                    // (assumes the caller is trashing the whole bucket).
+                    // For partial trashes, override with the actual
+                    // remaining count so Status's hero number matches
+                    // the live reconciliation.
+                    model.library = model.library.with(candidates: remainingDelete.count)
                     // Subtract approved checksums from the acknowledged
                     // set; remaining acknowledgements still apply to
                     // items the user hasn't acted on yet.
@@ -3768,6 +3782,7 @@ final class AppDependencies {
                 await MainActor.run {
                     guard let model, let live = model.reconciliation else { return }
                     let drop = Set(checksums)
+                    let remainingDelete = live.deleteCandidates.filter { !drop.contains($0.checksum.base64) }
                     let remainingPending = live.pendingReviewCandidates.filter { !drop.contains($0.checksum.base64) }
                     let remainingHeld = live.heldByQuarantineCandidates.filter { !drop.contains($0.checksum.base64) }
                     let added: [ExcludedScreenEntry] = live.pendingReviewCandidates
@@ -3784,12 +3799,17 @@ final class AppDependencies {
                     model.excludedEntries.append(contentsOf: added)
                     model.excludedChecksums.formUnion(drop)
                     model.reconciliation = .init(
-                        deleteCandidates: live.deleteCandidates,
+                        deleteCandidates: remainingDelete,
                         pendingReviewCandidates: remainingPending,
                         heldByQuarantineCandidates: remainingHeld,
                         confirmedDeletedAt: live.confirmedDeletedAt,
                         quarantineDays: live.quarantineDays
                     )
+                    // Keep Status's "ready to trash" chip aligned with
+                    // the live reconciliation — same reason as the
+                    // dismiss/approve paths above.
+                    model.library = model.library.with(candidates: remainingDelete.count)
+                    model.acknowledgedCandidateChecksums.subtract(drop)
                 }
             },
             dismissPending: { [weak model] checksums in
