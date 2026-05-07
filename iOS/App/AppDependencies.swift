@@ -3796,15 +3796,36 @@ final class AppDependencies {
                 await MainActor.run {
                     guard let model, let live = model.reconciliation else { return }
                     let drop = Set(checksums)
+                    // Drop from all three buckets — the review-mode seed
+                    // puts the same fixture rows in `deleteCandidates` and
+                    // `pendingReviewCandidates` simultaneously (production
+                    // keeps them mutually exclusive but the demo wants
+                    // both surfaces populated at once). Without dropping
+                    // from `deleteCandidates` too, dismissing the
+                    // pending list leaves a phantom "N ready to trash"
+                    // chip on Status with nothing to back it up, and
+                    // Sync's `bucketIsEmpty` re-seed gate stays false
+                    // forever → button reads as dead.
+                    let remainingDelete = live.deleteCandidates.filter { !drop.contains($0.checksum.base64) }
                     let remainingPending = live.pendingReviewCandidates.filter { !drop.contains($0.checksum.base64) }
                     let remainingHeld = live.heldByQuarantineCandidates.filter { !drop.contains($0.checksum.base64) }
                     model.reconciliation = .init(
-                        deleteCandidates: live.deleteCandidates,
+                        deleteCandidates: remainingDelete,
                         pendingReviewCandidates: remainingPending,
                         heldByQuarantineCandidates: remainingHeld,
                         confirmedDeletedAt: live.confirmedDeletedAt,
                         quarantineDays: live.quarantineDays
                     )
+                    // Status's "N ready to trash" hero number reads
+                    // `library.candidates`, not `reconciliation.deleteCandidates.count`.
+                    // Keep them in sync so Status visibly clears.
+                    model.library = model.library.with(candidates: remainingDelete.count)
+                    // Subtract dismissed checksums from the acknowledged
+                    // set so the next Sync's re-seed (same fixture, same
+                    // checksums) is treated as a fresh discovery and
+                    // auto-pops the dialog. Symmetry with `confirmTrash`,
+                    // which also clears acknowledgements after acting.
+                    model.acknowledgedCandidateChecksums.subtract(drop)
                 }
             }
         )
