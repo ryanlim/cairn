@@ -16,13 +16,21 @@
 # review without leaking into the listing.
 #
 # Order on the App Store listing (1-indexed):
-#   1. Status         — Light  (the hero screen; Light Mode is the
-#                                default appearance most users see)
-#   2. PendingReview  — Dark   (alternation begins)
-#   3. Runs           — Light
-#   4. Settings       — Dark
+#   1. Status         — Light
+#   2. Status         — Dark
+#   3. PendingReview  — Light
+#   4. PendingReview  — Dark
+#   5. Runs           — Light
+#   6. Runs           — Dark
+#   7. Settings       — Light
+#   8. Settings       — Dark
 #
-# Edit the SOURCES array to swap Light↔Dark or change the order. The
+# Each screen ships in both appearances so the listing visibly
+# advertises Dark Mode support — paired side-by-side rather than
+# all-Light-then-all-Dark, which keeps the visual story coherent
+# as a viewer scrolls. ASC accepts up to 10 per device, so 8 fits.
+#
+# Edit the SOURCES array to swap order or drop variants. The
 # numeric prefix in the destination filename controls upload order.
 
 set -euo pipefail
@@ -39,12 +47,17 @@ mkdir -p "$DST"
 # stragglers that ASC would still upload.
 rm -f "$DST/${DEVICE}-"*.png
 
-# Source files (Light / Dark) → desired destination order.
+# Source files → desired destination order. Both appearances of
+# each screen, paired adjacent on the listing.
 declare -a SOURCES=(
-  "01-Status-Light:01-Status"
-  "02-PendingReview-Dark:02-PendingReview"
-  "03-Runs-Light:03-Runs"
-  "04-Settings-Dark:04-Settings"
+  "01-Status-Light:01-Status-Light"
+  "01-Status-Dark:02-Status-Dark"
+  "02-PendingReview-Light:03-PendingReview-Light"
+  "02-PendingReview-Dark:04-PendingReview-Dark"
+  "03-Runs-Light:05-Runs-Light"
+  "03-Runs-Dark:06-Runs-Dark"
+  "04-Settings-Light:07-Settings-Light"
+  "04-Settings-Dark:08-Settings-Dark"
 )
 
 for entry in "${SOURCES[@]}"; do
@@ -63,4 +76,4 @@ for entry in "${SOURCES[@]}"; do
   echo "→ ${DEVICE}-${dst_name}.png  (from ${src_name})"
 done
 
-echo "✅ curated 4 screenshots → $DST"
+echo "✅ curated ${#SOURCES[@]} screenshots → $DST"
