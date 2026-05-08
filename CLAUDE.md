@@ -301,16 +301,14 @@ In rough priority order:
 1. **First on-device test** on a real iPhone to validate PhotoKit enumeration against a real library, `BGAppRefreshTask` scheduling (sim lies about background tasks), and the actual end-to-end deletion flow against the user's Immich. The persistent-change probe confirmed the API works on sim; device behavior is expected to match but hasn't been verified.
 2. **Snapshot tests for SwiftUI screens.** None yet. Good candidate is `swift-snapshot-testing` from Point-Free. Priority targets: Setup flow steps, DryRunSheet phases, PendingReviewScreen (empty / populated / mass-offload variants).
 3. **First TestFlight build.** Icon is in place; credentials persistence is in place; should be unblocked.
-4. **App Store submission.** Metadata + privacy-labels + reviewer notes live in `docs/app-store-*.md`. Screenshot pipeline (`make screenshots`) is in place. Submission itself still requires TestFlight being live and a hosted privacy policy URL.
-5. **Privacy policy page.** `PRIVACY.md` is in the repo; needs a rendered URL (GitHub Pages or equivalent) that App Store Connect can link to. The existing `NSPhotoLibraryUsageDescription` is accurate.
-6. **Local OS notifications for backlog alerts.** In-app Status banner already exists (gated by `CairnSettings.deletionBacklogAlertThreshold`; bell-badge callout on Status when the backlog crosses the threshold). Next step: fire a local `UNNotificationRequest` from `handleBackgroundRefresh` when a scan causes the backlog to cross the threshold (edge-trigger: pre-scan count < threshold, post-scan ≥ threshold, so we don't re-fire every slot while the user ignores it). Prerequisites: `UNUserNotificationCenter` permission request (add to Settings → Notifications row + a one-shot prompt on first cross), deep-link routing so tapping the notification opens cairn straight to PendingReview, dedup state to avoid double-firing across BG slots. See the existing `notifyOnAbort` setting for the precedent shape.
+4. **App Store submission.** Metadata + privacy-labels + reviewer notes live in `docs/app-store-*.md`. Screenshot pipeline (`make screenshots`) is in place. Privacy policy is hosted at https://glarue.github.io/cairn/PRIVACY.html (Jekyll-rendered from `PRIVACY.md` on the `skeleton` branch via GitHub Pages — paste this URL into App Store Connect → App Privacy → Privacy Policy URL).
+5. **Local OS notifications for backlog alerts.** In-app Status banner already exists (gated by `CairnSettings.deletionBacklogAlertThreshold`; bell-badge callout on Status when the backlog crosses the threshold). Next step: fire a local `UNNotificationRequest` from `handleBackgroundRefresh` when a scan causes the backlog to cross the threshold (edge-trigger: pre-scan count < threshold, post-scan ≥ threshold, so we don't re-fire every slot while the user ignores it). Prerequisites: `UNUserNotificationCenter` permission request (add to Settings → Notifications row + a one-shot prompt on first cross), deep-link routing so tapping the notification opens cairn straight to PendingReview, dedup state to avoid double-firing across BG slots. See the existing `notifyOnAbort` setting for the precedent shape.
 
 ## Things that are NOT done and probably need a session
 
 - Snapshot tests for SwiftUI screens (see #4 above).
 - `BGAppRefreshTask` validation on a real device (simulator lies about background tasks).
 - App Store metadata + screenshots.
-- Privacy policy page.
 
 ## Memory of historical bugs / lessons
 

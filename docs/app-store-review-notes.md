@@ -45,15 +45,19 @@ Immich server, network access, or photo uploads. To activate:
 5. Skip Background App Refresh. Finish setup.
 
 The Status tab will populate with sample library counts, a recent
-run, and a journal of past actions. The Pending Review screen
-shows a few candidates so you can tap through approve / exclude /
-dismiss flows. The Runs tab shows historical runs with drill-down
+run, and a journal of past actions. The big "ready to trash"
+number on Status opens a dry-run sheet listing items eligible to
+trash now (past the quarantine window). The "in quarantine" line
+opens the Pending Review screen showing items still inside the
+14-day quarantine window, where you can approve, exclude, or
+dismiss them. The Runs tab shows historical runs with drill-down
 detail. Settings shows the connection as "review.cairn.invalid"
 to confirm review mode is active.
 
-In review mode no network requests are made. The "Sync" button
-does nothing (the URL doesn't resolve in DNS); this is expected
-and not a defect.
+In review mode no network requests are made. Tapping "Sync"
+re-seeds the fixture state on each round (so the trash / approve /
+dismiss flows can be exercised repeatedly without rebuilding the
+app); this is expected and not a defect.
 
 To exit review mode: Settings → Sign out. Onboarding will
 restart for normal use.
