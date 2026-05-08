@@ -91,6 +91,16 @@ public struct ImmichAssetThumb: View {
                 imageData = nil
                 return
             }
+            // Fixture-prefixed assetIds resolve against bundled JPEGs in
+            // `Resources/FixturePhotos`. Used by screenshot fixtures and
+            // the App Store review-mode seed so the reviewer / pipeline
+            // sees real photos rather than gradient placeholders. The
+            // bundle lookup is synchronous and never hits the network,
+            // so it short-circuits the loader/cache/thumbhash chain.
+            if let data = Self.bundledFixtureData(for: assetId) {
+                imageData = data
+                return
+            }
             if let loader {
                 do {
                     let data = try await loader.load(assetId: assetId)
@@ -153,6 +163,21 @@ public struct ImmichAssetThumb: View {
 
     private var color1: Color { Color(hue: hue, saturation: 0.30, brightness: 0.85) }
     private var color2: Color { Color(hue: hue, saturation: 0.55, brightness: 0.55) }
+
+    /// Look up a fixture-prefixed assetId against bundled JPEGs.
+    /// `fixture-demo-photo-01` → `Bundle.module/demo-photo-01.jpg`.
+    /// Returns `nil` for non-fixture ids or when the resource is
+    /// missing (e.g., a fixture name was renamed without copying a
+    /// matching JPEG into `Resources/FixturePhotos`).
+    private static func bundledFixtureData(for assetId: String) -> Data? {
+        let prefix = "fixture-"
+        guard assetId.hasPrefix(prefix) else { return nil }
+        let resource = String(assetId.dropFirst(prefix.count))
+        guard let url = Bundle.module.url(forResource: resource, withExtension: "jpg") else {
+            return nil
+        }
+        return try? Data(contentsOf: url)
+    }
 }
 
 // MARK: - Preview

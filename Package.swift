@@ -33,6 +33,15 @@ let package = Package(
                 // register via CoreText at app launch. See
                 // `CairnFonts.registerBundledFonts()`.
                 .process("Resources/FiraCode-VariableFont_wght.ttf"),
+                // Royalty-free demo photos used as thumbnails for
+                // fixture assets in screenshot mode and App Store
+                // review mode. `ImmichAssetThumb` resolves any
+                // assetId starting with `fixture-` against this
+                // directory, so reviewers and the screenshot
+                // pipeline see real photos instead of the gradient
+                // placeholders. Downscaled to ~600px tall / 75% JPEG
+                // (~1MB total) — plenty of detail at thumbnail size.
+                .process("Resources/FixturePhotos"),
             ]
         ),
         .executableTarget(

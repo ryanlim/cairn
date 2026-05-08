@@ -284,14 +284,20 @@ public enum CairnFixtures {
     }
 
     public static let candidates: [CandidateFixture] = [
-        .init(name: "IMG_4821.HEIC", kind: .photo,    date: "2026-04-19", bytes: 2_431_002,  isLivePair: false),
-        .init(name: "IMG_4820.HEIC", kind: .photo,    date: "2026-04-19", bytes: 2_188_440,  isLivePair: false),
-        .init(name: "IMG_4819.HEIC", kind: .livePair, date: "2026-04-19", bytes: 8_104_772,  isLivePair: true),
-        .init(name: "IMG_4818.HEIC", kind: .photo,    date: "2026-04-19", bytes: 1_940_108,  isLivePair: false),
-        .init(name: "IMG_4755.HEIC", kind: .photo,    date: "2026-04-14", bytes: 3_017_288,  isLivePair: false),
-        .init(name: "IMG_4754.HEIC", kind: .photo,    date: "2026-04-14", bytes: 2_801_101,  isLivePair: false),
-        .init(name: "IMG_4612.MP4",  kind: .video,    date: "2026-04-08", bytes: 41_220_990, isLivePair: false),
-        .init(name: "IMG_4498.HEIC", kind: .photo,    date: "2026-04-02", bytes: 2_544_708,  isLivePair: false),
+        // First 8 entries carry `assetId: "fixture-demo-photo-NN"` so
+        // `ImmichAssetThumb`'s bundle-lookup short-circuit serves real
+        // royalty-free thumbnails (see `Resources/FixturePhotos/`).
+        // The remaining 7 are intentionally untagged — they only
+        // surface on the Pending Review preview's deeper rows and
+        // staying on the gradient keeps the bundle small.
+        .init(name: "IMG_4821.HEIC", kind: .photo,    date: "2026-04-19", bytes: 2_431_002,  isLivePair: false, assetId: "fixture-demo-photo-01"),
+        .init(name: "IMG_4820.HEIC", kind: .photo,    date: "2026-04-19", bytes: 2_188_440,  isLivePair: false, assetId: "fixture-demo-photo-02"),
+        .init(name: "IMG_4819.HEIC", kind: .livePair, date: "2026-04-19", bytes: 8_104_772,  isLivePair: true,  assetId: "fixture-demo-photo-03"),
+        .init(name: "IMG_4818.HEIC", kind: .photo,    date: "2026-04-19", bytes: 1_940_108,  isLivePair: false, assetId: "fixture-demo-photo-04"),
+        .init(name: "IMG_4755.HEIC", kind: .photo,    date: "2026-04-14", bytes: 3_017_288,  isLivePair: false, assetId: "fixture-demo-photo-05"),
+        .init(name: "IMG_4754.HEIC", kind: .photo,    date: "2026-04-14", bytes: 2_801_101,  isLivePair: false, assetId: "fixture-demo-photo-06"),
+        .init(name: "IMG_4612.MP4",  kind: .video,    date: "2026-04-08", bytes: 41_220_990, isLivePair: false, assetId: "fixture-demo-photo-07"),
+        .init(name: "IMG_4498.HEIC", kind: .photo,    date: "2026-04-02", bytes: 2_544_708,  isLivePair: false, assetId: "fixture-demo-photo-08"),
         .init(name: "IMG_4497.HEIC", kind: .photo,    date: "2026-04-02", bytes: 2_490_212,  isLivePair: false),
         .init(name: "IMG_4412.HEIC", kind: .photo,    date: "2026-03-29", bytes: 2_610_880,  isLivePair: false),
         .init(name: "IMG_4399.HEIC", kind: .photo,    date: "2026-03-27", bytes: 2_104_551,  isLivePair: false),
