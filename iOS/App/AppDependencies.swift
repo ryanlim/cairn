@@ -3602,30 +3602,52 @@ final class AppDependencies {
 
     /// Build the review-mode reconciliation fixture and stamp it onto
     /// the model. Extracted so both initial seed and Sync re-seed use
-    /// the same shape, avoiding duplicate construction. 5 pending
-    /// review candidates of which 3 are held by quarantine clock.
+    /// the same shape, avoiding duplicate construction.
+    ///
+    /// Buckets are disjoint, matching production semantics: an item is
+    /// either eligible for trash now (past quarantine) OR held for
+    /// review, never both. An earlier seed had the same 5 fixture rows
+    /// in both `deleteCandidates` and `pendingReviewCandidates`; that
+    /// produced a confusing dual display where DryRunSheet showed all
+    /// 5 as "to trash" and PendingReview showed the same 5 split as
+    /// "3 held · 2 unconfirmed" — the same items wearing two
+    /// different state labels.
+    ///
+    /// Now: 5 items in delete (confirmed > quarantine ago) + 3
+    /// different items in held (confirmed within quarantine window).
+    /// Status reads "5 ready to trash · 3 in quarantine"; DryRunSheet
+    /// and PendingReview show distinct, non-overlapping populations.
     @MainActor
     private static func applyReviewReconciliation(to model: CairnAppModel) {
-        let heldFixtures = Array(CairnFixtures.candidates.prefix(3))
-        let pendingFixtures = Array(CairnFixtures.candidates.prefix(5))
-        let confirmedAt: [Checksum: Date] = Dictionary(
-            uniqueKeysWithValues: heldFixtures.enumerated().compactMap { idx, c in
-                c.checksum.map {
-                    (Checksum(base64: $0), Date(timeIntervalSinceNow: -TimeInterval(idx) * 86_400))
-                }
+        let trashFixtures = Array(CairnFixtures.candidates.prefix(5))
+        let heldFixtures = Array(CairnFixtures.candidates.dropFirst(5).prefix(3))
+        var confirmedAt: [Checksum: Date] = [:]
+        // Trash bucket: confirmed-deleted 30 days ago — well past the
+        // 14-day quarantine, so they're eligible to trash now.
+        for fixture in trashFixtures {
+            if let cs = fixture.checksum {
+                confirmedAt[Checksum(base64: cs)] = Date(timeIntervalSinceNow: -30 * 86_400)
             }
-        )
+        }
+        // Held bucket: confirmed 0/1/2 days ago — still inside the
+        // quarantine window. The staggered timestamps let the UI
+        // render distinct "expires in N days" countdowns.
+        for (idx, fixture) in heldFixtures.enumerated() {
+            if let cs = fixture.checksum {
+                confirmedAt[Checksum(base64: cs)] = Date(timeIntervalSinceNow: -TimeInterval(idx) * 86_400)
+            }
+        }
         model.reconciliation = .init(
-            deleteCandidates: pendingFixtures.map { $0.asServerAsset },
-            pendingReviewCandidates: pendingFixtures.map { $0.asServerAsset },
+            deleteCandidates: trashFixtures.map { $0.asServerAsset },
+            pendingReviewCandidates: heldFixtures.map { $0.asServerAsset },
             heldByQuarantineCandidates: heldFixtures.map { $0.asServerAsset },
             confirmedDeletedAt: confirmedAt,
             quarantineDays: 14
         )
-        // Keep the library's `candidates` field in sync with the
-        // reconciliation so the Status "ready to trash" number matches
-        // what the dry-run sheet will list.
-        model.library = model.library.with(candidates: 5)
+        // Status's "ready to trash" hero number reads `library.candidates`
+        // (production sets this to `deleteCandidates.count`). Keep them
+        // in sync so the hero number matches the dry-run list.
+        model.library = model.library.with(candidates: trashFixtures.count)
     }
 
     /// Action bundle for App Store review mode. Each closure simulates
