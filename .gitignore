@@ -34,6 +34,7 @@ iOS/.bundle/
 iOS/fastlane/report.xml
 iOS/fastlane/test_output/
 iOS/fastlane/screenshots/
+iOS/fastlane/upload-screenshots/
 iOS/fastlane/metadata/
 *.ipa
 *.dSYM.zip

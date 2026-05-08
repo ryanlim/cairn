@@ -154,22 +154,34 @@ platform :ios do
 
   desc "Push App Store listing metadata + screenshots without rebuilding"
   lane :metadata do
-    # Pushes everything in fastlane/metadata/ + fastlane/screenshots/ to
-    # ASC's App Store Information page. Doesn't touch the binary, doesn't
-    # submit for review. Use after `make beta` has uploaded an IPA, when
-    # you want to populate description/keywords/screenshots in one shot
-    # instead of copy-pasting from `docs/app-store-metadata.md`.
+    # Pushes everything in fastlane/metadata/ + the curated screenshot
+    # set in fastlane/upload-screenshots/ to ASC's App Store Information
+    # page. Doesn't touch the binary, doesn't submit for review. Use
+    # after `make beta` has uploaded an IPA, when you want to populate
+    # description/keywords/screenshots in one shot instead of copy-
+    # pasting from `docs/app-store-metadata.md`.
     api_key = app_store_connect_api_key(
       key_id:       ENV["APP_STORE_CONNECT_API_KEY_KEY_ID"],
       issuer_id:    ENV["APP_STORE_CONNECT_API_KEY_ISSUER_ID"],
       key_filepath: ENV["APP_STORE_CONNECT_API_KEY_KEY_FILEPATH"]
     )
 
+    # Re-curate the upload set every push so any tweaks to the source
+    # screenshots in fastlane/screenshots/ propagate. Cheap (just file
+    # copies) and keeps fastlane/upload-screenshots/ as a derived
+    # artifact rather than a hand-maintained one.
+    sh("../scripts/curate-screenshots.sh")
+
     upload_to_app_store(
       api_key:                          api_key,
       skip_binary_upload:               true,
       skip_metadata:                    false,
       skip_screenshots:                 false,
+      # Curated 4-shot upload set (alternating Light/Dark across the
+      # main screens) lives here. Fastlane's `screenshots_path` points
+      # at the directory ABOVE the locale folders, so we hand it the
+      # parent dir (it'll find `en-US/` underneath).
+      screenshots_path:                 "./fastlane/upload-screenshots",
       force:                            true,    # don't open the HTML preview, just push
       precheck_include_in_app_purchases: false,
       submit_for_review:                false,
@@ -220,7 +232,11 @@ platform :ios do
   lane :screenshots do
     # `sh` runs from fastlane/; script self-locates to iOS/.
     sh("../scripts/capture-screenshots.sh")
-    UI.success "📸 Screenshots captured under fastlane/screenshots/"
+    # Re-curate the upload set so the dirs stay in sync. Cheap; keeps
+    # `fastlane/upload-screenshots/` ready for `make metadata` without
+    # a separate step.
+    sh("../scripts/curate-screenshots.sh")
+    UI.success "📸 Screenshots captured under fastlane/screenshots/ and curated upload set under fastlane/upload-screenshots/"
   end
 
   desc "Setup certificates and provisioning profiles via match"
