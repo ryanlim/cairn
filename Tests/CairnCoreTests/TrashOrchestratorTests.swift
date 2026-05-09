@@ -159,17 +159,18 @@ struct TrashOrchestratorTests {
     /// and the server rejected it," which is the whole point of the
     /// breadcrumb. The journal's `trashFailed` event is the local-side
     /// mirror of the same fact.
-    /// `upsertTag` is the first writer call. If it 500s, no tag exists on
-    /// the server, no assets are tagged, and nothing gets trashed. The
-    /// run summary resolves to `.aborted` via `runAborted` because the
-    /// orchestrator never reached a more specific terminal.
+    /// `upsertTag` is the first writer call and runs BEFORE any
+    /// journal write. If it throws (network down, server 500), the
+    /// orchestrator throws cleanly without leaving any journal
+    /// residue — no `runStarted`, no `runAborted`. The intent is
+    /// preserved by the caller's retry queue (iOS `PendingTrashIntentStore`)
+    /// or surfaced as a CLI exit code.
     ///
-    /// Forensically: a `runStarted` + `planningTrash` + `runAborted`
-    /// triad with no breadcrumb on the server tells future-cairn (or
-    /// the user reading `cairn journal show`) "this run never touched
-    /// Immich state — safe to retry."
-    @Test("upsertTag failure: no tag, no trash, journal has runAborted (no tagApplied / trashFailed / runCompleted)")
-    func upsertTagFailureAbortsBeforeAnyServerWrite() async throws {
+    /// Why no journal entries: a network blip on every offline trash
+    /// attempt would otherwise leave a fake "aborted" run in the
+    /// user's history. The retry queue is the authoritative record.
+    @Test("upsertTag failure: no tag, no trash, no journal entries — retry queue is the record")
+    func upsertTagFailureAbortsBeforeAnyJournalWrite() async throws {
         let writer = FakeWriter()
         await writer.setFailTag(FakeError(message: "tag-500"))
         let (journal, path) = tempJournal()
@@ -191,15 +192,11 @@ struct TrashOrchestratorTests {
         #expect(await writer.taggedBatches.isEmpty)
         #expect(await writer.trashedBatches.isEmpty)
 
+        // No journal residue. The retry queue handles intent
+        // persistence; the journal records actual server-touching
+        // runs only.
         let entries = try await journal.readAll()
-        let events = entries.map { eventName($0.event) }
-        #expect(events.contains("runStarted"))
-        #expect(events.contains("planningTrash"))
-        #expect(events.contains("runAborted"))
-        #expect(!events.contains("tagApplied"))
-        #expect(!events.contains("trashSucceeded"))
-        #expect(!events.contains("trashFailed"))
-        #expect(!events.contains("runCompleted"))
+        #expect(entries.isEmpty)
     }
 
     /// `bulkTagAssets` runs after `upsertTag`. If it 500s the tag is
@@ -282,13 +279,13 @@ struct TrashOrchestratorTests {
         #expect(await writer.deletedTagIds.isEmpty)
     }
 
-    /// Pin the journal-event ordering for an upsertTag failure: the
-    /// outer-catch `runAborted` lands AFTER `planningTrash`, with
-    /// nothing in between. Important because `JournalReader` uses
-    /// event order to resolve a run's terminal status — an out-of-
-    /// order or duplicated `runAborted` would mask earlier diagnostics.
-    @Test("upsertTag failure: journal event order is runStarted → planningTrash → runAborted, exactly once each")
-    func upsertTagFailureEventOrderIsExact() async throws {
+    /// Pin the no-journal-residue invariant for an upsertTag failure.
+    /// The retry queue records the intent; the journal stays clean.
+    /// (Sister to `bulkTagAssetsFailureEventOrderIsExact`, which DOES
+    /// expect a journal record because the failure is past the first
+    /// network call — there's real partial state worth surfacing.)
+    @Test("upsertTag failure: journal is empty (retry queue is the record)")
+    func upsertTagFailureProducesNoJournalEntries() async throws {
         let writer = FakeWriter()
         await writer.setFailTag(FakeError(message: "tag-500"))
         let (journal, path) = tempJournal()
@@ -303,8 +300,7 @@ struct TrashOrchestratorTests {
         )
 
         let entries = try await journal.readAll()
-        let kinds = entries.map { eventName($0.event) }
-        #expect(kinds == ["runStarted", "planningTrash", "runAborted"])
+        #expect(entries.isEmpty)
     }
 
     /// Sister to `upsertTagFailureEventOrderIsExact`: same ordering

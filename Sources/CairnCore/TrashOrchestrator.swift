@@ -115,6 +115,80 @@ public struct TrashOrchestrator: Sendable {
         let videoIds = candidates.compactMap(\.livePhotoVideoId)
         let allIds = Array(Set(stillIds + videoIds)).sorted()
 
+        // Empty / dry-run cases never touch the network. Journal them
+        // up-front so the run resolves cleanly and short-circuit out.
+        if candidates.isEmpty {
+            try await journal.append(.init(
+                timestamp: now(),
+                runId: runId,
+                event: .runStarted(
+                    dryRun: dryRun,
+                    candidateCount: candidates.count,
+                    assetsInPurview: assetsInPurview
+                )
+            ))
+            try await journal.append(.init(
+                timestamp: now(),
+                runId: runId,
+                event: .runCompleted(deletedCount: 0)
+            ))
+            return TrashRunSummary(runId: runId, trashedAssetIds: [], breadcrumbTag: nil, aborted: false, abortReason: nil)
+        }
+
+        let targets = candidates.map { JournalEntry.TrashTarget(
+            assetId: $0.id,
+            checksum: $0.checksum.base64,
+            livePhotoVideoId: $0.livePhotoVideoId,
+            originalFileName: $0.originalFileName,
+            fileCreatedAt: $0.fileCreatedAt
+        ) }
+
+        if dryRun {
+            try await journal.append(.init(
+                timestamp: now(),
+                runId: runId,
+                event: .runStarted(
+                    dryRun: dryRun,
+                    candidateCount: candidates.count,
+                    assetsInPurview: assetsInPurview
+                )
+            ))
+            try await journal.append(.init(
+                timestamp: now(),
+                runId: runId,
+                event: .planningTrash(targets: targets)
+            ))
+            try await journal.append(.init(
+                timestamp: now(),
+                runId: runId,
+                event: .runCompleted(deletedCount: 0)
+            ))
+            return TrashRunSummary(runId: runId, trashedAssetIds: [], breadcrumbTag: nil, aborted: false, abortReason: nil)
+        }
+
+        // Real run. `upsertTag` is the first network op — make it
+        // BEFORE any journal write. If we're offline (URLError) or
+        // the server rejects, the orchestrator throws cleanly with
+        // no journal residue. The caller (iOS app or CLI) is
+        // responsible for deciding what to do with the failure
+        // (retry queue on iOS, exit non-zero on CLI). Without this
+        // ordering, a transient network blip would leave a fake
+        // `aborted` run in the user's history every time.
+        let tagValue = TagSchema.runTagValue(runId: runId)
+        let tagStart = Date()
+        let tag = try await writer.upsertTag(value: tagValue)
+
+        // We're online. From here on, every throwable step is
+        // wrapped so the run terminates with a matching journal
+        // event (runCompleted / trashFailed / runAborted) even on
+        // an unhandled throw. Without this, a network glitch on
+        // `bulkTagAssets` would leave a dangling `runStarted` and
+        // the summary stuck in `.inProgress` limbo.
+        //
+        // `emittedTerminal` tracks whether a more-specific terminal
+        // (trashFailed, trashSucceeded, runCompleted) already fired;
+        // the outer catch only falls back to `runAborted` when
+        // nothing else summarized the run.
         try await journal.append(.init(
             timestamp: now(),
             runId: runId,
@@ -124,65 +198,24 @@ public struct TrashOrchestrator: Sendable {
                 assetsInPurview: assetsInPurview
             )
         ))
+        try await journal.append(.init(
+            timestamp: now(),
+            runId: runId,
+            event: .planningTrash(targets: targets)
+        ))
 
-        // `runStarted` is on disk. From here on, every throwable step is
-        // wrapped so the run terminates with a matching journal event
-        // (runCompleted / trashFailed / runAborted) even on an unhandled
-        // throw. Without this, a network glitch on `upsertTag` or
-        // `bulkTagAssets` would leave a dangling `runStarted` and the summary
-        // stuck in `.inProgress` limbo.
-        //
-        // `emittedTerminal` tracks whether a more-specific terminal
-        // (trashFailed, trashSucceeded, runCompleted) already fired; the
-        // outer catch only falls back to `runAborted` when nothing else
-        // summarized the run.
         var emittedTerminal = false
         do {
-            if candidates.isEmpty {
-                try await journal.append(.init(
-                    timestamp: now(),
-                    runId: runId,
-                    event: .runCompleted(deletedCount: 0)
-                ))
-                emittedTerminal = true
-                return TrashRunSummary(runId: runId, trashedAssetIds: [], breadcrumbTag: nil, aborted: false, abortReason: nil)
-            }
-
-            let targets = candidates.map { JournalEntry.TrashTarget(
-                assetId: $0.id,
-                checksum: $0.checksum.base64,
-                livePhotoVideoId: $0.livePhotoVideoId,
-                originalFileName: $0.originalFileName,
-                fileCreatedAt: $0.fileCreatedAt
-            ) }
-            try await journal.append(.init(
-                timestamp: now(),
-                runId: runId,
-                event: .planningTrash(targets: targets)
-            ))
-
-            if dryRun {
-                try await journal.append(.init(
-                    timestamp: now(),
-                    runId: runId,
-                    event: .runCompleted(deletedCount: 0)
-                ))
-                emittedTerminal = true
-                return TrashRunSummary(runId: runId, trashedAssetIds: [], breadcrumbTag: nil, aborted: false, abortReason: nil)
-            }
-
-            let tagValue = TagSchema.runTagValue(runId: runId)
-            let tagStart = Date()
-            let tag = try await writer.upsertTag(value: tagValue)
-            // `upsertTag` committed the tag on the server. If
-            // `bulkTagAssets` now fails, the tag is left behind with
-            // zero attached assets — harmless for cairn's read paths
-            // (lookups by run-id surface nothing) but forensically
-            // untidy. Best-effort cleanup: if the bulk-tag call
-            // throws, try to delete the just-created tag and
-            // re-throw the original error. The cleanup itself is
-            // non-fatal; if it also fails, the user-visible error
-            // stays the original `bulkTagAssets` failure.
+            // `upsertTag` already committed the tag on the server.
+            // If `bulkTagAssets` now fails, the tag is left behind
+            // with zero attached assets — harmless for cairn's read
+            // paths (lookups by run-id surface nothing) but
+            // forensically untidy. Best-effort cleanup: if the
+            // bulk-tag call throws, try to delete the just-created
+            // tag and re-throw the original error. The cleanup
+            // itself is non-fatal; if it also fails, the user-
+            // visible error stays the original `bulkTagAssets`
+            // failure.
             do {
                 try await writer.bulkTagAssets(tagIds: [tag.id], assetIds: allIds)
             } catch {
