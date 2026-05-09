@@ -136,6 +136,20 @@ public struct CairnSettings: Sendable, Codable, Equatable {
     /// added to a selected album.
     public var indexingScope: IndexingScope
 
+    /// How many times the retry driver will re-attempt a failed trash
+    /// before parking the intent. Once this cap is hit, the intent stays
+    /// in the queue (still visible to the user, still drainable on a
+    /// manual "Retry now" tap) but the driver stops touching it
+    /// automatically — a transient-looking failure that's actually a
+    /// real, persistent problem (wrong API key, dead server) shouldn't
+    /// flap forever. Default 5; clamped to `maxRetryAttemptsRange`.
+    public var maxRetryAttempts: Int
+
+    /// Permitted range for `maxRetryAttempts`. `1` means "one shot, then
+    /// park" — basically opts out of automatic retry. `20` is generous
+    /// for users on flaky home networks. Default `5` is a balance.
+    public static let maxRetryAttemptsRange: ClosedRange<Int> = 1...20
+
     public init(
         maxDeletePercent: Double = 1.0,
         minDeleteFloor: Int = 5,
@@ -149,7 +163,8 @@ public struct CairnSettings: Sendable, Codable, Equatable {
         deletionBacklogAlertThreshold: Int = 25,
         thumbnailCacheCapMB: Int = 100,
         thumbhashCapMB: Int = 5,
-        indexingScope: IndexingScope = .fullLibrary
+        indexingScope: IndexingScope = .fullLibrary,
+        maxRetryAttempts: Int = 5
     ) {
         self.maxDeletePercent = maxDeletePercent
         self.minDeleteFloor = minDeleteFloor
@@ -164,6 +179,7 @@ public struct CairnSettings: Sendable, Codable, Equatable {
         self.thumbnailCacheCapMB = thumbnailCacheCapMB
         self.thumbhashCapMB = thumbhashCapMB
         self.indexingScope = indexingScope
+        self.maxRetryAttempts = maxRetryAttempts
     }
 
     /// The factory defaults. Kept as a single constant so tests and the
@@ -180,6 +196,7 @@ public struct CairnSettings: Sendable, Codable, Equatable {
         case deletionBacklogAlertThreshold
         case thumbnailCacheCapMB, thumbhashCapMB
         case indexingScope
+        case maxRetryAttempts
     }
 
     public init(from decoder: Decoder) throws {
@@ -198,6 +215,7 @@ public struct CairnSettings: Sendable, Codable, Equatable {
         self.thumbnailCacheCapMB = try c.decodeIfPresent(Int.self, forKey: .thumbnailCacheCapMB) ?? d.thumbnailCacheCapMB
         self.thumbhashCapMB = try c.decodeIfPresent(Int.self, forKey: .thumbhashCapMB) ?? d.thumbhashCapMB
         self.indexingScope = try c.decodeIfPresent(IndexingScope.self, forKey: .indexingScope) ?? d.indexingScope
+        self.maxRetryAttempts = try c.decodeIfPresent(Int.self, forKey: .maxRetryAttempts) ?? d.maxRetryAttempts
     }
 }
 

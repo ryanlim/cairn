@@ -484,6 +484,21 @@ public final class CairnAppModel {
     /// Populated when the deferred queue sheet is about to present.
     public var deferredQueueEntries: [DeferredHashEntry] = []
 
+    /// Count of trash intents in the persistent retry queue —
+    /// `confirmTrash` calls that failed and are awaiting a successful
+    /// retry. Drives the Status pending-trash banner. Refreshed after
+    /// every `confirmTrash`, `retryPendingTrashes`, exclude/restore
+    /// (which prune intents), and successful `requestSync`.
+    public var pendingTrashCount: Int = 0
+
+    /// Subset of `pendingTrashCount` that has already exceeded the
+    /// configured `maxRetryAttempts`. These intents stay in the queue
+    /// but the auto-drain skips them — the user has to either tap
+    /// "Retry now" or address the root cause (e.g., re-verify the
+    /// API key). Surfaced in a danger-tone banner separate from the
+    /// regular pending banner.
+    public var pendingTrashStuckCount: Int = 0
+
     /// Count of items in `ConfirmedDeletedStore` still within the
     /// quarantine window. Populated from the store directly at
     /// bootstrap and after each sync/trash, so the Status pending
@@ -885,6 +900,15 @@ public struct CairnAppActions: Sendable {
     /// taking the heavier "Reset Index — all accounts" path.
     public var clearRecentServers: @Sendable () async -> Void
 
+    /// Drain the persistent retry queue: re-attempt every pending
+    /// trash intent that hasn't hit `maxRetryAttempts` yet. Wired
+    /// to "Retry now" in the Status banner and called automatically
+    /// after every successful `requestSync`. Failures bump
+    /// `attemptCount` and update `lastError`; successes remove the
+    /// intent from the queue. The host updates
+    /// `model.pendingTrashCount` afterward.
+    public var retryPendingTrashes: @Sendable () async -> Void
+
     public init(
         requestSync: @escaping @Sendable () async throws -> Void = {},
         confirmTrash: @escaping @Sendable () async throws -> Void = {},
@@ -919,7 +943,8 @@ public struct CairnAppActions: Sendable {
         replayOnboarding: @escaping @Sendable () async -> Void = {},
         recomputeScopeTags: @escaping @Sendable () async -> Void = {},
         recentServers: @escaping @Sendable () async -> [RecentServerEntry] = { [] },
-        clearRecentServers: @escaping @Sendable () async -> Void = {}
+        clearRecentServers: @escaping @Sendable () async -> Void = {},
+        retryPendingTrashes: @escaping @Sendable () async -> Void = {}
     ) {
         self.requestSync = requestSync
         self.confirmTrash = confirmTrash
@@ -953,6 +978,7 @@ public struct CairnAppActions: Sendable {
         self.recomputeScopeTags = recomputeScopeTags
         self.recentServers = recentServers
         self.clearRecentServers = clearRecentServers
+        self.retryPendingTrashes = retryPendingTrashes
     }
 
     /// All-no-op closures with successful default returns. Use in previews

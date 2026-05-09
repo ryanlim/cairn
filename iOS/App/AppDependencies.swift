@@ -60,6 +60,7 @@ final class AppDependencies {
     private(set) var thumbnailStore: SwiftDataThumbnailStore?
     private(set) var editRetirementStore: SwiftDataEditRetirementStore?
     private(set) var statusSnapshotStore: SwiftDataStatusSnapshotStore?
+    private(set) var pendingTrashStore: SwiftDataPendingTrashIntentStore?
     private(set) var journal: DeletionJournal?
 
     var persistentChangeReconciler: PhotoKitPersistentChangeReconciler? {
@@ -372,6 +373,7 @@ final class AppDependencies {
         self.tokenStore = SwiftDataPersistentChangeTokenStore(container: container)
         self.editRetirementStore = SwiftDataEditRetirementStore(container: container)
         self.statusSnapshotStore = SwiftDataStatusSnapshotStore(container: container)
+        self.pendingTrashStore = SwiftDataPendingTrashIntentStore(container: container)
         let thumbStore = SwiftDataThumbnailStore(container: container)
         self.thumbnailStore = thumbStore
 
@@ -555,6 +557,7 @@ final class AppDependencies {
 
         await refreshExcludedChecksums()
         await refreshQuarantineCount()
+        await refreshPendingTrashCount()
 
         let tokenExists = (try? await tokenStore?.load()) != nil
         model.hasCompletedInitialScan = tokenExists
@@ -1483,6 +1486,127 @@ final class AppDependencies {
     /// Capture the current status counts to disk so the next cold launch
     /// can render them before sync runs. Best-effort cosmetic — failures
     /// log and bail; nothing user-visible depends on this succeeding.
+    /// Drop a failed trash run into the persistent retry queue. No-op
+    /// if the per-server pending store hasn't been activated (we
+    /// shouldn't reach here without one, but guard rather than crash).
+    fileprivate func enqueueFailedTrash(
+        runId: String,
+        candidates: [ServerAsset],
+        assetsInPurview: Int,
+        error: Error
+    ) async {
+        guard let store = pendingTrashStore else { return }
+        let intent = PendingTrashIntent(
+            createdAt: Date(),
+            runId: runId,
+            assets: candidates,
+            assetsInPurview: assetsInPurview,
+            lastAttemptedAt: Date(),
+            attemptCount: 1,
+            lastError: Self.describeSyncError(error)
+        )
+        do {
+            try await store.enqueue(intent)
+        } catch {
+            syncLog.error("[cairn.retry-queue] enqueue failed: \(Self.describeSyncError(error), privacy: .public)")
+        }
+    }
+
+    /// Refresh `model.pendingTrashCount` and `pendingTrashStuckCount`
+    /// from the per-server retry queue. Cheap: queue is small and the
+    /// snapshot pre-decodes the JSON ServerAsset payload only when
+    /// callers need it. Here we only need the row count + attempt
+    /// counts.
+    fileprivate func refreshPendingTrashCount() async {
+        guard let store = pendingTrashStore else {
+            await MainActor.run {
+                self.model.pendingTrashCount = 0
+                self.model.pendingTrashStuckCount = 0
+            }
+            return
+        }
+        let intents = (try? await store.snapshot()) ?? []
+        let cap = await self.model.settings.maxRetryAttempts
+        let stuck = intents.filter { $0.attemptCount >= cap }.count
+        let total = intents.count
+        await MainActor.run {
+            self.model.pendingTrashCount = total
+            self.model.pendingTrashStuckCount = stuck
+        }
+    }
+
+    /// Drain the persistent retry queue once. Called automatically
+    /// after each successful `requestSync` and from the manual "Retry
+    /// now" UI action. Per-intent semantics:
+    ///
+    /// - **Stuck (`attemptCount >= maxRetryAttempts`)**: skipped by
+    ///   the auto-drainer; only surfaces if the user invokes via the
+    ///   "Retry now" path which passes `force: true`.
+    /// - **Recently attempted (<60s)**: skipped to avoid tight retry
+    ///   loops when multiple drain triggers fire close together.
+    /// - **Success**: removed from the queue.
+    /// - **404 from server**: removed from the queue. The asset is
+    ///   gone — nothing left to trash.
+    /// - **Any other failure**: `attemptCount` bumps,
+    ///   `lastAttemptedAt` updates, `lastError` records the new
+    ///   diagnostic. Stays in the queue.
+    fileprivate func drainPendingTrashes(force: Bool) async {
+        guard let store = pendingTrashStore,
+              let client = await self.immichClient,
+              let journal = await self.journal else { return }
+        let intents = (try? await store.snapshot()) ?? []
+        guard !intents.isEmpty else { return }
+        let cap = await self.model.settings.maxRetryAttempts
+        let now = Date()
+        let orchestrator = TrashOrchestrator(writer: client, journal: journal)
+        for intent in intents {
+            // Skip stuck intents in the auto-drain path; the manual
+            // Retry-now button passes force=true to override.
+            if !force, intent.attemptCount >= cap { continue }
+            // Debounce: don't hammer a server that just rejected us a
+            // moment ago. 60s is enough to clear a transient blip
+            // (DNS, 502, brief restart) without making the queue feel
+            // dead between syncs.
+            if let last = intent.lastAttemptedAt, now.timeIntervalSince(last) < 60, !force {
+                continue
+            }
+            do {
+                _ = try await orchestrator.run(
+                    runId: intent.runId,
+                    candidates: intent.assets,
+                    assetsInPurview: intent.assetsInPurview,
+                    dryRun: false
+                )
+                try? await store.remove(intent.id)
+            } catch let e as ImmichClientError {
+                if case .httpStatus(let code, _) = e, code == 404 {
+                    // The assets are no longer on the server — drop
+                    // the intent rather than retrying forever.
+                    try? await store.remove(intent.id)
+                } else {
+                    let msg = Self.describeSyncError(e)
+                    try? await store.update(
+                        intent.id,
+                        lastAttemptedAt: now,
+                        attemptCount: intent.attemptCount + 1,
+                        lastError: msg
+                    )
+                }
+            } catch {
+                let msg = Self.describeSyncError(error)
+                try? await store.update(
+                    intent.id,
+                    lastAttemptedAt: now,
+                    attemptCount: intent.attemptCount + 1,
+                    lastError: msg
+                )
+            }
+        }
+        await self.refreshPendingTrashCount()
+        await self.refreshRunsList()
+        await self.refreshJournalTail()
+    }
+
     @MainActor
     fileprivate func persistSnapshotFromModel() async {
         guard let store = statusSnapshotStore else { return }
@@ -2104,6 +2228,14 @@ final class AppDependencies {
                         self.model.degraded = .none
                         self.lastSyncEndedAt = Date()
                     }
+                    // Drain any failed-trash intents queued from
+                    // earlier offline sessions. `force: false` honors
+                    // the per-intent attempt cap; the manual Retry-now
+                    // path overrides that. Runs after the reconciler
+                    // has updated server state, so a successful retry
+                    // here will already have its trashed assets
+                    // reflected in the next sync.
+                    await self.drainPendingTrashes(force: false)
                 } catch is CancellationError {
                     await MainActor.run {
                         // Idempotent unwind. `CairnAppRoot.cancelActiveSync`
@@ -2148,12 +2280,13 @@ final class AppDependencies {
                       let live = await self.model.reconciliation,
                       !live.deleteCandidates.isEmpty else { return }
                 let runId = "\(ISO8601DateFormatter().string(from: Date()))-\(UUID().uuidString.prefix(8))"
+                let assetsInPurview = live.deleteCandidates.count + live.pendingReviewCandidates.count
                 let orchestrator = TrashOrchestrator(writer: client, journal: journal)
                 do {
                     let result = try await orchestrator.run(
                         runId: runId,
                         candidates: live.deleteCandidates,
-                        assetsInPurview: live.deleteCandidates.count + live.pendingReviewCandidates.count,
+                        assetsInPurview: assetsInPurview,
                         dryRun: false
                     )
                     let trashedCount = result.trashedAssetIds.count
@@ -2179,16 +2312,23 @@ final class AppDependencies {
                     await self.refreshRunsList()
                     await self.refreshJournalTail()
                 } catch {
-                    // Surface the error via model.lastError (the UI alert
-                    // binding reads this). We deliberately don't re-throw:
-                    // every caller invokes the action via `Task { try? await
-                    // ... }`, so a re-throw silently vanishes anyway.
-                    // Setting lastError is the single source of truth.
+                    // Real persistent retry: enqueue the intent so the
+                    // user's confirmed trash isn't dropped on the floor.
+                    // The drain runs after every successful sync and on
+                    // manual "Retry now" taps. The error message still
+                    // surfaces via `lastError` for immediate feedback.
+                    await self.enqueueFailedTrash(
+                        runId: runId,
+                        candidates: live.deleteCandidates,
+                        assetsInPurview: assetsInPurview,
+                        error: error
+                    )
                     await MainActor.run {
                         self.model.lastError = Self.describeSyncError(error)
                     }
                     await self.refreshRunsList()
                     await self.refreshJournalTail()
+                    await self.refreshPendingTrashCount()
                 }
             },
             restore: { [weak self] assetIds, runId in
@@ -2286,6 +2426,13 @@ final class AppDependencies {
                         }
                     }
 
+                    // The restored run is now reverted on Immich; any
+                    // pending-trash intent that targeted those same
+                    // assets would re-trash them on next drain. Drop
+                    // the intent first.
+                    try? await self.pendingTrashStore?.remove(matchingRunId: runId)
+                    await self.refreshPendingTrashCount()
+
                     await self.refreshRunsList()
                     await self.refreshJournalTail()
                 } catch {
@@ -2316,6 +2463,13 @@ final class AppDependencies {
                         runId: runId,
                         event: .assetsExcluded(checksums: checksums, fromRunId: runId)
                     ))
+                    // Pending-trash retry queue: drop any queued intent
+                    // that contains a checksum the user just excluded.
+                    // Real-time pruning so the Status banner ticks down
+                    // immediately rather than waiting for the next sync.
+                    let cks = Set(entries.keys)
+                    try? await self.pendingTrashStore?.removeIntents(containingAnyOf: cks)
+                    await self.refreshPendingTrashCount()
                     await self.refreshExcludedChecksums()
                     await self.refreshJournalTail()
                 } catch {
@@ -2501,6 +2655,12 @@ final class AppDependencies {
                         )
                         self.model.inferredOrphanCount = prunedOrphanMap.count
                     }
+                    // Pending-trash retry queue: drop any queued
+                    // intent that contains one of the just-excluded
+                    // checksums. Real-time pruning so the Status
+                    // banner reflects the user's intent immediately.
+                    try? await self.pendingTrashStore?.removeIntents(containingAnyOf: cks)
+                    await self.refreshPendingTrashCount()
                     await self.persistSnapshotFromModel()
                     await self.refreshJournalTail()
                 } catch {
@@ -3154,6 +3314,7 @@ final class AppDependencies {
                     self.tokenStore = nil
                     self.editRetirementStore = nil
                     self.statusSnapshotStore = nil
+                    self.pendingTrashStore = nil
                     self.thumbnailStore = nil
                     self.journal = nil
                     self.serverChecksumSet = nil
@@ -3364,6 +3525,12 @@ final class AppDependencies {
                 await Task.detached(priority: .userInitiated) {
                     try? store.clearRecentServers()
                 }.value
+            },
+            retryPendingTrashes: { [weak self] in
+                // `force: true` so the manual Retry-now path also
+                // re-attempts intents that have hit `maxRetryAttempts`.
+                // The auto-drain in `requestSync` passes `force: false`.
+                await self?.drainPendingTrashes(force: true)
             }
         )
 
