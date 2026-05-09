@@ -99,6 +99,7 @@ public struct SettingsScreen: View {
     @State private var howItWorksExpanded: Bool = false
     @State private var showExportPicker = false
     @State private var showImportPicker = false
+    @State private var showAbout = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     public init(
@@ -172,6 +173,7 @@ public struct SettingsScreen: View {
                 advancedSection
                 dataSection
                 dangerZoneSection
+                aboutSection
                 footer
             }
         }
@@ -277,6 +279,9 @@ public struct SettingsScreen: View {
                 }
             }
         )
+        .sheet(isPresented: $showAbout) {
+            AboutSheet(onClose: { showAbout = false })
+        }
         .onChange(of: scrollResetToken) { _, _ in
             withAnimation(.easeInOut(duration: 0.25)) {
                 proxy.scrollTo(Self.scrollTopAnchor, anchor: .top)
@@ -797,16 +802,27 @@ public struct SettingsScreen: View {
         }
     }
 
+    // MARK: - About
+
+    private var aboutSection: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            KeylineSection("About", icon: "info.circle", iconTint: t.info)
+            CairnCard {
+                KeyValRow(
+                    "About cairn",
+                    value: AboutInfo.versionLabel,
+                    chevron: true,
+                    onTap: { showAbout = true }
+                )
+            }
+        }
+    }
+
     // MARK: - Footer
 
     private var footer: some View {
-        // Underlines previously suggested real links, but no URL is
-        // wired yet — reads like a broken tap target. Keep the text
-        // (brand/licence breadcrumb), drop the underlines until
-        // https://github.com/... + a privacy policy URL exist, at
-        // which point we'll swap these for `Link`.
         VStack(spacing: 2) {
-            Text.cairnWord + Text(" v0.2.0 · not affiliated with Immich")
+            Text.cairnWord + Text(" \(AboutInfo.versionLabel) · not affiliated with Immich")
             Text("MIT · open source · privacy")
         }
         .font(.system(size: 11))
@@ -815,6 +831,87 @@ public struct SettingsScreen: View {
         .padding(.horizontal, 28)
         .padding(.top, 16)
         .padding(.bottom, 24)
+    }
+}
+
+/// Static helpers reading the bundled marketing version + build
+/// number from `Info.plist`. Centralized so the footer, About
+/// sheet, and any future diagnostics surface stay consistent.
+enum AboutInfo {
+    static var version: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
+    }
+
+    static var build: String {
+        Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"
+    }
+
+    /// Compact "v0.1.0 (37)" used in row values + the footer.
+    static var versionLabel: String {
+        "v\(version) (\(build))"
+    }
+}
+
+/// Modal "About cairn" sheet surfaced from Settings → About.
+/// Shows the marketing version + build number alongside the
+/// project's brand statement and links. Kept deliberately spare —
+/// most users won't open it, and the few who do are mostly checking
+/// "what build am I on" before filing a bug.
+struct AboutSheet: View {
+    let onClose: () -> Void
+    @Environment(\.cairnTokens) private var t
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    VStack(alignment: .center, spacing: 12) {
+                        CairnMark(size: 64)
+                        VStack(spacing: 4) {
+                            Text.cairnWord
+                                .font(.system(size: 28, weight: .semibold))
+                            Text(AboutInfo.versionLabel)
+                                .font(.system(size: 14, design: .monospaced))
+                                .foregroundStyle(t.textHint)
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 12)
+
+                    CairnCard {
+                        VStack(alignment: .leading, spacing: 0) {
+                            KeyValRow("Marketing version", value: AboutInfo.version, mono: true)
+                            Divider().background(t.divider)
+                            KeyValRow("Build", value: AboutInfo.build, mono: true)
+                        }
+                    }
+                    .padding(.horizontal, 16)
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("cairn propagates iPhone Photos deletions to a self-hosted Immich server. Not affiliated with Immich.")
+                            .font(.system(size: 13))
+                            .foregroundStyle(t.textBody)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Text("MIT-licensed · open source.")
+                            .font(.system(size: 12))
+                            .foregroundStyle(t.textHint)
+                    }
+                    .padding(.horizontal, 16)
+
+                    Spacer(minLength: 24)
+                }
+            }
+            .background(t.bg)
+            .navigationTitle("About")
+            #if canImport(UIKit)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done", action: onClose)
+                }
+            }
+        }
     }
 }
 
