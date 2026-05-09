@@ -176,7 +176,13 @@ public struct RunDetailSheet: View {
     }
 
     private var headerTitle: String {
-        if run.status == .aborted { return "Stopped by safety rail" }
+        if run.status == .aborted {
+            // Differentiate safety-rail aborts (the user-intent-refused
+            // case) from network/unexpected failures. Prior versions
+            // hardcoded "Stopped by safety rail" for every aborted run,
+            // which was misleading for connectivity-class failures.
+            return abortedClassification.headerTitle
+        }
         if run.status == .restored {
             let suffix = run.restored == 1 ? "" : "s"
             return "\(run.restored) asset\(suffix) restored"
@@ -184,6 +190,50 @@ public struct RunDetailSheet: View {
         if run.dryRun { return "Preview only — nothing touched" }
         let suffix = run.trashed == 1 ? "" : "s"
         return "\(run.trashed) asset\(suffix) moved to Trash"
+    }
+
+    /// Classify an aborted run from its `notes` payload (which JournalReader
+    /// formats as `"aborted · <reason>"`). The classification picks the
+    /// header title and callout copy.
+    private var abortedClassification: AbortedClassification {
+        let prefix = "aborted · "
+        let reason: String = {
+            if run.notes.lowercased().hasPrefix(prefix) {
+                return String(run.notes.dropFirst(prefix.count))
+            }
+            return run.notes
+        }()
+        if reason.hasPrefix("thresholdexceeded") {
+            return .safetyRail(reason: reason)
+        }
+        if reason.hasPrefix("emptyserverresponse") {
+            return .emptyServer
+        }
+        if reason.hasPrefix("emptylocallibrary") {
+            return .emptyLocal
+        }
+        if reason.hasPrefix("firstrunnotdryrun") {
+            return .firstRunNotDryRun
+        }
+        return .unexpected(reason: reason)
+    }
+
+    private enum AbortedClassification {
+        case safetyRail(reason: String)
+        case emptyServer
+        case emptyLocal
+        case firstRunNotDryRun
+        case unexpected(reason: String)
+
+        var headerTitle: String {
+            switch self {
+            case .safetyRail:       return "Stopped by safety rail"
+            case .emptyServer:      return "Server returned no assets"
+            case .emptyLocal:       return "Local library is empty"
+            case .firstRunNotDryRun:return "First run must be a dry-run"
+            case .unexpected:       return "Trash didn't finish"
+            }
+        }
     }
 
     // MARK: - Body
@@ -291,19 +341,86 @@ public struct RunDetailSheet: View {
 
     // MARK: - Callouts
 
+    @ViewBuilder
     private var abortedCallout: some View {
-        // from screens/run-detail.jsx — the "Percent threshold exceeded"
-        // callout. Numbers here mirror the prototype's hardcoded scenario.
-        Callout(.danger, icon: "exclamationmark.triangle") {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Percent threshold exceeded").fontWeight(.semibold)
-                Text("2.3% of matched assets would have moved to Immich's Trash. Your cap is 1.0%. Nothing was touched.")
-                    .opacity(0.9)
-                    .fixedSize(horizontal: false, vertical: true)
+        switch abortedClassification {
+        case .safetyRail(let reason):
+            Callout(.danger, icon: "exclamationmark.triangle") {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Percent threshold exceeded").fontWeight(.semibold)
+                    Text(safetyRailMessage(from: reason))
+                        .opacity(0.9)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 10)
+        case .emptyServer:
+            Callout(.pending, icon: "exclamationmark.triangle") {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Server returned no assets").fontWeight(.semibold)
+                    Text("cairn refused to act on what looked like a transient API problem. Nothing was touched.")
+                        .opacity(0.9)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 10)
+        case .emptyLocal:
+            Callout(.pending, icon: "exclamationmark.triangle") {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Local library is empty").fontWeight(.semibold)
+                    Text("Photos permission may have been revoked, or the library scan hadn't completed. Nothing was touched.")
+                        .opacity(0.9)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 10)
+        case .firstRunNotDryRun:
+            Callout(.pending, icon: "exclamationmark.triangle") {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("First run must be a dry-run").fontWeight(.semibold)
+                    Text("cairn requires a preview before the first real trash on a fresh observed store.")
+                        .opacity(0.9)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 10)
+        case .unexpected(let reason):
+            Callout(.pending, icon: "exclamationmark.triangle") {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Trash didn't finish").fontWeight(.semibold)
+                    Text(reason).opacity(0.9)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 10)
+        }
+    }
+
+    /// Parse a thresholdExceeded reason like
+    /// `"thresholdexceeded — would delete 12 of 1024 in-purview assets (1.17%); limit is 1.00%"`
+    /// into a user-facing sentence with the actual percentages.
+    private func safetyRailMessage(from reason: String) -> String {
+        if let percentRange = reason.range(of: "%);"),
+           let limitRange = reason.range(of: "limit is ") {
+            let beforePercent = reason[..<percentRange.lowerBound]
+            if let openParen = beforePercent.lastIndex(of: "("),
+               let percentValue = Double(beforePercent[beforePercent.index(after: openParen)...]) {
+                let afterLimit = reason[limitRange.upperBound...]
+                let limitDigits = afterLimit.prefix(while: { $0.isNumber || $0 == "." })
+                if let limitValue = Double(limitDigits) {
+                    return String(
+                        format: "%.1f%% of matched assets would have moved to Immich's Trash. Your cap is %.1f%%. Nothing was touched.",
+                        percentValue, limitValue
+                    )
+                }
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.bottom, 10)
+        return "The percent safety rail tripped. Nothing was touched."
     }
 
     private func justRestoredFlash(count: Int) -> some View {
