@@ -152,6 +152,30 @@ platform :ios do
     UI.success "🚀 Uploaded to TestFlight"
   end
 
+  desc "List recent TestFlight builds and their processing state"
+  lane :status do
+    app_store_connect_api_key(
+      key_id:       ENV["APP_STORE_CONNECT_API_KEY_KEY_ID"],
+      issuer_id:    ENV["APP_STORE_CONNECT_API_KEY_ISSUER_ID"],
+      key_filepath: ENV["APP_STORE_CONNECT_API_KEY_KEY_FILEPATH"]
+    )
+    app = Spaceship::ConnectAPI::App.all.find { |a| a.bundle_id == "app.cairn.ios" }
+    UI.user_error!("App app.cairn.ios not visible to API key") unless app
+    builds = Spaceship::ConnectAPI::Build.all(
+      app_id: app.id,
+      sort: "-uploadedDate",
+      limit: 5,
+      includes: "preReleaseVersion,buildBetaDetail"
+    )
+    builds.each do |b|
+      ver = b.pre_release_version&.version || "?"
+      detail = b.build_beta_detail
+      ext_state = detail&.external_build_state || "n/a"
+      int_state = detail&.internal_build_state || "n/a"
+      UI.message "build #{b.version} (#{ver}) — processing=#{b.processing_state} internal=#{int_state} external=#{ext_state} uploaded=#{b.uploaded_date}"
+    end
+  end
+
   desc "Push App Store listing metadata + screenshots without rebuilding"
   lane :metadata do
     # Pushes everything in fastlane/metadata/ + the curated screenshot
