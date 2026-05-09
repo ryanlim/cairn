@@ -25,6 +25,47 @@ struct GlobalOptions: ParsableArguments {
     var envFile: String = ".env"
 }
 
+/// Options shared by `dry-run` and `trash` — anything that
+/// configures the reconciliation pipeline rather than the destructive
+/// commit step. Consumed via `@OptionGroup` so the two commands can't
+/// drift in their flag names, defaults, or help text. Anything
+/// unique to `trash` (journal path, --yes, --run-id) stays inline on
+/// that command.
+struct ReconciliationOptions: ParsableArguments {
+    @Option(
+        name: .long,
+        help: "Path to a file with one base64 SHA1 checksum per line representing the photos currently on the device."
+    )
+    var localChecksumsFile: String
+
+    @Option(
+        name: .long,
+        help: "Path to the persistent observed checksum store (JSON). Created if absent."
+    )
+    var observedStore: String = "observed.json"
+
+    @Option(name: .long, help: "Abort if more than this percent (0–100) of in-purview assets would be deleted. Default: 1 (one percent).")
+    var maxDeletePercent: Double = 1.0
+
+    @Option(name: .long, help: "Threshold-percent abort fires only above this absolute candidate count. Lets small libraries delete a few photos at a time without spurious aborts.")
+    var minDeleteCountForThreshold: Int = 5
+
+    @Option(name: .long, help: "Path to the persistent exclusion store (JSON). Checksums in this file are protected from trashing on every run.")
+    var exclusionsStore: String = "exclusions.json"
+
+    @Option(name: .long, help: "Path to the persistent confirmed-deleted store (JSON). Accumulates positive deletion signals derived from snapshot-diff between runs.")
+    var confirmedDeletedStore: String = "confirmed-deleted.json"
+
+    @Option(name: .long, help: "Path to the persistent local-snapshot file (JSON list of base64 SHA1s). Diffed against --local-checksums-file between runs to produce the positive-deletion signal.")
+    var localSnapshotFile: String = "local-snapshot.json"
+
+    @Option(name: .long, help: "Days a confirmed-deleted checksum must age before it's eligible to trash. 0 disables quarantine. Default: 14.")
+    var quarantineDays: Int = 14
+
+    @Option(name: .long, help: "Deletion strictness: trusting (diff candidates eligible once past quarantine; default) or strict (additionally holds unconfirmed diff candidates for manual review). Quarantine provides the primary safety window; .strict is an extra-paranoid layer on top.")
+    var strictness: DeletionStrictness = .trusting
+}
+
 /// Load the `.env` at `opts.envFile` into the process environment and build an
 /// `ImmichClient` from `IMMICH_URL` + `IMMICH_API_KEY`. Throws if either
 /// secret is missing; the resulting error message surfaces to the user
@@ -158,51 +199,19 @@ struct DryRun: AsyncParsableCommand {
     )
 
     @OptionGroup var globals: GlobalOptions
-
-    @Option(
-        name: .long,
-        help: "Path to a file with one base64 SHA1 checksum per line representing the photos currently on the device."
-    )
-    var localChecksumsFile: String
-
-    @Option(
-        name: .long,
-        help: "Path to the persistent observed checksum store (JSON). Created if absent."
-    )
-    var observedStore: String = "observed.json"
-
-    @Option(name: .long, help: "Abort if more than this percent (0–100) of in-purview assets would be deleted. Default: 1 (one percent).")
-    var maxDeletePercent: Double = 1.0
-
-    @Option(name: .long, help: "Threshold-percent abort fires only above this absolute candidate count. Lets small libraries delete a few photos at a time without spurious aborts.")
-    var minDeleteCountForThreshold: Int = 5
-
-    @Option(name: .long, help: "Path to the persistent exclusion store (JSON). Checksums in this file are protected from trashing on every run.")
-    var exclusionsStore: String = "exclusions.json"
-
-    @Option(name: .long, help: "Path to the persistent confirmed-deleted store (JSON). Accumulates positive deletion signals derived from snapshot-diff between runs.")
-    var confirmedDeletedStore: String = "confirmed-deleted.json"
-
-    @Option(name: .long, help: "Path to the persistent local-snapshot file (JSON list of base64 SHA1s). Diffed against --local-checksums-file between runs to produce the positive-deletion signal.")
-    var localSnapshotFile: String = "local-snapshot.json"
-
-    @Option(name: .long, help: "Days a confirmed-deleted checksum must age before it's eligible to trash. 0 disables quarantine. Default: 14.")
-    var quarantineDays: Int = 14
-
-    @Option(name: .long, help: "Deletion strictness: trusting (diff candidates eligible once past quarantine; default) or strict (additionally holds unconfirmed diff candidates for manual review). Quarantine provides the primary safety window; .strict is an extra-paranoid layer on top.")
-    var strictness: DeletionStrictness = .trusting
+    @OptionGroup var recon: ReconciliationOptions
 
     func run() async throws {
         let client = try loadClient(globals)
-        let photos = ChecksumFilePhotoEnumerator(filePath: localChecksumsFile)
-        let store = JSONFileObservedStore(filePath: observedStore)
-        let exclusions = JSONFileExclusionStore(filePath: exclusionsStore)
-        let confirmed = JSONFileConfirmedDeletedStore(filePath: confirmedDeletedStore)
+        let photos = ChecksumFilePhotoEnumerator(filePath: recon.localChecksumsFile)
+        let store = JSONFileObservedStore(filePath: recon.observedStore)
+        let exclusions = JSONFileExclusionStore(filePath: recon.exclusionsStore)
+        let confirmed = JSONFileConfirmedDeletedStore(filePath: recon.confirmedDeletedStore)
 
         let local = try await photos.currentChecksums()
         let (removed, added) = try await updateConfirmedFromSnapshotDiff(
             currentLocal: local,
-            snapshotPath: localSnapshotFile,
+            snapshotPath: recon.localSnapshotFile,
             confirmed: confirmed
         )
 
@@ -215,7 +224,7 @@ struct DryRun: AsyncParsableCommand {
         print("observed (before): \(observedBefore.count)\(isFirstRun ? "  [first run]" : "")")
         if !excludedSet.isEmpty { print("excluded checksums: \(excludedSet.count)") }
         print("confirmed-deleted: \(confirmedMap.count)  (+\(removed.count) confirmed, -\(added.count) un-confirmed on this scan)")
-        print("strictness: \(strictness.rawValue)  quarantineDays: \(quarantineDays)")
+        print("strictness: \(recon.strictness.rawValue)  quarantineDays: \(recon.quarantineDays)")
         print("fetching server assets…")
 
         let allServer = try await client.listAllAssets()
@@ -228,8 +237,8 @@ struct DryRun: AsyncParsableCommand {
             excludedChecksums: excludedSet,
             confirmedDeletedAt: confirmedMap,
             now: Date(),
-            quarantineDays: quarantineDays,
-            strictness: strictness
+            quarantineDays: recon.quarantineDays,
+            strictness: recon.strictness
         ))
 
         print("newly-observed local checksums (would be added to observed): \(result.newlyObservedChecksums.count)")
@@ -252,8 +261,8 @@ struct DryRun: AsyncParsableCommand {
             isFirstRun: isFirstRun,
             isDryRun: true,
             config: .init(
-                maxDeletePercent: maxDeletePercent / 100.0,
-                minDeleteCountForThreshold: minDeleteCountForThreshold
+                maxDeletePercent: recon.maxDeletePercent / 100.0,
+                minDeleteCountForThreshold: recon.minDeleteCountForThreshold
             )
         )
 
@@ -283,9 +292,9 @@ struct DryRun: AsyncParsableCommand {
         // we're suppressing. This makes repeated dry-runs converge correctly.
         try await store.union(local)
         let observedAfter = try await store.snapshot()
-        print("observed (after): \(observedAfter.count)  → \(observedStore)")
+        print("observed (after): \(observedAfter.count)  → \(recon.observedStore)")
         let confirmedAfter = try await confirmed.snapshot()
-        print("confirmed-deleted (after): \(confirmedAfter.count)  → \(confirmedDeletedStore)")
+        print("confirmed-deleted (after): \(confirmedAfter.count)  → \(recon.confirmedDeletedStore)")
     }
 }
 
@@ -313,21 +322,10 @@ struct Trash: AsyncParsableCommand {
     )
 
     @OptionGroup var globals: GlobalOptions
-
-    @Option(name: .long, help: "Path to a file with one base64 SHA1 checksum per line representing the photos currently on the device.")
-    var localChecksumsFile: String
-
-    @Option(name: .long, help: "Path to the persistent observed checksum store (JSON). Created if absent.")
-    var observedStore: String = "observed.json"
+    @OptionGroup var recon: ReconciliationOptions
 
     @Option(name: .long, help: "Path to the append-only deletion journal (JSONL).")
     var journal: String = "deletion-journal.jsonl"
-
-    @Option(name: .long, help: "Abort if more than this percent (0–100) of in-purview assets would be deleted. Default: 1.")
-    var maxDeletePercent: Double = 1.0
-
-    @Option(name: .long, help: "Threshold-percent abort fires only above this absolute candidate count.")
-    var minDeleteCountForThreshold: Int = 5
 
     @Flag(name: .long, help: "Skip interactive confirmation. Required for non-interactive use; otherwise the command pauses for a y/N prompt before deleting.")
     var yes: Bool = false
@@ -335,32 +333,17 @@ struct Trash: AsyncParsableCommand {
     @Option(name: .long, help: "Override the run ID (default: timestamped UUID). Useful for resuming or for deterministic tests.")
     var runId: String?
 
-    @Option(name: .long, help: "Path to the persistent exclusion store (JSON). Checksums in this file are protected from trashing on every run.")
-    var exclusionsStore: String = "exclusions.json"
-
-    @Option(name: .long, help: "Path to the persistent confirmed-deleted store (JSON). Accumulates positive deletion signals derived from snapshot-diff between runs.")
-    var confirmedDeletedStore: String = "confirmed-deleted.json"
-
-    @Option(name: .long, help: "Path to the persistent local-snapshot file (JSON list of base64 SHA1s). Diffed against --local-checksums-file between runs to produce the positive-deletion signal.")
-    var localSnapshotFile: String = "local-snapshot.json"
-
-    @Option(name: .long, help: "Days a confirmed-deleted checksum must age before it's eligible to trash. 0 disables quarantine. Default: 14.")
-    var quarantineDays: Int = 14
-
-    @Option(name: .long, help: "Deletion strictness: trusting (diff candidates eligible once past quarantine; default) or strict (additionally holds unconfirmed diff candidates for manual review). Quarantine provides the primary safety window; .strict is an extra-paranoid layer on top.")
-    var strictness: DeletionStrictness = .trusting
-
     func run() async throws {
         let client = try loadClient(globals)
-        let photos = ChecksumFilePhotoEnumerator(filePath: localChecksumsFile)
-        let store = JSONFileObservedStore(filePath: observedStore)
-        let exclusions = JSONFileExclusionStore(filePath: exclusionsStore)
-        let confirmed = JSONFileConfirmedDeletedStore(filePath: confirmedDeletedStore)
+        let photos = ChecksumFilePhotoEnumerator(filePath: recon.localChecksumsFile)
+        let store = JSONFileObservedStore(filePath: recon.observedStore)
+        let exclusions = JSONFileExclusionStore(filePath: recon.exclusionsStore)
+        let confirmed = JSONFileConfirmedDeletedStore(filePath: recon.confirmedDeletedStore)
 
         let local = try await photos.currentChecksums()
         let (removed, added) = try await updateConfirmedFromSnapshotDiff(
             currentLocal: local,
-            snapshotPath: localSnapshotFile,
+            snapshotPath: recon.localSnapshotFile,
             confirmed: confirmed
         )
 
@@ -377,41 +360,41 @@ struct Trash: AsyncParsableCommand {
         print("observed (before): \(observedBefore.count)")
         if !excludedSet.isEmpty { print("excluded checksums: \(excludedSet.count)") }
         print("confirmed-deleted: \(confirmedMap.count)  (+\(removed.count) confirmed, -\(added.count) un-confirmed on this scan)")
-        print("strictness: \(strictness.rawValue)  quarantineDays: \(quarantineDays)")
+        print("strictness: \(recon.strictness.rawValue)  quarantineDays: \(recon.quarantineDays)")
         print("fetching server assets…")
         let allServer = try await client.listAllAssets()
         print("server assets (excluding trashed): \(allServer.count)")
 
-        let recon = ReconciliationEngine.compute(.init(
+        let reconciliation = ReconciliationEngine.compute(.init(
             serverAssets: allServer,
             currentLocalChecksums: local,
             observedChecksums: observedBefore,
             excludedChecksums: excludedSet,
             confirmedDeletedAt: confirmedMap,
             now: Date(),
-            quarantineDays: quarantineDays,
-            strictness: strictness
+            quarantineDays: recon.quarantineDays,
+            strictness: recon.strictness
         ))
-        if recon.excludedCandidateCount > 0 {
-            print("excluded by allowlist (would-be candidates skipped): \(recon.excludedCandidateCount)")
+        if reconciliation.excludedCandidateCount > 0 {
+            print("excluded by allowlist (would-be candidates skipped): \(reconciliation.excludedCandidateCount)")
         }
-        print("delete candidates: \(recon.deleteCandidates.count)")
-        if !recon.pendingReviewCandidates.isEmpty {
-            print("pending review (strict-mode holdback, not yet confirmed deleted): \(recon.pendingReviewCandidates.count)")
+        print("delete candidates: \(reconciliation.deleteCandidates.count)")
+        if !reconciliation.pendingReviewCandidates.isEmpty {
+            print("pending review (strict-mode holdback, not yet confirmed deleted): \(reconciliation.pendingReviewCandidates.count)")
         }
-        if !recon.heldByQuarantineCandidates.isEmpty {
-            print("held by quarantine: \(recon.heldByQuarantineCandidates.count)")
+        if !reconciliation.heldByQuarantineCandidates.isEmpty {
+            print("held by quarantine: \(reconciliation.heldByQuarantineCandidates.count)")
         }
 
         let safety = SafetyRails.evaluate(
-            reconciliation: recon,
+            reconciliation: reconciliation,
             totalServerAssets: allServer.count,
             currentLocalCount: local.count,
             isFirstRun: isFirstRun,
             isDryRun: false,
             config: .init(
-                maxDeletePercent: maxDeletePercent / 100.0,
-                minDeleteCountForThreshold: minDeleteCountForThreshold
+                maxDeletePercent: recon.maxDeletePercent / 100.0,
+                minDeleteCountForThreshold: recon.minDeleteCountForThreshold
             )
         )
 
@@ -428,19 +411,19 @@ struct Trash: AsyncParsableCommand {
 
         // Journal pending-review holdback even if we have nothing to trash —
         // the user / iOS app needs to know these assets are awaiting approval.
-        if !recon.pendingReviewCandidates.isEmpty {
+        if !reconciliation.pendingReviewCandidates.isEmpty {
             try await journalActor.append(.init(
                 runId: resolvedRunId,
                 event: .pendingReview(
-                    assetIds: recon.pendingReviewCandidates.map(\.id),
-                    checksums: recon.pendingReviewCandidates.map(\.checksum.base64)
+                    assetIds: reconciliation.pendingReviewCandidates.map(\.id),
+                    checksums: reconciliation.pendingReviewCandidates.map(\.checksum.base64)
                 )
             ))
-            print("\njournaled pending-review event for \(recon.pendingReviewCandidates.count) asset(s) under run-id \(resolvedRunId).")
+            print("\njournaled pending-review event for \(reconciliation.pendingReviewCandidates.count) asset(s) under run-id \(resolvedRunId).")
         }
 
-        if recon.deleteCandidates.isEmpty {
-            if recon.pendingReviewCandidates.isEmpty {
+        if reconciliation.deleteCandidates.isEmpty {
+            if reconciliation.pendingReviewCandidates.isEmpty {
                 print("nothing to do.")
             } else {
                 print("nothing eligible to trash (pending-review only). Approve via the iOS app or rerun with --strictness trusting.")
@@ -449,12 +432,12 @@ struct Trash: AsyncParsableCommand {
         }
 
         print("\nfirst up to 20 candidates:")
-        for asset in recon.deleteCandidates.prefix(20) {
+        for asset in reconciliation.deleteCandidates.prefix(20) {
             let live = asset.livePhotoVideoId.map { " (livePhotoVideo: \($0))" } ?? ""
             print("  \(asset.id)  \(asset.checksum)\(live)")
         }
-        if recon.deleteCandidates.count > 20 {
-            print("  … and \(recon.deleteCandidates.count - 20) more")
+        if reconciliation.deleteCandidates.count > 20 {
+            print("  … and \(reconciliation.deleteCandidates.count - 20) more")
         }
 
         if !yes {
@@ -462,7 +445,7 @@ struct Trash: AsyncParsableCommand {
             print("breadcrumb tag will be: \(TagSchema.runTagValue(runId: resolvedRunId))")
             print("journal: \(journal)")
             // First confirm: intent.
-            print("\nMove \(recon.deleteCandidates.count) assets to trash? [y/N] ", terminator: "")
+            print("\nMove \(reconciliation.deleteCandidates.count) assets to trash? [y/N] ", terminator: "")
             let first = readLine() ?? ""
             if first.lowercased() != "y" && first.lowercased() != "yes" {
                 print("aborted by user.")
@@ -471,7 +454,7 @@ struct Trash: AsyncParsableCommand {
             // Second confirm: dangerous-action acknowledgement, mirrors the iOS
             // "Yes, trash N" rust-banner pattern. Two-confirm is design-mandated
             // for live trash (see HANDOFF.md "Two-confirm trash path").
-            print("Yes, trash \(recon.deleteCandidates.count). They'll be recoverable in Immich trash for 30 days. [y/N] ", terminator: "")
+            print("Yes, trash \(reconciliation.deleteCandidates.count). They'll be recoverable in Immich trash for 30 days. [y/N] ", terminator: "")
             let second = readLine() ?? ""
             if second.lowercased() != "y" && second.lowercased() != "yes" {
                 print("aborted by user.")
@@ -482,8 +465,8 @@ struct Trash: AsyncParsableCommand {
         let orchestrator = TrashOrchestrator(writer: client, journal: journalActor)
         let summary = try await orchestrator.run(
             runId: resolvedRunId,
-            candidates: recon.deleteCandidates,
-            assetsInPurview: recon.assetsInObserved,
+            candidates: reconciliation.deleteCandidates,
+            assetsInPurview: reconciliation.assetsInObserved,
             dryRun: false
         )
 
@@ -495,7 +478,7 @@ struct Trash: AsyncParsableCommand {
 
         try await store.union(local)
         let observedAfter = try await store.snapshot()
-        print("observed (after): \(observedAfter.count)  → \(observedStore)")
+        print("observed (after): \(observedAfter.count)  → \(recon.observedStore)")
     }
 }
 
