@@ -2138,6 +2138,28 @@ final class AppDependencies {
                 return "An asset had no readable bytes (\(id.prefix(8))…). Skipped."
             }
         }
+        // Map the common URLError codes to plain-language messages.
+        // Network-down is the single most likely failure mode here
+        // (the Immich server lives on a NAS, home VPS, or Tailscale-
+        // exposed home box — any of which can be offline transiently),
+        // so the raw URLError(_nsError:...) the default `describing`
+        // produces is the worst error message a user is likely to see.
+        if let e = error as? URLError {
+            switch e.code {
+            case .notConnectedToInternet, .networkConnectionLost:
+                return "No internet connection. cairn will retry when you're back online."
+            case .timedOut:
+                return "The Immich server took too long to respond. It may be busy or offline."
+            case .cannotFindHost, .dnsLookupFailed:
+                return "Can't find the Immich server. Check the URL in Settings, or whether your VPN/Tailscale is up."
+            case .cannotConnectToHost:
+                return "Can't reach the Immich server — connection refused. Is it running?"
+            case .secureConnectionFailed, .serverCertificateUntrusted, .serverCertificateHasBadDate, .serverCertificateNotYetValid, .serverCertificateHasUnknownRoot:
+                return "TLS handshake failed. Check the server's certificate."
+            default:
+                return "Network error: \(e.localizedDescription)"
+            }
+        }
         return String(describing: error)
     }
 
