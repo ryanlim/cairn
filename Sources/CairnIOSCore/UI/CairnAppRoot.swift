@@ -604,9 +604,7 @@ public struct CairnAppRoot: View {
                 forceTripped: forceTripped,
                 onClose: { model.presentedSheet = nil },
                 onConfirm: {
-                    Task { @MainActor in
-                        try? await model.actions.confirmTrash()
-                    }
+                    try? await model.actions.confirmTrash()
                 }
             )
             .cairnTheme(palette)

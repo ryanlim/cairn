@@ -28,7 +28,14 @@ public struct DryRunSheet: View {
     public let minDeleteFloor: Int
     public let forceTripped: Bool
     public let onClose: () -> Void
-    public let onConfirm: () -> Void
+    /// Runs the actual orchestrator call. Awaited from `runIt()` so the
+    /// "running" phase reflects real work in flight and the "done"
+    /// phase only appears after `onConfirm` returns. The previous
+    /// `() -> Void` signature meant the sheet showed a fake 2-second
+    /// success animation before the host had even started trashing —
+    /// dismissing the sheet during that window (swipe or tap-away)
+    /// silently skipped the actual trash call.
+    public let onConfirm: () async -> Void
 
     @State private var phase: Phase = .review
     @State private var sort: Sort = .recent
@@ -44,7 +51,7 @@ public struct DryRunSheet: View {
         minDeleteFloor: Int = 5,
         forceTripped: Bool = false,
         onClose: @escaping () -> Void = {},
-        onConfirm: @escaping () -> Void = {}
+        onConfirm: @escaping () async -> Void = {}
     ) {
         self.candidates = candidates
         self.library = library
@@ -420,7 +427,6 @@ public struct DryRunSheet: View {
                 .frame(maxWidth: 280)
 
             ActionButton(label: "Back to status", role: .primary) {
-                onConfirm()
                 onClose()
             }
             .padding(.top, 8)
@@ -429,9 +435,8 @@ public struct DryRunSheet: View {
 
     private func runIt() {
         phase = .running
-        // Simulated work for the preview animation; real implementation calls
-        // through the orchestrator and transitions on completion.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+        Task { @MainActor in
+            await onConfirm()
             phase = .done
         }
     }
