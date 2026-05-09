@@ -2,6 +2,31 @@ import Foundation
 import Testing
 @testable import CairnCore
 
+/// Stable, explicit name for each `JournalEntry.Event` case. Use this
+/// instead of `String(describing: event)` — the latter relies on
+/// Swift's enum-case-printing format (case name followed by associated
+/// values in parens), which is not part of any stable API. A Swift
+/// upgrade or associated-value-shape change to one of these cases
+/// could silently break every `hasPrefix(...)` assertion.
+fileprivate func eventName(_ event: JournalEntry.Event) -> String {
+    switch event {
+    case .runStarted: return "runStarted"
+    case .planningTrash: return "planningTrash"
+    case .tagApplied: return "tagApplied"
+    case .trashSucceeded: return "trashSucceeded"
+    case .trashFailed: return "trashFailed"
+    case .runCompleted: return "runCompleted"
+    case .runAborted: return "runAborted"
+    case .restoreStarted: return "restoreStarted"
+    case .restoreSucceeded: return "restoreSucceeded"
+    case .restoreFailed: return "restoreFailed"
+    case .assetsExcluded: return "assetsExcluded"
+    case .pendingReview: return "pendingReview"
+    case .syncCompleted: return "syncCompleted"
+    case .syncTransitions: return "syncTransitions"
+    }
+}
+
 @Suite("TrashOrchestrator")
 struct TrashOrchestratorTests {
 
@@ -34,12 +59,12 @@ struct TrashOrchestratorTests {
         #expect(await writer.trashedBatches == [["a1", "a2"]])
 
         let entries = try await journal.readAll()
-        let kinds = entries.map { String(describing: $0.event).prefix(20) }
-        #expect(kinds.contains(where: { $0.hasPrefix("runStarted") }))
-        #expect(kinds.contains(where: { $0.hasPrefix("planningTrash") }))
-        #expect(kinds.contains(where: { $0.hasPrefix("tagApplied") }))
-        #expect(kinds.contains(where: { $0.hasPrefix("trashSucceeded") }))
-        #expect(kinds.contains(where: { $0.hasPrefix("runCompleted") }))
+        let kinds = entries.map { eventName($0.event) }
+        #expect(kinds.contains("runStarted"))
+        #expect(kinds.contains("planningTrash"))
+        #expect(kinds.contains("tagApplied"))
+        #expect(kinds.contains("trashSucceeded"))
+        #expect(kinds.contains("runCompleted"))
     }
 
     @Test("Live Photo: linked motion video UUID is included in the trash batch")
@@ -167,14 +192,14 @@ struct TrashOrchestratorTests {
         #expect(await writer.trashedBatches.isEmpty)
 
         let entries = try await journal.readAll()
-        let events = entries.map { String(describing: $0.event) }
-        #expect(events.contains { $0.hasPrefix("runStarted") })
-        #expect(events.contains { $0.hasPrefix("planningTrash") })
-        #expect(events.contains { $0.hasPrefix("runAborted") })
-        #expect(!events.contains { $0.hasPrefix("tagApplied") })
-        #expect(!events.contains { $0.hasPrefix("trashSucceeded") })
-        #expect(!events.contains { $0.hasPrefix("trashFailed") })
-        #expect(!events.contains { $0.hasPrefix("runCompleted") })
+        let events = entries.map { eventName($0.event) }
+        #expect(events.contains("runStarted"))
+        #expect(events.contains("planningTrash"))
+        #expect(events.contains("runAborted"))
+        #expect(!events.contains("tagApplied"))
+        #expect(!events.contains("trashSucceeded"))
+        #expect(!events.contains("trashFailed"))
+        #expect(!events.contains("runCompleted"))
     }
 
     /// `bulkTagAssets` runs after `upsertTag`. If it 500s the tag is
@@ -215,14 +240,14 @@ struct TrashOrchestratorTests {
         #expect(await writer.deletedTagIds == ["tag-uuid-1"])
 
         let entries = try await journal.readAll()
-        let events = entries.map { String(describing: $0.event) }
-        #expect(events.contains { $0.hasPrefix("runStarted") })
-        #expect(events.contains { $0.hasPrefix("planningTrash") })
-        #expect(events.contains { $0.hasPrefix("runAborted") })
-        #expect(!events.contains { $0.hasPrefix("tagApplied") })
-        #expect(!events.contains { $0.hasPrefix("trashSucceeded") })
-        #expect(!events.contains { $0.hasPrefix("trashFailed") })
-        #expect(!events.contains { $0.hasPrefix("runCompleted") })
+        let events = entries.map { eventName($0.event) }
+        #expect(events.contains("runStarted"))
+        #expect(events.contains("planningTrash"))
+        #expect(events.contains("runAborted"))
+        #expect(!events.contains("tagApplied"))
+        #expect(!events.contains("trashSucceeded"))
+        #expect(!events.contains("trashFailed"))
+        #expect(!events.contains("runCompleted"))
     }
 
     /// If the cleanup `deleteTag` ALSO fails (e.g. server now down),
@@ -278,18 +303,7 @@ struct TrashOrchestratorTests {
         )
 
         let entries = try await journal.readAll()
-        let kinds: [String] = entries.map {
-            switch $0.event {
-            case .runStarted: return "runStarted"
-            case .planningTrash: return "planningTrash"
-            case .tagApplied: return "tagApplied"
-            case .trashSucceeded: return "trashSucceeded"
-            case .trashFailed: return "trashFailed"
-            case .runCompleted: return "runCompleted"
-            case .runAborted: return "runAborted"
-            default: return "other"
-            }
-        }
+        let kinds = entries.map { eventName($0.event) }
         #expect(kinds == ["runStarted", "planningTrash", "runAborted"])
     }
 
@@ -315,18 +329,7 @@ struct TrashOrchestratorTests {
         )
 
         let entries = try await journal.readAll()
-        let kinds: [String] = entries.map {
-            switch $0.event {
-            case .runStarted: return "runStarted"
-            case .planningTrash: return "planningTrash"
-            case .tagApplied: return "tagApplied"
-            case .trashSucceeded: return "trashSucceeded"
-            case .trashFailed: return "trashFailed"
-            case .runCompleted: return "runCompleted"
-            case .runAborted: return "runAborted"
-            default: return "other"
-            }
-        }
+        let kinds = entries.map { eventName($0.event) }
         #expect(kinds == ["runStarted", "planningTrash", "runAborted"])
     }
 
@@ -391,10 +394,10 @@ struct TrashOrchestratorTests {
         // `emittedTerminal` flag prevents an extra `runAborted` or
         // `runCompleted` from landing on top of it.
         let entries = try await journal.readAll()
-        let events = entries.map { String(describing: $0.event) }
-        #expect(events.contains { $0.hasPrefix("tagApplied") })
-        #expect(events.contains { $0.hasPrefix("trashFailed") })
-        #expect(!events.contains { $0.hasPrefix("trashSucceeded") })
-        #expect(!events.contains { $0.hasPrefix("runCompleted") })
+        let events = entries.map { eventName($0.event) }
+        #expect(events.contains("tagApplied"))
+        #expect(events.contains("trashFailed"))
+        #expect(!events.contains("trashSucceeded"))
+        #expect(!events.contains("runCompleted"))
     }
 }

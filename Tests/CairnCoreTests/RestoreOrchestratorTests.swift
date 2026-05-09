@@ -238,7 +238,9 @@ struct RestoreOrchestratorTests {
         await writer.setFailRestore(FakeError(message: "server-503"))
         let orch = RestoreOrchestrator(writer: writer, journal: journal)
 
-        _ = try? await orch.restore(fromRunId: "R-ORDER")
+        await #expect(throws: FakeError.self) {
+            _ = try await orch.restore(fromRunId: "R-ORDER")
+        }
 
         // Filter to events from this restore call (skip the seed entries).
         let entries = try await journal.readAll()
@@ -267,7 +269,9 @@ struct RestoreOrchestratorTests {
         await writer.setFailRestore(FakeError(message: "trash-restore-503-rate-limited"))
         let orch = RestoreOrchestrator(writer: writer, journal: journal)
 
-        _ = try? await orch.restore(fromRunId: "R-MSG")
+        await #expect(throws: FakeError.self) {
+            _ = try await orch.restore(fromRunId: "R-MSG")
+        }
 
         let entries = try await journal.readAll()
         let messages = entries.compactMap { entry -> String? in
@@ -293,7 +297,9 @@ struct RestoreOrchestratorTests {
         await writer.setFailRestore(FakeError(message: "boom"))
         let orch = RestoreOrchestrator(writer: writer, journal: journal)
 
-        _ = try? await orch.restore(fromRunId: "R-SUB", assetIds: ["a2", "a3"])
+        await #expect(throws: FakeError.self) {
+            _ = try await orch.restore(fromRunId: "R-SUB", assetIds: ["a2", "a3"])
+        }
 
         let entries = try await journal.readAll()
         let failedIds = entries.compactMap { entry -> [String]? in
@@ -325,7 +331,9 @@ struct RestoreOrchestratorTests {
         await writer.setFailRestore(FakeError(message: "boom"))
         let orch = RestoreOrchestrator(writer: writer, journal: journal)
 
-        _ = try? await orch.restore(fromRunId: "LIVE-FAIL", assetIds: ["still-1"])
+        await #expect(throws: FakeError.self) {
+            _ = try await orch.restore(fromRunId: "LIVE-FAIL", assetIds: ["still-1"])
+        }
 
         let entries = try await journal.readAll()
         let failedIds = entries.compactMap { entry -> [String]? in
