@@ -2164,6 +2164,33 @@ final class AppDependencies {
         return String(describing: error)
     }
 
+    /// Classify an error as "Immich-unreachable-likely-transient" so
+    /// the model can dedup the modal alert (one per disconnected
+    /// session) versus always-pop errors (auth, permissions, malformed
+    /// input — these need user attention each time).
+    ///
+    /// HTTP-status errors from a reachable server (401/403/5xx) are
+    /// NOT counted as network-like, since the server's responding —
+    /// just unhappy. Pure transport failures and timeouts ARE.
+    nonisolated fileprivate static func isNetworkLikeError(_ error: Swift.Error) -> Bool {
+        if let e = error as? URLError {
+            switch e.code {
+            case .notConnectedToInternet,
+                 .networkConnectionLost,
+                 .timedOut,
+                 .cannotFindHost,
+                 .dnsLookupFailed,
+                 .cannotConnectToHost:
+                return true
+            default:
+                return false
+            }
+        }
+        let nsError = error as NSError
+        if nsError.domain == NSURLErrorDomain { return true }
+        return false
+    }
+
     // MARK: - Action wiring
 
     private func rewireActions() {
@@ -2243,6 +2270,11 @@ final class AppDependencies {
                         self.model.pausedSyncElapsedSeconds = nil
                         self.model.degraded = .none
                         self.lastSyncEndedAt = Date()
+                        // Reaching this point means we talked to Immich
+                        // successfully — clear any disconnect banner
+                        // and reset the alert-dedup flag so the next
+                        // disconnect re-pops the modal.
+                        self.model.recordSyncSuccess()
                     }
                     // Drain any failed-trash intents queued from
                     // earlier offline sessions. `force: false` honors
@@ -2276,9 +2308,10 @@ final class AppDependencies {
                 } catch {
                     let degraded = Self.degradedState(for: error)
                     let desc = Self.describeSyncError(error)
+                    let isNetwork = Self.isNetworkLikeError(error)
                     syncLog.info("[cairn.sync] requestSync failed: \(desc)")
                     await MainActor.run {
-                        self.model.lastError = desc
+                        self.model.recordSyncError(desc, isNetworkLike: isNetwork)
                         self.model.isSyncing = false
                         self.model.transitionSyncPhase(to: .idle)
                         self.model.syncProgress = nil
@@ -2323,6 +2356,10 @@ final class AppDependencies {
                                 candidates: max(0, current.candidates - trashedCount)
                             )
                         }
+                        // Trash succeeded → talked to Immich → clear
+                        // any disconnect banner and reset the alert
+                        // dedup flag.
+                        self.model.recordSyncSuccess()
                     }
                     await self.persistSnapshotFromModel()
                     await self.refreshRunsList()
@@ -2332,15 +2369,19 @@ final class AppDependencies {
                     // user's confirmed trash isn't dropped on the floor.
                     // The drain runs after every successful sync and on
                     // manual "Retry now" taps. The error message still
-                    // surfaces via `lastError` for immediate feedback.
+                    // surfaces for immediate feedback — but if we're
+                    // already in a known-disconnected session, only the
+                    // banner refreshes (no second modal alert).
                     await self.enqueueFailedTrash(
                         runId: runId,
                         candidates: live.deleteCandidates,
                         assetsInPurview: assetsInPurview,
                         error: error
                     )
+                    let desc = Self.describeSyncError(error)
+                    let isNetwork = Self.isNetworkLikeError(error)
                     await MainActor.run {
-                        self.model.lastError = Self.describeSyncError(error)
+                        self.model.recordSyncError(desc, isNetworkLike: isNetwork)
                     }
                     await self.refreshRunsList()
                     await self.refreshJournalTail()
@@ -2447,7 +2488,7 @@ final class AppDependencies {
                     // ... }`, so a re-throw silently vanishes anyway.
                     // Setting lastError is the single source of truth.
                     await MainActor.run {
-                        self.model.lastError = Self.describeSyncError(error)
+                        self.model.recordSyncError(Self.describeSyncError(error), isNetworkLike: Self.isNetworkLikeError(error))
                     }
                     await self.refreshRunsList()
                     await self.refreshJournalTail()
@@ -2479,7 +2520,7 @@ final class AppDependencies {
                     await self.refreshJournalTail()
                 } catch {
                     await MainActor.run {
-                        self.model.lastError = Self.describeSyncError(error)
+                        self.model.recordSyncError(Self.describeSyncError(error), isNetworkLike: Self.isNetworkLikeError(error))
                     }
                 }
                 _ = filenames
@@ -2493,7 +2534,7 @@ final class AppDependencies {
                     await self.refreshExcludedChecksums()
                 } catch {
                     await MainActor.run {
-                        self.model.lastError = Self.describeSyncError(error)
+                        self.model.recordSyncError(Self.describeSyncError(error), isNetworkLike: Self.isNetworkLikeError(error))
                     }
                 }
             },
@@ -2591,7 +2632,7 @@ final class AppDependencies {
                     // ... }`, so a re-throw silently vanishes anyway.
                     // Setting lastError is the single source of truth.
                     await MainActor.run {
-                        self.model.lastError = Self.describeSyncError(error)
+                        self.model.recordSyncError(Self.describeSyncError(error), isNetworkLike: Self.isNetworkLikeError(error))
                     }
                     await self.refreshRunsList()
                     await self.refreshJournalTail()
@@ -2644,7 +2685,7 @@ final class AppDependencies {
                     await self.refreshJournalTail()
                 } catch {
                     await MainActor.run {
-                        self.model.lastError = Self.describeSyncError(error)
+                        self.model.recordSyncError(Self.describeSyncError(error), isNetworkLike: Self.isNetworkLikeError(error))
                     }
                 }
             },
@@ -2698,7 +2739,7 @@ final class AppDependencies {
                     await self.persistSnapshotFromModel()
                 } catch {
                     await MainActor.run {
-                        self.model.lastError = Self.describeSyncError(error)
+                        self.model.recordSyncError(Self.describeSyncError(error), isNetworkLike: Self.isNetworkLikeError(error))
                     }
                 }
             },
@@ -2883,7 +2924,7 @@ final class AppDependencies {
                     await self.persistSnapshotFromModel()
                 } catch {
                     await MainActor.run {
-                        self.model.lastError = Self.describeSyncError(error)
+                        self.model.recordSyncError(Self.describeSyncError(error), isNetworkLike: Self.isNetworkLikeError(error))
                     }
                 }
             },
@@ -3233,7 +3274,7 @@ final class AppDependencies {
                     }
                 } catch {
                     await MainActor.run {
-                        self.model.lastError = Self.describeSyncError(error)
+                        self.model.recordSyncError(Self.describeSyncError(error), isNetworkLike: Self.isNetworkLikeError(error))
                     }
                 }
             },
@@ -3440,7 +3481,7 @@ final class AppDependencies {
                     await self.refreshDeferredQueueSummary()
                 } catch {
                     await MainActor.run {
-                        self.model.lastError = Self.describeSyncError(error)
+                        self.model.recordSyncError(Self.describeSyncError(error), isNetworkLike: Self.isNetworkLikeError(error))
                         self.model.isSyncing = false
                         self.model.transitionSyncPhase(to: .idle)
                         self.model.syncProgress = nil

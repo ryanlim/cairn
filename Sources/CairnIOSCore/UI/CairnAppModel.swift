@@ -266,6 +266,15 @@ public final class CairnAppModel {
     /// handling.
     public var lastError: String?
 
+    /// Sticky flag tracking whether the modal alert for the current
+    /// disconnected session has already been shown. While `true`,
+    /// `recordSyncError(_:isNetworkLike:)` skips the alert pop —
+    /// `degraded = .serverDown` already paints the persistent
+    /// banner on Status, so re-popping the modal on every retry
+    /// during a known-offline session is redundant noise. Reset by
+    /// `recordSyncSuccess()` once we've talked to Immich again.
+    public var connectionErrorAcknowledged: Bool = false
+
     /// Transient banner surfaced on Status after a sync completes. Only
     /// set when the outcome is worth surfacing — typically "nothing to
     /// sync, library is up-to-date." `CairnAppRoot` auto-clears after a
@@ -407,6 +416,37 @@ public final class CairnAppModel {
         if syncActivity.count > Self.syncActivityCap {
             syncActivity.removeLast()
         }
+    }
+
+    /// Record a sync/trash failure with the right amount of UI noise.
+    /// Network-class errors fire the "Couldn't finish" alert exactly
+    /// once per disconnected session; subsequent attempts within the
+    /// same disconnected window only let the existing
+    /// `Degraded.serverDown` banner persist on Status. Non-network
+    /// errors always pop the alert (auth, permissions, malformed
+    /// input — these need user attention each time).
+    ///
+    /// Pair with `recordSyncSuccess()` on the happy path so the
+    /// dedup flag resets when we're back online and the next
+    /// disconnect re-pops.
+    public func recordSyncError(_ message: String, isNetworkLike: Bool) {
+        if isNetworkLike {
+            if !connectionErrorAcknowledged {
+                lastError = message
+                connectionErrorAcknowledged = true
+            }
+            // else: banner is already on screen via degraded, no
+            // second modal needed.
+        } else {
+            lastError = message
+        }
+    }
+
+    /// Reset the network-error dedup flag. Call after any successful
+    /// Immich-touching action (sync, trash, restore) so the next
+    /// disconnect re-pops the modal exactly once.
+    public func recordSyncSuccess() {
+        connectionErrorAcknowledged = false
     }
 
     /// Reset the activity feed and timeline. Called at the start of
