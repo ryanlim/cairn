@@ -174,6 +174,34 @@ public final class CairnAppModel {
             self.sourceLocalIdentifiersByChecksum = sourceLocalIdentifiersByChecksum
             self.recycledExclusionCandidates = recycledExclusionCandidates
         }
+
+        /// Return a new reconciliation with `checksums` filtered out of
+        /// every bucket and lookup map. Centralizes what every host
+        /// action (`approvePending`, `excludePending`, `dismissPending`,
+        /// `restore`, `bulkExcludeRecentOffload`) needs to do after
+        /// acting on a subset: prune the in-memory snapshot so the UI
+        /// reflects the user's intent immediately, without waiting for
+        /// the next reconciliation pass.
+        ///
+        /// Also crucial as a future-proofing point: any new bucket
+        /// added to `LiveReconciliation` only has to be filtered here,
+        /// not in five separate call sites that each need to remember
+        /// to wire it in.
+        public func removing(checksums: Set<Checksum>) -> LiveReconciliation {
+            guard !checksums.isEmpty else { return self }
+            return LiveReconciliation(
+                deleteCandidates: deleteCandidates.filter { !checksums.contains($0.checksum) },
+                pendingReviewCandidates: pendingReviewCandidates.filter { !checksums.contains($0.checksum) },
+                heldByQuarantineCandidates: heldByQuarantineCandidates.filter { !checksums.contains($0.checksum) },
+                confirmedDeletedAt: confirmedDeletedAt.filter { !checksums.contains($0.key) },
+                quarantineDays: quarantineDays,
+                computedAt: computedAt,
+                inferredOrphanLocalIdentifiers: inferredOrphanLocalIdentifiers.filter { !checksums.contains($0.key) },
+                firstObservedAnchors: firstObservedAnchors,
+                sourceLocalIdentifiersByChecksum: sourceLocalIdentifiersByChecksum.filter { !checksums.contains($0.key) },
+                recycledExclusionCandidates: recycledExclusionCandidates.filter { !checksums.contains($0.checksum) }
+            )
+        }
     }
 
     /// Count of newly-confirmed-deleted checksums from the most recent

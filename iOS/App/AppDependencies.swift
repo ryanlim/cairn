@@ -2419,18 +2419,7 @@ final class AppDependencies {
                         let restoredServerCount = summary.restoredAssetIds.count
                         await MainActor.run {
                             guard let existing = self.model.reconciliation else { return }
-                            self.model.reconciliation = .init(
-                                deleteCandidates: existing.deleteCandidates.filter { !cks.contains($0.checksum) },
-                                pendingReviewCandidates: existing.pendingReviewCandidates.filter { !cks.contains($0.checksum) },
-                                heldByQuarantineCandidates: existing.heldByQuarantineCandidates.filter { !cks.contains($0.checksum) },
-                                confirmedDeletedAt: existing.confirmedDeletedAt.filter { !cks.contains($0.key) },
-                                quarantineDays: existing.quarantineDays,
-                                computedAt: existing.computedAt,
-                                inferredOrphanLocalIdentifiers: existing.inferredOrphanLocalIdentifiers.filter { !cks.contains($0.key) },
-                                firstObservedAnchors: existing.firstObservedAnchors,
-                                sourceLocalIdentifiersByChecksum: existing.sourceLocalIdentifiersByChecksum.filter { !cks.contains($0.key) },
-                                recycledExclusionCandidates: existing.recycledExclusionCandidates.filter { !cks.contains($0.checksum) }
-                            )
+                            self.model.reconciliation = existing.removing(checksums: cks)
                             if restoredServerCount > 0 {
                                 let current = self.model.library
                                 self.model.library = current.with(
@@ -2580,23 +2569,9 @@ final class AppDependencies {
                     }
                     await MainActor.run {
                         guard let existing = self.model.reconciliation else { return }
-                        let prunedOrphanMap = existing.inferredOrphanLocalIdentifiers
-                            .filter { !wanted.contains($0.key.base64) }
-                        let prunedSourceIds = existing.sourceLocalIdentifiersByChecksum
-                            .filter { !wanted.contains($0.key.base64) }
-                        self.model.reconciliation = .init(
-                            deleteCandidates: existing.deleteCandidates,
-                            pendingReviewCandidates: existing.pendingReviewCandidates.filter { !wanted.contains($0.checksum.base64) },
-                            heldByQuarantineCandidates: existing.heldByQuarantineCandidates.filter { !wanted.contains($0.checksum.base64) },
-                            confirmedDeletedAt: existing.confirmedDeletedAt,
-                            quarantineDays: existing.quarantineDays,
-                            computedAt: existing.computedAt,
-                            inferredOrphanLocalIdentifiers: prunedOrphanMap,
-                            firstObservedAnchors: existing.firstObservedAnchors,
-                            sourceLocalIdentifiersByChecksum: prunedSourceIds,
-                            recycledExclusionCandidates: existing.recycledExclusionCandidates.filter { !wanted.contains($0.checksum.base64) }
-                        )
-                        self.model.inferredOrphanCount = prunedOrphanMap.count
+                        let pruned = existing.removing(checksums: cks)
+                        self.model.reconciliation = pruned
+                        self.model.inferredOrphanCount = pruned.inferredOrphanLocalIdentifiers.count
                         if trashedCount > 0 {
                             let current = self.model.library
                             self.model.library = current.with(
@@ -2654,21 +2629,9 @@ final class AppDependencies {
                     }
                     await MainActor.run {
                         guard let existing = self.model.reconciliation else { return }
-                        let prunedOrphanMap = existing.inferredOrphanLocalIdentifiers.filter { !cks.contains($0.key) }
-                        let prunedSourceIds = existing.sourceLocalIdentifiersByChecksum.filter { !cks.contains($0.key) }
-                        self.model.reconciliation = .init(
-                            deleteCandidates: existing.deleteCandidates,
-                            pendingReviewCandidates: existing.pendingReviewCandidates.filter { !cks.contains($0.checksum) },
-                            heldByQuarantineCandidates: existing.heldByQuarantineCandidates.filter { !cks.contains($0.checksum) },
-                            confirmedDeletedAt: existing.confirmedDeletedAt.filter { !cks.contains($0.key) },
-                            quarantineDays: existing.quarantineDays,
-                            computedAt: existing.computedAt,
-                            inferredOrphanLocalIdentifiers: prunedOrphanMap,
-                            firstObservedAnchors: existing.firstObservedAnchors,
-                            sourceLocalIdentifiersByChecksum: prunedSourceIds,
-                            recycledExclusionCandidates: existing.recycledExclusionCandidates.filter { !cks.contains($0.checksum) }
-                        )
-                        self.model.inferredOrphanCount = prunedOrphanMap.count
+                        let pruned = existing.removing(checksums: cks)
+                        self.model.reconciliation = pruned
+                        self.model.inferredOrphanCount = pruned.inferredOrphanLocalIdentifiers.count
                     }
                     // Pending-trash retry queue: drop any queued
                     // intent that contains one of the just-excluded
@@ -2726,21 +2689,9 @@ final class AppDependencies {
                     }
                     await MainActor.run {
                         guard let existing = self.model.reconciliation else { return }
-                        let prunedOrphanMap = existing.inferredOrphanLocalIdentifiers.filter { !cks.contains($0.key) }
-                        let prunedSourceIds = existing.sourceLocalIdentifiersByChecksum.filter { !cks.contains($0.key) }
-                        self.model.reconciliation = .init(
-                            deleteCandidates: existing.deleteCandidates,
-                            pendingReviewCandidates: existing.pendingReviewCandidates.filter { !cks.contains($0.checksum) },
-                            heldByQuarantineCandidates: existing.heldByQuarantineCandidates.filter { !cks.contains($0.checksum) },
-                            confirmedDeletedAt: existing.confirmedDeletedAt.filter { !cks.contains($0.key) },
-                            quarantineDays: existing.quarantineDays,
-                            computedAt: existing.computedAt,
-                            inferredOrphanLocalIdentifiers: prunedOrphanMap,
-                            firstObservedAnchors: existing.firstObservedAnchors,
-                            sourceLocalIdentifiersByChecksum: prunedSourceIds,
-                            recycledExclusionCandidates: existing.recycledExclusionCandidates.filter { !cks.contains($0.checksum) }
-                        )
-                        self.model.inferredOrphanCount = prunedOrphanMap.count
+                        let pruned = existing.removing(checksums: cks)
+                        self.model.reconciliation = pruned
+                        self.model.inferredOrphanCount = pruned.inferredOrphanLocalIdentifiers.count
                     }
                     await self.refreshQuarantineCount()
                     await self.persistSnapshotFromModel()
@@ -2921,21 +2872,9 @@ final class AppDependencies {
                     try? await self.deletionSourceStore?.remove(cks)
                     await MainActor.run {
                         guard let existing = self.model.reconciliation else { return }
-                        let prunedOrphanMap = existing.inferredOrphanLocalIdentifiers.filter { !cks.contains($0.key) }
-                        let prunedSourceIds = existing.sourceLocalIdentifiersByChecksum.filter { !cks.contains($0.key) }
-                        self.model.reconciliation = .init(
-                            deleteCandidates: existing.deleteCandidates,
-                            pendingReviewCandidates: existing.pendingReviewCandidates.filter { !cks.contains($0.checksum) },
-                            heldByQuarantineCandidates: existing.heldByQuarantineCandidates.filter { !cks.contains($0.checksum) },
-                            confirmedDeletedAt: existing.confirmedDeletedAt.filter { !cks.contains($0.key) },
-                            quarantineDays: existing.quarantineDays,
-                            computedAt: existing.computedAt,
-                            inferredOrphanLocalIdentifiers: prunedOrphanMap,
-                            firstObservedAnchors: existing.firstObservedAnchors,
-                            sourceLocalIdentifiersByChecksum: prunedSourceIds,
-                            recycledExclusionCandidates: existing.recycledExclusionCandidates.filter { !cks.contains($0.checksum) }
-                        )
-                        self.model.inferredOrphanCount = prunedOrphanMap.count
+                        let pruned = existing.removing(checksums: cks)
+                        self.model.reconciliation = pruned
+                        self.model.inferredOrphanCount = pruned.inferredOrphanLocalIdentifiers.count
                         self.model.lastScanBurstCount = 0
                         self.model.lastScanWasTokenExpiryFullEnum = false
                         self.model.restoredAfterCairnTrash = [:]
@@ -3974,16 +3913,9 @@ final class AppDependencies {
                     // there; the next Sync's `bucketIsEmpty` gate stays
                     // false → no re-seed → button reads as dead after
                     // a few rounds.
-                    let remainingDelete = live.deleteCandidates.filter { !drop.contains($0.checksum.base64) }
-                    let remainingPending = live.pendingReviewCandidates.filter { !drop.contains($0.checksum.base64) }
-                    let remainingHeld = live.heldByQuarantineCandidates.filter { !drop.contains($0.checksum.base64) }
-                    model.reconciliation = .init(
-                        deleteCandidates: remainingDelete,
-                        pendingReviewCandidates: remainingPending,
-                        heldByQuarantineCandidates: remainingHeld,
-                        confirmedDeletedAt: live.confirmedDeletedAt,
-                        quarantineDays: live.quarantineDays
-                    )
+                    let cks = Set(drop.map { Checksum(base64: $0) })
+                    let pruned = live.removing(checksums: cks)
+                    model.reconciliation = pruned
                     Self.simulateTrashRun(
                         in: model,
                         trashedCount: drop.count,
@@ -3994,7 +3926,7 @@ final class AppDependencies {
                     // For partial trashes, override with the actual
                     // remaining count so Status's hero number matches
                     // the live reconciliation.
-                    model.library = model.library.with(candidates: remainingDelete.count)
+                    model.library = model.library.with(candidates: pruned.deleteCandidates.count)
                     // Subtract approved checksums from the acknowledged
                     // set; remaining acknowledgements still apply to
                     // items the user hasn't acted on yet.
@@ -4005,9 +3937,7 @@ final class AppDependencies {
                 await MainActor.run {
                     guard let model, let live = model.reconciliation else { return }
                     let drop = Set(checksums)
-                    let remainingDelete = live.deleteCandidates.filter { !drop.contains($0.checksum.base64) }
-                    let remainingPending = live.pendingReviewCandidates.filter { !drop.contains($0.checksum.base64) }
-                    let remainingHeld = live.heldByQuarantineCandidates.filter { !drop.contains($0.checksum.base64) }
+                    let cks = Set(drop.map { Checksum(base64: $0) })
                     let added: [ExcludedScreenEntry] = live.pendingReviewCandidates
                         .filter { drop.contains($0.checksum.base64) }
                         .map { asset in
@@ -4021,17 +3951,12 @@ final class AppDependencies {
                         }
                     model.excludedEntries.append(contentsOf: added)
                     model.excludedChecksums.formUnion(drop)
-                    model.reconciliation = .init(
-                        deleteCandidates: remainingDelete,
-                        pendingReviewCandidates: remainingPending,
-                        heldByQuarantineCandidates: remainingHeld,
-                        confirmedDeletedAt: live.confirmedDeletedAt,
-                        quarantineDays: live.quarantineDays
-                    )
+                    let pruned = live.removing(checksums: cks)
+                    model.reconciliation = pruned
                     // Keep Status's "ready to trash" chip aligned with
                     // the live reconciliation — same reason as the
                     // dismiss/approve paths above.
-                    model.library = model.library.with(candidates: remainingDelete.count)
+                    model.library = model.library.with(candidates: pruned.deleteCandidates.count)
                     model.acknowledgedCandidateChecksums.subtract(drop)
                 }
             },
@@ -4049,20 +3974,13 @@ final class AppDependencies {
                     // chip on Status with nothing to back it up, and
                     // Sync's `bucketIsEmpty` re-seed gate stays false
                     // forever → button reads as dead.
-                    let remainingDelete = live.deleteCandidates.filter { !drop.contains($0.checksum.base64) }
-                    let remainingPending = live.pendingReviewCandidates.filter { !drop.contains($0.checksum.base64) }
-                    let remainingHeld = live.heldByQuarantineCandidates.filter { !drop.contains($0.checksum.base64) }
-                    model.reconciliation = .init(
-                        deleteCandidates: remainingDelete,
-                        pendingReviewCandidates: remainingPending,
-                        heldByQuarantineCandidates: remainingHeld,
-                        confirmedDeletedAt: live.confirmedDeletedAt,
-                        quarantineDays: live.quarantineDays
-                    )
+                    let cks = Set(drop.map { Checksum(base64: $0) })
+                    let pruned = live.removing(checksums: cks)
+                    model.reconciliation = pruned
                     // Status's "N ready to trash" hero number reads
                     // `library.candidates`, not `reconciliation.deleteCandidates.count`.
                     // Keep them in sync so Status visibly clears.
-                    model.library = model.library.with(candidates: remainingDelete.count)
+                    model.library = model.library.with(candidates: pruned.deleteCandidates.count)
                     // Subtract dismissed checksums from the acknowledged
                     // set so the next Sync's re-seed (same fixture, same
                     // checksums) is treated as a fresh discovery and
