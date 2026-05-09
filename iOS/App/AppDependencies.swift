@@ -1507,6 +1507,42 @@ final class AppDependencies {
         }
     }
 
+    /// Common offline/failure-handling path for `confirmTrash` and
+    /// `approvePending`: enqueue the intent for retry, optimistically
+    /// prune the candidates from the live reconciliation so they
+    /// leave the Pending Review / quarantine view, surface the error
+    /// (deduped per disconnected session), and refresh the
+    /// runs/journal/pending-trash counts.
+    ///
+    /// The user has *decided* to trash these items; the retry queue
+    /// preserves that decision until connectivity returns. Without
+    /// the prune, the items would remain visible in Pending Review
+    /// even though they're already queued — confusing.
+    fileprivate func handleTrashFailure(
+        runId: String,
+        candidates: [ServerAsset],
+        assetsInPurview: Int,
+        error: Error
+    ) async {
+        await enqueueFailedTrash(
+            runId: runId,
+            candidates: candidates,
+            assetsInPurview: assetsInPurview,
+            error: error
+        )
+        if let existing = model.reconciliation {
+            let cks = Set(candidates.map(\.checksum))
+            model.reconciliation = existing.removing(checksums: cks)
+        }
+        model.recordSyncError(
+            Self.describeSyncError(error),
+            isNetworkLike: Self.isNetworkLikeError(error)
+        )
+        await refreshRunsList()
+        await refreshJournalTail()
+        await refreshPendingTrashCount()
+    }
+
     /// Refresh `model.pendingTrashCount` and `pendingTrashStuckCount`
     /// from the per-server retry queue. Cheap: queue is small and the
     /// snapshot pre-decodes the JSON ServerAsset payload only when
@@ -2365,27 +2401,12 @@ final class AppDependencies {
                     await self.refreshRunsList()
                     await self.refreshJournalTail()
                 } catch {
-                    // Real persistent retry: enqueue the intent so the
-                    // user's confirmed trash isn't dropped on the floor.
-                    // The drain runs after every successful sync and on
-                    // manual "Retry now" taps. The error message still
-                    // surfaces for immediate feedback — but if we're
-                    // already in a known-disconnected session, only the
-                    // banner refreshes (no second modal alert).
-                    await self.enqueueFailedTrash(
+                    await self.handleTrashFailure(
                         runId: runId,
                         candidates: live.deleteCandidates,
                         assetsInPurview: assetsInPurview,
                         error: error
                     )
-                    let desc = Self.describeSyncError(error)
-                    let isNetwork = Self.isNetworkLikeError(error)
-                    await MainActor.run {
-                        self.model.recordSyncError(desc, isNetworkLike: isNetwork)
-                    }
-                    await self.refreshRunsList()
-                    await self.refreshJournalTail()
-                    await self.refreshPendingTrashCount()
                 }
             },
             restore: { [weak self] assetIds, runId in
@@ -2626,30 +2647,12 @@ final class AppDependencies {
                     await self.refreshRunsList()
                     await self.refreshJournalTail()
                 } catch {
-                    // Persistent retry: enqueue the intent so the user's
-                    // "Move all to Trash" decision isn't dropped on the
-                    // floor when offline. Also optimistically prune the
-                    // candidates from the live reconciliation so they
-                    // stop showing in Pending Review — the user has
-                    // decided, the decision is queued, and the next
-                    // successful sync will execute it. Mirrors the
-                    // shape of `confirmTrash`'s offline handling.
-                    await self.enqueueFailedTrash(
+                    await self.handleTrashFailure(
                         runId: runId,
                         candidates: candidates,
                         assetsInPurview: live.deleteCandidates.count + live.pendingReviewCandidates.count,
                         error: error
                     )
-                    let cks = Set(candidates.map(\.checksum))
-                    await MainActor.run {
-                        if let existing = self.model.reconciliation {
-                            self.model.reconciliation = existing.removing(checksums: cks)
-                        }
-                        self.model.recordSyncError(Self.describeSyncError(error), isNetworkLike: Self.isNetworkLikeError(error))
-                    }
-                    await self.refreshRunsList()
-                    await self.refreshJournalTail()
-                    await self.refreshPendingTrashCount()
                 }
             },
             excludePending: { [weak self] checksums in
