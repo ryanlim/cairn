@@ -254,6 +254,46 @@ final class StoredThumbnail {
     }
 }
 
+/// Pending-trash retry-queue row. One per user-confirmed trash
+/// request that hasn't successfully landed on Immich yet. The
+/// `assetsData` blob is a JSON-encoded `[ServerAsset]`: SwiftData
+/// can't store arbitrary Codable arrays directly, so we serialize
+/// at the actor boundary. Costs one encode/decode per
+/// snapshot/enqueue, which is fine — the queue is small (typically
+/// 1-10 intents).
+@Model
+final class StoredPendingTrashIntent {
+    @Attribute(.unique) var id: UUID
+    var createdAt: Date
+    var runId: String
+    /// JSON-encoded `[ServerAsset]`. Decoded by the actor on read.
+    var assetsData: Data
+    var assetsInPurview: Int
+    var lastAttemptedAt: Date?
+    var attemptCount: Int
+    var lastError: String?
+
+    init(
+        id: UUID,
+        createdAt: Date,
+        runId: String,
+        assetsData: Data,
+        assetsInPurview: Int,
+        lastAttemptedAt: Date? = nil,
+        attemptCount: Int = 0,
+        lastError: String? = nil
+    ) {
+        self.id = id
+        self.createdAt = createdAt
+        self.runId = runId
+        self.assetsData = assetsData
+        self.assetsInPurview = assetsInPurview
+        self.lastAttemptedAt = lastAttemptedAt
+        self.attemptCount = attemptCount
+        self.lastError = lastError
+    }
+}
+
 // MARK: - Container helper
 
 /// Factory for the shared `ModelContainer` behind the iOS app's
@@ -274,7 +314,8 @@ public enum CairnSwiftDataContainer {
 
     /// Build a `ModelContainer` for per-server state (observed,
     /// exclusions, confirmed-deleted, persistent-change token,
-    /// edit-retirement anchors, cosmetic status snapshot).
+    /// edit-retirement anchors, cosmetic status snapshot, pending
+    /// trash retry queue).
     public static func makePerServer(url: URL, inMemory: Bool = false) throws -> ModelContainer {
         let schema = Schema([
             StoredObservedChecksum.self,
@@ -285,6 +326,7 @@ public enum CairnSwiftDataContainer {
             StoredEditRetirementEntry.self,
             StoredDeletionSourceEntry.self,
             StoredStatusSnapshot.self,
+            StoredPendingTrashIntent.self,
         ])
         return try container(schema: schema, url: inMemory ? nil : url, inMemory: inMemory)
     }
@@ -304,6 +346,7 @@ public enum CairnSwiftDataContainer {
             StoredEditRetirementEntry.self,
             StoredDeletionSourceEntry.self,
             StoredStatusSnapshot.self,
+            StoredPendingTrashIntent.self,
         ])
         return try container(schema: schema, url: url, inMemory: inMemory)
     }
@@ -1369,5 +1412,129 @@ public actor SwiftDataThumbnailStore {
             context.delete(row)
         }
         try context.save()
+    }
+}
+
+// MARK: - SwiftDataPendingTrashIntentStore
+
+/// SwiftData-backed `PendingTrashIntentStore`. Rows decode lazily —
+/// `[ServerAsset]` lives as JSON `Data` in `assetsData` and only
+/// inflates inside this actor. Conflict-pruning helpers
+/// (`removeIntents(containingAnyOf:)`, `remove(matchingRunId:)`)
+/// scan the queue with linear cost; the queue is small enough that
+/// the simpler shape beats indexed lookups.
+public actor SwiftDataPendingTrashIntentStore: PendingTrashIntentStore {
+    private let context: ModelContext
+    private let encoder: JSONEncoder
+    private let decoder: JSONDecoder
+
+    public init(container: ModelContainer) {
+        self.context = ModelContext(container)
+        let enc = JSONEncoder()
+        enc.dateEncodingStrategy = .iso8601
+        self.encoder = enc
+        let dec = JSONDecoder()
+        dec.dateDecodingStrategy = .iso8601
+        self.decoder = dec
+    }
+
+    public func snapshot() async throws -> [PendingTrashIntent] {
+        let descriptor = FetchDescriptor<StoredPendingTrashIntent>(
+            sortBy: [SortDescriptor(\.createdAt)]
+        )
+        let rows = try context.fetch(descriptor)
+        return try rows.map { try toModel($0) }
+    }
+
+    public func enqueue(_ intent: PendingTrashIntent) async throws {
+        let data = try encoder.encode(intent.assets)
+        context.insert(StoredPendingTrashIntent(
+            id: intent.id,
+            createdAt: intent.createdAt,
+            runId: intent.runId,
+            assetsData: data,
+            assetsInPurview: intent.assetsInPurview,
+            lastAttemptedAt: intent.lastAttemptedAt,
+            attemptCount: intent.attemptCount,
+            lastError: intent.lastError
+        ))
+        try context.save()
+    }
+
+    public func update(_ id: UUID, lastAttemptedAt: Date, attemptCount: Int, lastError: String?) async throws {
+        var descriptor = FetchDescriptor<StoredPendingTrashIntent>(
+            predicate: #Predicate<StoredPendingTrashIntent> { $0.id == id }
+        )
+        descriptor.fetchLimit = 1
+        guard let row = try context.fetch(descriptor).first else { return }
+        row.lastAttemptedAt = lastAttemptedAt
+        row.attemptCount = attemptCount
+        row.lastError = lastError
+        try context.save()
+    }
+
+    public func remove(_ ids: Set<UUID>) async throws {
+        guard !ids.isEmpty else { return }
+        var changed = false
+        for id in ids {
+            var descriptor = FetchDescriptor<StoredPendingTrashIntent>(
+                predicate: #Predicate<StoredPendingTrashIntent> { $0.id == id }
+            )
+            descriptor.fetchLimit = 1
+            if let row = try context.fetch(descriptor).first {
+                context.delete(row)
+                changed = true
+            }
+        }
+        if changed { try context.save() }
+    }
+
+    public func remove(matchingRunId runId: String) async throws {
+        let descriptor = FetchDescriptor<StoredPendingTrashIntent>(
+            predicate: #Predicate<StoredPendingTrashIntent> { $0.runId == runId }
+        )
+        let rows = try context.fetch(descriptor)
+        guard !rows.isEmpty else { return }
+        for row in rows { context.delete(row) }
+        try context.save()
+    }
+
+    public func removeIntents(containingAnyOf checksums: Set<Checksum>) async throws {
+        guard !checksums.isEmpty else { return }
+        let bases = Set(checksums.map(\.base64))
+        let rows = try context.fetch(FetchDescriptor<StoredPendingTrashIntent>())
+        var changed = false
+        for row in rows {
+            // Decode just enough to know if any asset matches.
+            // Cheap: queue is small, asset count per intent small.
+            guard let assets = try? decoder.decode([ServerAsset].self, from: row.assetsData) else {
+                continue
+            }
+            if assets.contains(where: { bases.contains($0.checksum.base64) }) {
+                context.delete(row)
+                changed = true
+            }
+        }
+        if changed { try context.save() }
+    }
+
+    public func count() async throws -> Int {
+        try context.fetchCount(FetchDescriptor<StoredPendingTrashIntent>())
+    }
+
+    // MARK: - Private
+
+    private func toModel(_ row: StoredPendingTrashIntent) throws -> PendingTrashIntent {
+        let assets = try decoder.decode([ServerAsset].self, from: row.assetsData)
+        return PendingTrashIntent(
+            id: row.id,
+            createdAt: row.createdAt,
+            runId: row.runId,
+            assets: assets,
+            assetsInPurview: row.assetsInPurview,
+            lastAttemptedAt: row.lastAttemptedAt,
+            attemptCount: row.attemptCount,
+            lastError: row.lastError
+        )
     }
 }

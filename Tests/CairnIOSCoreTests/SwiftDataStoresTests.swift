@@ -1154,3 +1154,148 @@ struct SwiftDataStatusSnapshotStoreTests {
         #expect(loaded?.deleteCandidatesCount == 14)
     }
 }
+
+// MARK: - SwiftDataPendingTrashIntentStore
+
+@Suite("SwiftDataPendingTrashIntentStore")
+struct SwiftDataPendingTrashIntentStoreTests {
+
+    private func asset(_ id: String, ck: String) -> ServerAsset {
+        ServerAsset(
+            id: id,
+            checksum: Checksum(base64: ck),
+            livePhotoVideoId: nil,
+            isTrashed: false,
+            originalFileName: "\(id).jpg",
+            fileCreatedAt: nil
+        )
+    }
+
+    private func intent(
+        runId: String = "run-X",
+        assets: [ServerAsset],
+        createdAt: Date = Date(timeIntervalSince1970: 1_700_000_000)
+    ) -> PendingTrashIntent {
+        PendingTrashIntent(
+            createdAt: createdAt,
+            runId: runId,
+            assets: assets,
+            assetsInPurview: assets.count
+        )
+    }
+
+    @Test("empty container snapshot is empty and count is 0")
+    func emptyIsEmpty() async throws {
+        let container = try makeContainer()
+        let store = SwiftDataPendingTrashIntentStore(container: container)
+        #expect(try await store.snapshot().isEmpty)
+        #expect(try await store.count() == 0)
+    }
+
+    @Test("enqueue + snapshot round-trips assets through SwiftData JSON blob")
+    func enqueueRoundtrip() async throws {
+        let container = try makeContainer()
+        let store = SwiftDataPendingTrashIntentStore(container: container)
+
+        let i = intent(assets: [asset("A", ck: "ck-A"), asset("B", ck: "ck-B")])
+        try await store.enqueue(i)
+
+        let snap = try await store.snapshot()
+        #expect(snap.count == 1)
+        #expect(snap.first?.id == i.id)
+        #expect(snap.first?.assets.map(\.id) == ["A", "B"])
+        #expect(snap.first?.assets.map(\.checksum.base64) == ["ck-A", "ck-B"])
+    }
+
+    @Test("snapshot returns intents sorted by createdAt ascending")
+    func snapshotSorted() async throws {
+        let container = try makeContainer()
+        let store = SwiftDataPendingTrashIntentStore(container: container)
+
+        try await store.enqueue(intent(
+            runId: "later",
+            assets: [asset("B", ck: "ck-B")],
+            createdAt: Date(timeIntervalSince1970: 2_000)
+        ))
+        try await store.enqueue(intent(
+            runId: "earlier",
+            assets: [asset("A", ck: "ck-A")],
+            createdAt: Date(timeIntervalSince1970: 1_000)
+        ))
+
+        let snap = try await store.snapshot()
+        #expect(snap.map(\.runId) == ["earlier", "later"])
+    }
+
+    @Test("update mutates retry metadata; missing id is silent no-op")
+    func updateApplies() async throws {
+        let container = try makeContainer()
+        let store = SwiftDataPendingTrashIntentStore(container: container)
+
+        let i = intent(assets: [asset("A", ck: "ck-A")])
+        try await store.enqueue(i)
+
+        let stamp = Date(timeIntervalSince1970: 1_700_001_000)
+        try await store.update(i.id, lastAttemptedAt: stamp, attemptCount: 3, lastError: "URLError(-1009)")
+
+        let snap = try await store.snapshot()
+        #expect(snap.first?.lastAttemptedAt == stamp)
+        #expect(snap.first?.attemptCount == 3)
+        #expect(snap.first?.lastError == "URLError(-1009)")
+
+        // Unknown id: no throw, no change.
+        try await store.update(UUID(), lastAttemptedAt: stamp, attemptCount: 99, lastError: "ignored")
+        let snap2 = try await store.snapshot()
+        #expect(snap2.first?.attemptCount == 3)
+    }
+
+    @Test("remove(_:) drops by id; remove(matchingRunId:) drops every intent under a runId")
+    func removeByIdAndRunId() async throws {
+        let container = try makeContainer()
+        let store = SwiftDataPendingTrashIntentStore(container: container)
+
+        let a = intent(runId: "shared", assets: [asset("A", ck: "ck-A")])
+        let b = intent(runId: "shared", assets: [asset("B", ck: "ck-B")])
+        let c = intent(runId: "other", assets: [asset("C", ck: "ck-C")])
+        try await store.enqueue(a)
+        try await store.enqueue(b)
+        try await store.enqueue(c)
+
+        try await store.remove(a.id)
+        #expect(try await store.count() == 2)
+
+        try await store.remove(matchingRunId: "shared")
+        let snap = try await store.snapshot()
+        #expect(snap.map(\.runId) == ["other"])
+    }
+
+    @Test("removeIntents(containingAnyOf:) drops the whole intent if any of its checksums match")
+    func removeByChecksumIntersection() async throws {
+        let container = try makeContainer()
+        let store = SwiftDataPendingTrashIntentStore(container: container)
+
+        let multi = intent(runId: "multi", assets: [
+            asset("A1", ck: "ck-A1"),
+            asset("A2", ck: "ck-A2"),
+        ])
+        let single = intent(runId: "single", assets: [asset("B1", ck: "ck-B1")])
+        try await store.enqueue(multi)
+        try await store.enqueue(single)
+
+        try await store.removeIntents(containingAnyOf: [Checksum(base64: "ck-A2")])
+
+        let snap = try await store.snapshot()
+        #expect(snap.map(\.runId) == ["single"])
+    }
+
+    @Test("two stores sharing one container see each other's writes")
+    func sharedContainerCrossVisibility() async throws {
+        let container = try makeContainer()
+        let writer = SwiftDataPendingTrashIntentStore(container: container)
+        let reader = SwiftDataPendingTrashIntentStore(container: container)
+
+        try await writer.enqueue(intent(assets: [asset("A", ck: "ck-A")]))
+        let snap = try await reader.snapshot()
+        #expect(snap.count == 1)
+    }
+}
