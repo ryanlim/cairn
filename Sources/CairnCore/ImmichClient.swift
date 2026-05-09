@@ -271,6 +271,16 @@ public struct ImmichClient: Sendable {
                     break
                 } catch {
                     lastError = error
+                    // URLError class failures (no internet, DNS,
+                    // connection refused, request-level timeout) are
+                    // sticky on the seconds-to-minutes scale: a 1–3s
+                    // sleep doesn't fix them. Bail out fast so the
+                    // iOS UI surfaces the error in 30s rather than
+                    // ~90s. HTTP-layer failures (5xx / decoding) DO
+                    // benefit from a retry.
+                    if error is URLError || (error as NSError).domain == NSURLErrorDomain {
+                        break
+                    }
                     if attempt < maxRetries {
                         try await Task.sleep(nanoseconds: UInt64((attempt + 1) * 1_000_000_000))
                     }
