@@ -57,7 +57,7 @@ struct JSONFileConfirmedDeletedStoreTests {
         #expect(abs(snap[Checksum(base64: "A")]!.timeIntervalSince(laterSeen)) >= 1)
     }
 
-    @Test("union with a subset of existing values is a no-op — preserves mtime")
+    @Test("union with a subset of existing values is a no-op — file bytes unchanged")
     func unionSubsetNoOp() async throws {
         let path = tempPath()
         defer { try? FileManager.default.removeItem(at: path) }
@@ -65,13 +65,16 @@ struct JSONFileConfirmedDeletedStoreTests {
         let store = JSONFileConfirmedDeletedStore(path: path)
         let t = Date(timeIntervalSince1970: 1_700_000_000)
         try await store.union(cks("A", "B", "C"), at: t)
-        let mtimeBefore = (try? FileManager.default.attributesOfItem(atPath: path.path))?[.modificationDate] as? Date
+        let bytesBefore = try Data(contentsOf: path)
 
-        try await Task.sleep(nanoseconds: 20_000_000)
         try await store.union(cks("A"), at: Date(timeIntervalSince1970: 1_800_000_000))
 
-        let mtimeAfter = (try? FileManager.default.attributesOfItem(atPath: path.path))?[.modificationDate] as? Date
-        #expect(mtimeBefore == mtimeAfter)
+        // Compare bytes rather than mtime — the previous mtime check
+        // depended on `Task.sleep` and APFS mtime granularity, both
+        // of which are flake-prone on busy CI runners. Byte equality
+        // proves directly what we care about: the no-op didn't write.
+        let bytesAfter = try Data(contentsOf: path)
+        #expect(bytesBefore == bytesAfter)
     }
 
     @Test("remove drops present entries and is a silent no-op on missing ones")
@@ -89,21 +92,20 @@ struct JSONFileConfirmedDeletedStoreTests {
         #expect(Set(snap.keys) == cks("A", "C"))
     }
 
-    @Test("remove with no overlap is a no-op — preserves mtime")
-    func removeNoOpPreservesMtime() async throws {
+    @Test("remove with no overlap is a no-op — file bytes unchanged")
+    func removeNoOpPreservesBytes() async throws {
         let path = tempPath()
         defer { try? FileManager.default.removeItem(at: path) }
 
         let store = JSONFileConfirmedDeletedStore(path: path)
         let t = Date(timeIntervalSince1970: 1_700_000_000)
         try await store.union(cks("A"), at: t)
-        let mtimeBefore = (try? FileManager.default.attributesOfItem(atPath: path.path))?[.modificationDate] as? Date
+        let bytesBefore = try Data(contentsOf: path)
 
-        try await Task.sleep(nanoseconds: 20_000_000)
         try await store.remove(cks("Z"))
 
-        let mtimeAfter = (try? FileManager.default.attributesOfItem(atPath: path.path))?[.modificationDate] as? Date
-        #expect(mtimeBefore == mtimeAfter)
+        let bytesAfter = try Data(contentsOf: path)
+        #expect(bytesBefore == bytesAfter)
     }
 
     @Test("legacy array-format file decodes every entry as .distantPast")

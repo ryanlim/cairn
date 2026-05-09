@@ -37,14 +37,15 @@ struct JSONFileObservedStoreTests {
 
         let store = JSONFileObservedStore(path: path)
         try await store.union(cks("A", "B", "C"))
-        let mtimeBefore = (try? FileManager.default.attributesOfItem(atPath: path.path))?[.modificationDate] as? Date
+        let bytesBefore = try Data(contentsOf: path)
 
-        // Tiny sleep so mtime would change if a write occurred.
-        try await Task.sleep(nanoseconds: 20_000_000)
         try await store.union(cks("A"))
 
-        let mtimeAfter = (try? FileManager.default.attributesOfItem(atPath: path.path))?[.modificationDate] as? Date
-        #expect(mtimeBefore == mtimeAfter)
+        // Compare bytes rather than mtime — direct check of "the
+        // no-op didn't write" without depending on APFS mtime
+        // granularity or Task.sleep timing.
+        let bytesAfter = try Data(contentsOf: path)
+        #expect(bytesBefore == bytesAfter)
     }
 
     @Test("a fresh store survives across instances as long as the path is the same")

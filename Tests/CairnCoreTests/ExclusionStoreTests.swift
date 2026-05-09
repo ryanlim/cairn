@@ -66,14 +66,16 @@ struct JSONFileExclusionStoreTests {
 
         let store = JSONFileExclusionStore(path: path)
         try await store.insert([ck("AAA"): meta()])
-        // No file write should happen — mtime should stay the same.
-        let mtimeBefore = (try? FileManager.default.attributesOfItem(atPath: path.path))?[.modificationDate] as? Date
+        // No file write should happen — bytes should stay byte-for-byte
+        // identical. Comparing bytes is more direct than the prior
+        // mtime + Task.sleep shape, which depended on APFS mtime
+        // granularity and could flake on busy CI runners.
+        let bytesBefore = try Data(contentsOf: path)
 
-        try await Task.sleep(nanoseconds: 20_000_000)
         try await store.remove([ck("ZZZ")])
 
-        let mtimeAfter = (try? FileManager.default.attributesOfItem(atPath: path.path))?[.modificationDate] as? Date
-        #expect(mtimeBefore == mtimeAfter)
+        let bytesAfter = try Data(contentsOf: path)
+        #expect(bytesBefore == bytesAfter)
         #expect(try await store.snapshot().count == 1)
     }
 

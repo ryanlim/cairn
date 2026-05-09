@@ -46,20 +46,21 @@ struct JSONFileDeletionSourceStoreTests {
         #expect(snap[ck("A")] == "id-new")
     }
 
-    @Test("re-recording an unchanged entry is a no-op — preserves mtime")
+    @Test("re-recording an unchanged entry is a no-op — file bytes unchanged")
     func recordIdempotentNoOp() async throws {
         let path = tempPath()
         defer { try? FileManager.default.removeItem(at: path) }
 
         let store = JSONFileDeletionSourceStore(path: path)
         try await store.record([ck("A"): "id-1", ck("B"): "id-2"])
-        let mtimeBefore = (try? FileManager.default.attributesOfItem(atPath: path.path))?[.modificationDate] as? Date
+        let bytesBefore = try Data(contentsOf: path)
 
-        try await Task.sleep(nanoseconds: 20_000_000)
         try await store.record([ck("A"): "id-1", ck("B"): "id-2"])
 
-        let mtimeAfter = (try? FileManager.default.attributesOfItem(atPath: path.path))?[.modificationDate] as? Date
-        #expect(mtimeBefore == mtimeAfter)
+        // Byte comparison instead of mtime — APFS mtime granularity
+        // and Task.sleep timing made the prior shape flake-prone.
+        let bytesAfter = try Data(contentsOf: path)
+        #expect(bytesBefore == bytesAfter)
     }
 
     @Test("remove drops present entries and is a silent no-op on missing ones")
