@@ -64,22 +64,18 @@ final class AppDependencies {
     private(set) var journal: DeletionJournal?
 
     var persistentChangeReconciler: PhotoKitPersistentChangeReconciler? {
-        guard let localHash = Optional(localHashStore),
-              let confirmed = confirmedDeletedStore,
+        guard let confirmed = confirmedDeletedStore,
               let observed = observedStore,
               let tokens = tokenStore else { return nil }
 
         let limitMB = model.settings.iCloudDownloadLimitMB
         let bytesLimit: Int64? = limitMB > 0 ? Int64(limitMB) * 1024 * 1024 : nil
-        let ceilingMB = model.settings.iCloudMaxEverBytesMB
-        let ceilingBytes: Int64? = (ceilingMB.map { $0 > 0 } ?? false)
-            ? Int64(ceilingMB!) * 1024 * 1024
-            : nil
+        let ceilingBytes = Self.megabytesToBytes(model.settings.iCloudMaxEverBytesMB)
 
         let isLimitedAccess = PHPhotoLibrary.authorizationStatus(for: .readWrite) == .limited
         let activeScope = model.settings.indexingScope
         return PhotoKitPersistentChangeReconciler(
-            hashStore: localHash,
+            hashStore: localHashStore,
             confirmedDeleted: confirmed,
             observed: observed,
             tokens: tokens,
@@ -104,13 +100,11 @@ final class AppDependencies {
                     guard let self else {
                         return Snapshot(hashStore: nil, serverSet: nil, deferredStore: nil, ceilingBytes: nil)
                     }
-                    let mb = self.model.settings.iCloudMaxEverBytesMB
-                    let bytes: Int64? = (mb.map { $0 > 0 } ?? false) ? Int64(mb!) * 1024 * 1024 : nil
                     return Snapshot(
                         hashStore: self.localHashStore,
                         serverSet: self.serverChecksumSet,
                         deferredStore: self.deferredHashStore,
-                        ceilingBytes: bytes
+                        ceilingBytes: Self.megabytesToBytes(self.model.settings.iCloudMaxEverBytesMB)
                     )
                 }
                 guard let hashStore = snap.hashStore else {
@@ -1727,8 +1721,7 @@ final class AppDependencies {
 
     fileprivate func refreshDeferredQueueSummary() async {
         let entries = (try? await deferredHashStore.snapshot()) ?? []
-        let ceilingMB = model.settings.iCloudMaxEverBytesMB
-        let ceilingBytes: Int64? = ceilingMB.flatMap { $0 > 0 ? Int64($0) * 1024 * 1024 : nil }
+        let ceilingBytes = Self.megabytesToBytes(model.settings.iCloudMaxEverBytesMB)
 
         var actionable = 0
         var aboveCeiling = 0
@@ -3550,6 +3543,16 @@ final class AppDependencies {
 
     nonisolated private static func documentsDirectory() -> URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+    }
+
+    /// `nil` (settings field unset) or `0` (settings field zero) →
+    /// `nil` (no limit). Otherwise returns megabytes × 1024 × 1024.
+    /// Centralizes the megabytes-to-bytes conversion that appears
+    /// for the iCloud hard ceiling and friends; the previous
+    /// `(mb.map { $0 > 0 } ?? false) ? Int64(mb!) * ...` form had a
+    /// force-unwrap right next to the safety check that justifies it.
+    nonisolated fileprivate static func megabytesToBytes(_ mb: Int?) -> Int64? {
+        mb.flatMap { $0 > 0 ? Int64($0) * 1024 * 1024 : nil }
     }
 
     private static func serverContainerURL(for key: ServerPartitionKey) -> URL {

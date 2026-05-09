@@ -535,6 +535,7 @@ public struct CairnAppRoot: View {
                 onOpenRun: { run in
                     presentRunDetail(for: run)
                 },
+                onStartSync: { model.activeTab = .status },
                 scrollResetToken: scrollResetTokens["runs"] ?? 0
             )
         case "settings":

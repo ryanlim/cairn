@@ -13,8 +13,17 @@ import Foundation
 /// section for the rationale behind these specific defaults.
 public struct CairnSettings: Sendable, Codable, Equatable {
     /// Abort a run if it would trash more than this percent of matched
-    /// assets. 1.0 means 1%. Defense against a bug, permission regression,
-    /// or library-wipe event cascading into a mass delete on the server.
+    /// assets. **Stored in human-readable percent units: `1.0` means 1%.**
+    /// Defense against a bug, permission regression, or library-wipe
+    /// event cascading into a mass delete on the server.
+    ///
+    /// Note the unit difference vs `SafetyConfig.maxDeletePercent`,
+    /// which is the same conceptual rail but stored as a *fraction*
+    /// (`0.01` means 1%). The CLI converts via `/100.0` at the
+    /// `SafetyRails.evaluate` boundary; the iOS app's
+    /// `DryRunSheet.overPct` check uses these settings units directly.
+    /// If you ever feed `settings.maxDeletePercent` into
+    /// `SafetyConfig`, divide by 100 first.
     public var maxDeletePercent: Double
 
     /// Floor below which the percent rail is bypassed — on a small library
@@ -316,6 +325,16 @@ public enum AppearanceOverride: String, Sendable, Codable, Equatable, CaseIterab
 /// quarantine window. The default since Wave 4b — quarantine alone
 /// gives a large recovery margin without blocking happy-path users
 /// behind a "pending review" queue.
+///
+/// `.autonomous` also skips the quarantine wait. Every diff-discovered
+/// candidate is eligible to trash immediately on the next run — no
+/// held-by-quarantine bucket, no pending review for unconfirmed items.
+/// For users who run cairn from a known-stable environment (a
+/// scheduled CLI cron over a specific photo album, say) and treat
+/// the quarantine clock as friction rather than safety. Skipping
+/// quarantine means an accidental "Remove from this iPhone" deletes
+/// on Immich within the next sync — only choose this when the
+/// orchestration around cairn is providing safety some other way.
 public enum DeletionStrictness: String, Sendable, Codable, Equatable, CaseIterable {
     case strict
     case trusting
