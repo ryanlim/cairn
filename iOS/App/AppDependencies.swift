@@ -2626,16 +2626,30 @@ final class AppDependencies {
                     await self.refreshRunsList()
                     await self.refreshJournalTail()
                 } catch {
-                    // Surface the error via model.lastError (the UI alert
-                    // binding reads this). We deliberately don't re-throw:
-                    // every caller invokes the action via `Task { try? await
-                    // ... }`, so a re-throw silently vanishes anyway.
-                    // Setting lastError is the single source of truth.
+                    // Persistent retry: enqueue the intent so the user's
+                    // "Move all to Trash" decision isn't dropped on the
+                    // floor when offline. Also optimistically prune the
+                    // candidates from the live reconciliation so they
+                    // stop showing in Pending Review — the user has
+                    // decided, the decision is queued, and the next
+                    // successful sync will execute it. Mirrors the
+                    // shape of `confirmTrash`'s offline handling.
+                    await self.enqueueFailedTrash(
+                        runId: runId,
+                        candidates: candidates,
+                        assetsInPurview: live.deleteCandidates.count + live.pendingReviewCandidates.count,
+                        error: error
+                    )
+                    let cks = Set(candidates.map(\.checksum))
                     await MainActor.run {
+                        if let existing = self.model.reconciliation {
+                            self.model.reconciliation = existing.removing(checksums: cks)
+                        }
                         self.model.recordSyncError(Self.describeSyncError(error), isNetworkLike: Self.isNetworkLikeError(error))
                     }
                     await self.refreshRunsList()
                     await self.refreshJournalTail()
+                    await self.refreshPendingTrashCount()
                 }
             },
             excludePending: { [weak self] checksums in
