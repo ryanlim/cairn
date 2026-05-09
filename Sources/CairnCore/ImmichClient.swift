@@ -57,6 +57,31 @@ public struct ImmichClient: Sendable {
         self.session = session
     }
 
+    /// Build a `URLSession` with timeouts and connectivity behavior
+    /// suited to the iOS app. Two changes from `URLSession.shared`:
+    ///
+    /// - **`waitsForConnectivity = false`**: the default on iOS 11+
+    ///   is `true`, which makes a request in airplane mode wait
+    ///   silently up to `timeoutIntervalForResource` (7 days!) for
+    ///   connectivity to return. We want fast failure with
+    ///   `URLError.notConnectedToInternet` instead, so the user
+    ///   sees a clear error and the persistent retry queue can
+    ///   take over.
+    /// - **Tighter request timeout**: 30 seconds rather than the
+    ///   60-second default. Self-hosted Immich servers should
+    ///   respond well under that. A user on a flaky network
+    ///   getting one slow page will see the error sooner.
+    ///
+    /// CLI usage continues to use `URLSession.shared` because CLI
+    /// users can ctrl-c, and CLI workflows (cron, scripts) often
+    /// run in environments where waiting is fine.
+    public static func makeAppURLSession(timeoutSeconds: TimeInterval = 30) -> URLSession {
+        let config = URLSessionConfiguration.default
+        config.waitsForConnectivity = false
+        config.timeoutIntervalForRequest = timeoutSeconds
+        return URLSession(configuration: config)
+    }
+
     /// Immich serves its API under `/api`. Accept either form from callers —
     /// `https://host/` and `https://host/api/` should both work.
     static func normalize(_ url: URL) -> URL {

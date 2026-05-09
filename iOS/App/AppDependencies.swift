@@ -374,10 +374,11 @@ final class AppDependencies {
         let journalURL = Self.serverJournalURL(for: key)
         self.journal = DeletionJournal(path: journalURL)
 
-        self.immichClient = ImmichClient(baseURL: url, apiKey: apiKey)
+        self.immichClient = ImmichClient(baseURL: url, apiKey: apiKey, session: ImmichClient.makeAppURLSession())
         self.thumbnailLoader = ImmichThumbnailLoader(
             baseURL: url,
             apiKey: apiKey,
+            session: ImmichClient.makeAppURLSession(),
             onFetched: { assetId, data in
                 try? await thumbStore.saveThumbnail(assetId: assetId, data: data)
             }
@@ -2916,7 +2917,7 @@ final class AppDependencies {
                         errorMessage: "That doesn't look like a valid URL. Try the full hostname, like immich.example.com."
                     )
                 }
-                let probe = ImmichClient(baseURL: url, apiKey: key)
+                let probe = ImmichClient(baseURL: url, apiKey: key, session: ImmichClient.makeAppURLSession(timeoutSeconds: 10))
                 do {
                     let assets = try await probe.listAllAssets()
                     // Fetch the Immich user identity so we can partition
