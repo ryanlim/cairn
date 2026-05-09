@@ -1314,7 +1314,11 @@ public final class PhotoKitPersistentChangeReconciler {
         let livingIds = Set(assets.map { $0.localIdentifier })
         let stale = Set(idsToProcess).subtracting(livingIds)
         if !stale.isEmpty {
-            try? await deferredStore.remove(stale)
+            do {
+                try await deferredStore.remove(stale)
+            } catch {
+                hashLog.error("[cairn.deferred] remove-stale FAILED: \(String(describing: error), privacy: .public)")
+            }
         }
 
         // Skip assets that were already hashed in a prior run (e.g.
@@ -1333,7 +1337,11 @@ public final class PhotoKitPersistentChangeReconciler {
             }
         }
         if !alreadyHashed.isEmpty {
-            try? await deferredStore.remove(alreadyHashed)
+            do {
+                try await deferredStore.remove(alreadyHashed)
+            } catch {
+                hashLog.error("[cairn.deferred] remove-already-hashed FAILED: \(String(describing: error), privacy: .public)")
+            }
         }
         let assetsToHash = assets.filter { !alreadyHashed.contains($0.localIdentifier) }
 
@@ -1662,7 +1670,7 @@ public final class PhotoKitPersistentChangeReconciler {
             }
             let resources = PHAssetResource.assetResources(for: asset)
             let primary = PhotoKitPhotoEnumerator.selectPrimaryResource(from: resources)
-            let size = (primary?.value(forKey: "fileSize") as? NSNumber)?.int64Value
+            let size = primary.flatMap(PhotoKitPhotoEnumerator.resourceFileSize)
             entries.append(LocalAssetMetadata(
                 localIdentifier: asset.localIdentifier,
                 originalFileName: primary?.originalFilename,
@@ -1708,7 +1716,7 @@ public final class PhotoKitPersistentChangeReconciler {
         fetch.enumerateObjects { asset, _, _ in
             let resources = PHAssetResource.assetResources(for: asset)
             let primary = PhotoKitPhotoEnumerator.selectPrimaryResource(from: resources)
-            let size = (primary?.value(forKey: "fileSize") as? NSNumber)?.int64Value
+            let size = primary.flatMap(PhotoKitPhotoEnumerator.resourceFileSize)
             entries.append(LocalAssetMetadata(
                 localIdentifier: asset.localIdentifier,
                 originalFileName: primary?.originalFilename,
@@ -1725,11 +1733,17 @@ public final class PhotoKitPersistentChangeReconciler {
             try await metadataStore.record(entries)
         }
         // Stale-filter just the update set. Inserts always need hashing;
-        // updates only when modDate actually advanced.
+        // updates only when modDate actually advanced. Batch the cache
+        // lookup via `entries(forIdentifiers:)` — the per-id
+        // `modificationDate(for:)` shape was an N-sequential-query
+        // antipattern that bit `hashAllCurrentAssets` (~65s prelude on
+        // multi-thousand-asset libraries) and was batched there;
+        // observeAndFilter missed the same fix until now.
         var stale: Set<String> = []
         stale.reserveCapacity(updatedIds.count)
+        let cached = (try? await hashStore.entries(forIdentifiers: updatedIds)) ?? [:]
         for id in updatedIds {
-            let cachedDate = try? await hashStore.modificationDate(for: id)
+            let cachedDate = cached[id]?.modificationDate
             let currentDate = currentDates[id]
             if let cachedDate, let currentDate, cachedDate == currentDate {
                 continue
@@ -1935,18 +1949,28 @@ public final class PhotoKitPersistentChangeReconciler {
                     // Persist after each successful hash so a
                     // cancellation doesn't waste the work. Serialized
                     // inside the hashStore actor; the few-ms cost is
-                    // dwarfed by the hash itself.
-                    try? await hashStore.set(
-                        result.checksums,
-                        for: result.assetID,
-                        modificationDate: result.modificationDate
-                    )
+                    // dwarfed by the hash itself. Log on failure —
+                    // silent drops mean the next scan re-pays the
+                    // multi-MB iCloud download cost we just absorbed.
+                    do {
+                        try await hashStore.set(
+                            result.checksums,
+                            for: result.assetID,
+                            modificationDate: result.modificationDate
+                        )
+                    } catch {
+                        hashLog.error("[cairn.hash] hashStore.set FAILED for id=\(result.assetID.prefix(12), privacy: .public): \(String(describing: error), privacy: .public)")
+                    }
                     // Also drop the deferred-queue entry per-asset.
                     // The end-of-batch bulk remove is too late if the
                     // task gets cancelled mid-drain — large iCloud
                     // downloads are exactly when this happens.
                     if let deferredStore {
-                        try? await deferredStore.remove([result.assetID])
+                        do {
+                            try await deferredStore.remove([result.assetID])
+                        } catch {
+                            hashLog.error("[cairn.deferred] per-asset remove FAILED for id=\(result.assetID.prefix(12), privacy: .public): \(String(describing: error), privacy: .public)")
+                        }
                     }
                 }
 
