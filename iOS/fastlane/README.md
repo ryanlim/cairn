@@ -63,6 +63,14 @@ Run tests + bump build + build the IPA
 
 Upload to TestFlight
 
+### ios status
+
+```sh
+[bundle exec] fastlane ios status
+```
+
+List recent TestFlight builds and their processing state
+
 ### ios metadata
 
 ```sh
