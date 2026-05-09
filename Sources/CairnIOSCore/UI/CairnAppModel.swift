@@ -499,6 +499,11 @@ public final class CairnAppModel {
     /// regular pending banner.
     public var pendingTrashStuckCount: Int = 0
 
+    /// Snapshot of pending-trash intents for the failed-attempts
+    /// sheet view. Populated by the host immediately before opening
+    /// `.pendingTrashes`; same shape as `deferredQueueEntries`.
+    public var pendingTrashIntents: [PendingTrashIntent] = []
+
     /// Count of items in `ConfirmedDeletedStore` still within the
     /// quarantine window. Populated from the store directly at
     /// bootstrap and after each sync/trash, so the Status pending
@@ -588,6 +593,12 @@ public final class CairnAppModel {
         /// activity feed) means opening it during an active sync
         /// doesn't slow Status' redraw cycle.
         case syncDetail
+        /// Failed-trash detail sheet — list of intents in the retry
+        /// queue with their per-intent error and attempt count. Routed
+        /// from the Status pending-trash banner's "Tap to see what
+        /// failed" affordance and from the Retry-now path when stuck
+        /// intents exist.
+        case pendingTrashes
 
         public var id: String {
             switch self {
@@ -597,6 +608,7 @@ public final class CairnAppModel {
             case .deferredQueue: "deferred-queue"
             case .albumPicker: "album-picker"
             case .syncDetail: "sync-detail"
+            case .pendingTrashes: "pending-trashes"
             }
         }
     }
@@ -909,6 +921,17 @@ public struct CairnAppActions: Sendable {
     /// `model.pendingTrashCount` afterward.
     public var retryPendingTrashes: @Sendable () async -> Void
 
+    /// Snapshot the pending-trash retry queue for the detail sheet.
+    /// Same shape as `loadDeferredEntries` — host returns the rows,
+    /// `CairnAppRoot` stashes them on `model.pendingTrashIntents`
+    /// before opening `.pendingTrashes`.
+    public var loadPendingTrashes: @Sendable () async -> [PendingTrashIntent]
+
+    /// Drop a single intent from the retry queue without trashing
+    /// it. Wired to the per-row trash icon in `PendingTrashesSheet`.
+    /// The host removes from store + refreshes counts.
+    public var discardPendingTrash: @Sendable (_ id: UUID) async -> Void
+
     public init(
         requestSync: @escaping @Sendable () async throws -> Void = {},
         confirmTrash: @escaping @Sendable () async throws -> Void = {},
@@ -944,7 +967,9 @@ public struct CairnAppActions: Sendable {
         recomputeScopeTags: @escaping @Sendable () async -> Void = {},
         recentServers: @escaping @Sendable () async -> [RecentServerEntry] = { [] },
         clearRecentServers: @escaping @Sendable () async -> Void = {},
-        retryPendingTrashes: @escaping @Sendable () async -> Void = {}
+        retryPendingTrashes: @escaping @Sendable () async -> Void = {},
+        loadPendingTrashes: @escaping @Sendable () async -> [PendingTrashIntent] = { [] },
+        discardPendingTrash: @escaping @Sendable (UUID) async -> Void = { _ in }
     ) {
         self.requestSync = requestSync
         self.confirmTrash = confirmTrash
@@ -979,6 +1004,8 @@ public struct CairnAppActions: Sendable {
         self.recentServers = recentServers
         self.clearRecentServers = clearRecentServers
         self.retryPendingTrashes = retryPendingTrashes
+        self.loadPendingTrashes = loadPendingTrashes
+        self.discardPendingTrash = discardPendingTrash
     }
 
     /// All-no-op closures with successful default returns. Use in previews

@@ -3531,6 +3531,15 @@ final class AppDependencies {
                 // re-attempts intents that have hit `maxRetryAttempts`.
                 // The auto-drain in `requestSync` passes `force: false`.
                 await self?.drainPendingTrashes(force: true)
+            },
+            loadPendingTrashes: { [weak self] in
+                guard let self else { return [] }
+                return (try? await self.pendingTrashStore?.snapshot()) ?? []
+            },
+            discardPendingTrash: { [weak self] id in
+                guard let self else { return }
+                try? await self.pendingTrashStore?.remove(id)
+                await self.refreshPendingTrashCount()
             }
         )
 

@@ -506,6 +506,20 @@ public struct CairnAppRoot: View {
                         await model.actions.forceDrainDeferred()
                     }
                 },
+                pendingTrashCount: model.pendingTrashCount,
+                pendingTrashStuckCount: model.pendingTrashStuckCount,
+                onRetryPendingTrashes: {
+                    Task { @MainActor in
+                        await model.actions.retryPendingTrashes()
+                    }
+                },
+                onOpenPendingTrashes: {
+                    Task { @MainActor in
+                        let intents = await model.actions.loadPendingTrashes()
+                        model.pendingTrashIntents = intents
+                        model.presentedSheet = .pendingTrashes
+                    }
+                },
                 onRetryConnection: {
                     Task { @MainActor in await model.actions.retryConnection() }
                 },
@@ -730,6 +744,29 @@ public struct CairnAppRoot: View {
                     model.presentedSheet = nil
                 },
                 onClose: { model.presentedSheet = nil }
+            )
+            .cairnTheme(palette)
+        case .pendingTrashes:
+            PendingTrashesSheet(
+                intents: model.pendingTrashIntents,
+                maxRetryAttempts: model.settings.maxRetryAttempts,
+                onClose: { model.presentedSheet = nil },
+                onRetryAll: {
+                    Task { @MainActor in
+                        await model.actions.retryPendingTrashes()
+                        // Refresh in place so the sheet reflects the
+                        // post-drain state without forcing a close.
+                        model.pendingTrashIntents = await model.actions.loadPendingTrashes()
+                    }
+                },
+                onDiscard: { id in
+                    Task { @MainActor in
+                        await model.actions.discardPendingTrash(id)
+                        // Refresh in place so the row disappears
+                        // without forcing a sheet close.
+                        model.pendingTrashIntents = await model.actions.loadPendingTrashes()
+                    }
+                }
             )
             .cairnTheme(palette)
         }

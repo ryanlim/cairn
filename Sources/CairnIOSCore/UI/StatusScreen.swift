@@ -102,6 +102,23 @@ public struct StatusScreen: View {
     /// doesn't have to dig into Settings to clear the queue.
     public let deferredQueue: CairnAppModel.DeferredQueueSummary
     public let onForceDrainDeferred: () -> Void
+    /// Number of trash intents in the persistent retry queue —
+    /// confirmTrash calls that failed (server unreachable, 5xx,
+    /// transient) and are awaiting a successful retry. Drives the
+    /// pending-trash banner. The drain runs automatically on every
+    /// successful sync; the user can also manually retry from the
+    /// banner.
+    public let pendingTrashCount: Int
+    /// Subset of `pendingTrashCount` that has hit `maxRetryAttempts`
+    /// and is no longer being auto-drained. Surfaces a separate
+    /// danger-tone banner with a route to the failed-attempts sheet.
+    public let pendingTrashStuckCount: Int
+    /// Manual "Retry now" — drains the pending-trash queue
+    /// regardless of attempt cap.
+    public let onRetryPendingTrashes: () -> Void
+    /// Tap handler on the stuck banner — opens the
+    /// PendingTrashesSheet detail view.
+    public let onOpenPendingTrashes: () -> Void
     /// Action wired to the "Retry" button in the
     /// `Immich server unreachable` banner. Re-pings the configured
     /// server and refreshes `connectionStatus` + `degraded` based on
@@ -237,6 +254,10 @@ public struct StatusScreen: View {
         onResumeInitialScan: @escaping () -> Void = {},
         deferredQueue: CairnAppModel.DeferredQueueSummary = .empty,
         onForceDrainDeferred: @escaping () -> Void = {},
+        pendingTrashCount: Int = 0,
+        pendingTrashStuckCount: Int = 0,
+        onRetryPendingTrashes: @escaping () -> Void = {},
+        onOpenPendingTrashes: @escaping () -> Void = {},
         onRetryConnection: @escaping () -> Void = {},
         onOpenSyncDetail: @escaping () -> Void = {},
         scrollResetToken: Int = 0
@@ -278,6 +299,10 @@ public struct StatusScreen: View {
         self.onResumeInitialScan = onResumeInitialScan
         self.deferredQueue = deferredQueue
         self.onForceDrainDeferred = onForceDrainDeferred
+        self.pendingTrashCount = pendingTrashCount
+        self.pendingTrashStuckCount = pendingTrashStuckCount
+        self.onRetryPendingTrashes = onRetryPendingTrashes
+        self.onOpenPendingTrashes = onOpenPendingTrashes
         self.onRetryConnection = onRetryConnection
         self.onOpenSyncDetail = onOpenSyncDetail
         self.scrollResetToken = scrollResetToken
@@ -309,6 +334,8 @@ public struct StatusScreen: View {
             syncToast != nil,
             restoredAfterCairnTrashCount > 0,
             inferredOrphanCount > 0,
+            pendingTrashCount > 0,
+            pendingTrashStuckCount > 0,
         ]
         // isSyncing intentionally NOT in this key — the syncCard's
         // appear/collapse uses a separate `.animation(.smooth, value:
@@ -382,6 +409,7 @@ public struct StatusScreen: View {
                     initialScanPendingBanner
                     restoredAfterCairnTrashBanner
                     inferredOrphanBanner
+                    pendingTrashBanner
                     backlogAlertBanner
                     syncToastBanner
                     syncCard
@@ -707,6 +735,60 @@ public struct StatusScreen: View {
         let n = restoredAfterCairnTrashCount
         let noun = n == 1 ? "photo" : "photos"
         return "\(n) restored \(noun) also trashed in Immich"
+    }
+
+    /// Pending-trash retry banner. Two states share one view:
+    ///
+    /// - **Stuck** (`pendingTrashStuckCount > 0`): danger tone. The
+    ///   queue contains intents that have hit `maxRetryAttempts` and
+    ///   the auto-drain has parked them. Tap routes to the failed-
+    ///   attempts sheet so the user can see the per-intent error
+    ///   and decide what to do (retry, exclude, or fix the
+    ///   underlying issue like a wrong API key).
+    /// - **Pending** (`pendingTrashCount > 0`, none stuck): warn tone.
+    ///   The queue is non-empty but every intent is still under the
+    ///   cap; the next sync will retry automatically. The "Retry
+    ///   now" button forces an immediate drain — useful when the
+    ///   user knows the network just came back and doesn't want to
+    ///   wait for the next idle sync.
+    ///
+    /// Not dismissible — the underlying state is real pending work,
+    /// and the count moves down naturally as drains succeed.
+    @ViewBuilder
+    private var pendingTrashBanner: some View {
+        if pendingTrashStuckCount > 0 {
+            Button(action: onOpenPendingTrashes) {
+                Callout(.danger, icon: "exclamationmark.triangle") {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("\(pendingTrashStuckCount) trash \(pendingTrashStuckCount == 1 ? "request" : "requests") stuck")
+                            .fontWeight(.semibold)
+                        Text("Hit the retry limit. Tap to see what failed.")
+                            .opacity(0.88).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 16).padding(.bottom, 12)
+            .transition(bannerTransition)
+        } else if pendingTrashCount > 0 {
+            Callout(.pending, icon: "arrow.clockwise") {
+                HStack(alignment: .top, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("\(pendingTrashCount) trash \(pendingTrashCount == 1 ? "request" : "requests") queued")
+                            .fontWeight(.semibold)
+                        Text("Will retry on next sync.")
+                            .opacity(0.88).fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 8)
+                    Button("Retry now", action: onRetryPendingTrashes)
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                }
+            }
+            .padding(.horizontal, 16).padding(.bottom, 12)
+            .transition(bannerTransition)
+        }
     }
 
     /// Warn-tone banner for inferred orphans — server assets matched by

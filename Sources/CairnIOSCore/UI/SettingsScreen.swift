@@ -361,6 +361,8 @@ public struct SettingsScreen: View {
                     RowDivider()
                     HardCeilingRow(mb: $settings.iCloudMaxEverBytesMB)
                     RowDivider()
+                    MaxRetryAttemptsRow(attempts: $settings.maxRetryAttempts)
+                    RowDivider()
                     DeferredQueueRow(
                         summary: deferredQueue,
                         isSyncing: isSyncing,
@@ -1023,6 +1025,52 @@ private struct QuarantineRow: View {
                 step: 1,
                 unitSuffix: days == 1 ? " day" : " days",
                 format: { $0 == 0 ? "Off" : String(format: "%.0f", $0) },
+                parse: NumericInputParse.integer
+            )
+        }
+    }
+}
+
+// MARK: - Max retry attempts row
+
+/// Slider for `CairnSettings.maxRetryAttempts`. Caps how many times
+/// the auto-drain re-attempts a failed trash before parking the
+/// intent. Manual "Retry now" still works on parked intents, so
+/// this never permanently blocks the user — just stops the loop
+/// when a transient-looking failure is actually persistent.
+private struct MaxRetryAttemptsRow: View {
+    @Binding var attempts: Int
+    @Environment(\.cairnTokens) private var t
+
+    private var doubleBinding: Binding<Double> {
+        Binding(
+            get: { Double(attempts) },
+            set: { attempts = Int($0.rounded()) }
+        )
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline, spacing: 0) {
+                Spacer(minLength: 0)
+                HelpPopover {
+                    Text("When a trash run fails (network down, server unreachable, transient 5xx), cairn queues the intent and retries it automatically on the next sync.")
+                    Text("After this many attempts, the auto-retry stops and the request is marked stuck. It stays in the queue — tap \u{201C}Retry now\u{201D} on the Status banner once you've fixed the underlying cause.")
+                    Text("Default 5 is a balance: enough to ride out a brief outage, not so many that a wrong API key flaps forever.")
+                }
+                .padding(.trailing, 6)
+            }
+            .padding(.top, 10)
+            .padding(.bottom, -4)
+
+            SliderInputRow(
+                label: "Max retry attempts",
+                sub: "Stop auto-retrying a failed trash after this many tries. Manual retry still works.",
+                value: doubleBinding,
+                range: Double(CairnSettings.maxRetryAttemptsRange.lowerBound)...Double(CairnSettings.maxRetryAttemptsRange.upperBound),
+                step: 1,
+                unitSuffix: attempts == 1 ? " attempt" : " attempts",
+                format: { String(format: "%.0f", $0) },
                 parse: NumericInputParse.integer
             )
         }
