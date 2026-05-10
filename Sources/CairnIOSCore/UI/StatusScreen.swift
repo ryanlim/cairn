@@ -916,6 +916,17 @@ public struct StatusScreen: View {
                                 .opacity(0.88).fixedSize(horizontal: false, vertical: true)
                         }
                     }
+                case .offlineDetections(let count):
+                    // Server unreachable, but the local scan ran and
+                    // recorded the deletions. They'll appear as trash
+                    // candidates after the next successful sync.
+                    Callout(.info, icon: "tray.and.arrow.down") {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("\(count) deletion\(count == 1 ? "" : "s") detected offline").fontWeight(.semibold)
+                            Text("Saved locally. Will sync to Immich on the next successful Sync.")
+                                .opacity(0.88).fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
                 }
             }
             .padding(.horizontal, 16).padding(.bottom, 12)

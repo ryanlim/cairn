@@ -301,6 +301,14 @@ public final class CairnAppModel {
         /// trust downgrade so the user knows what to expect — full
         /// detail lives in Settings → Permissions.
         case limitedPhotosNotice
+        /// Local PhotoKit deletion detection ran but the
+        /// server-touching part of the sync couldn't complete (e.g.,
+        /// airplane mode). The deletions are persisted to
+        /// `ConfirmedDeletedStore` and will surface as trash
+        /// candidates on the next successful sync. Surfaced from
+        /// `requestSync`'s catch path so the user sees their
+        /// offline-time deletions are recorded, not lost.
+        case offlineDetections(count: Int)
 
         public static let autoDismissSeconds: TimeInterval = 4
     }

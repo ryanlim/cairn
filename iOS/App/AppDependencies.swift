@@ -889,6 +889,15 @@ final class AppDependencies {
         syncLog.info("[cairn.sync] scan took \(Int(Date().timeIntervalSince(t0) * 1000))ms (events=\(scan.changeEventsProcessed))")
         let burst = scan.newlyConfirmedDeleted.count
 
+        // The reconciler has already mutated `ConfirmedDeletedStore`,
+        // `LocalHashStore`, and `ObservedStore`. Persist the
+        // scan-derived stats onto the model NOW so a downstream
+        // failure (server unreachable, etc.) doesn't leave the UI
+        // showing stale numbers — the local detection is real and
+        // user-visible regardless of what happens next.
+        model.lastScanBurstCount = burst
+        await refreshLibrarySizeStats()
+
         try Task.checkCancellation()
         let t1 = Date()
 
@@ -1226,7 +1235,9 @@ final class AppDependencies {
             recycledExclusionCandidates: result.recycledExclusionCandidates
         )
         model.library = liveLibrary
-        model.lastScanBurstCount = burst
+        // `lastScanBurstCount` was already set right after the
+        // local scan completed (so failed syncs surface it too).
+        // Don't reassign here.
         model.inferredOrphanCount = inferredOrphanLocalIds.count
         model.lastScanWasTokenExpiryFullEnum = wasTokenExpiry
         model.hasCompletedInitialScan = true
@@ -2355,6 +2366,16 @@ final class AppDependencies {
                         self.model.pausedSyncElapsedSeconds = nil
                         if let degraded { self.model.degraded = degraded }
                         self.lastSyncEndedAt = Date()
+                        // The local PhotoKit scan ran before the
+                        // server-touching part failed; any new
+                        // deletions detected this pass are already
+                        // persisted to ConfirmedDeletedStore. Surface
+                        // the count so the user sees their offline
+                        // deletions are recorded, not lost.
+                        let burst = self.model.lastScanBurstCount
+                        if burst > 0 {
+                            self.model.syncToast = .offlineDetections(count: burst)
+                        }
                     }
                 }
             },
