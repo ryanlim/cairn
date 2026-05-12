@@ -288,6 +288,19 @@ public struct SetupScreen: View {
             stepHeadline(Text("Point ") + .cairnWord + Text(" at your Immich server."))
             stepBlurb(Text("Photos never leave your iPhone or your Immich server. ") + .cairnWord + Text(" only sends trash requests, signed with your API key."))
 
+            // Auto-focus the URL field on first arrival. Apple's App
+            // Review on iPad Air flagged this screen for "greyed-out
+            // onboarding buttons" because the reviewer didn't realize
+            // input was required — Verify gates on URL+key, Continue
+            // gates on a successful Verify, so both buttons stay
+            // muted until the user types something. Focusing the
+            // first input pops the keyboard up immediately, which is
+            // the clearest "type here" signal we can give.
+            //
+            // We only force focus on the very first appearance of
+            // this step in the session — re-entering after the user
+            // dismissed the keyboard shouldn't re-pop it.
+
             fieldLabel("Server URL")
             CairnCard {
                 HStack(spacing: 0) {
@@ -361,6 +374,20 @@ public struct SetupScreen: View {
             verifyArea
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .task(id: step) {
+            // Auto-focus rationale: see comment at top of serverStep.
+            // The `task(id: step)` modifier fires when this step
+            // becomes the visible content, not on every body
+            // recomposition, so we don't fight the user if they
+            // dismiss the keyboard and tap somewhere else.
+            guard step == .server, !serverUrlWasCleared else { return }
+            // One-frame delay lets SwiftUI finish placing the field
+            // before the focus binding fires; without it, FocusState
+            // can silently drop the request during the step
+            // transition's `withAnimation`.
+            try? await Task.sleep(nanoseconds: 200_000_000)
+            await MainActor.run { serverUrlFocused = true }
+        }
     }
 
     private func monoCode(_ s: String) -> Text {
@@ -906,11 +933,19 @@ public struct SetupScreen: View {
                     .frame(maxWidth: .infinity)
             }
             if step != .firstRun {
+                // Keep Continue visually-primary at all times. Steps
+                // that need extra input (server, photos) handle the
+                // missing-state case by focusing the relevant field
+                // or showing a hint, rather than rendering as a dead
+                // grey button. Apple's App Review on iPad flagged a
+                // greyed-out Continue as "buttons greyed out — bug";
+                // making the tap always do something useful avoids
+                // the same misread.
                 primaryButton(
                     title: "Continue",
                     tone: .primary,
-                    disabled: !canAdvance,
-                    action: advance
+                    disabled: false,
+                    action: tryAdvance
                 )
                 .frame(maxWidth: .infinity)
             }
@@ -924,6 +959,45 @@ public struct SetupScreen: View {
                 .frame(height: 0.5),
             alignment: .top
         )
+    }
+
+    /// Continue's tap handler. If the current step's gate is
+    /// satisfied, advance. Otherwise nudge the user toward the
+    /// missing input (focus a field, hint at the action) instead of
+    /// silently no-op'ing.
+    private func tryAdvance() {
+        if canAdvance {
+            advance()
+            return
+        }
+        switch step {
+        case .server:
+            // Most common cause of not-yet-canAdvance: URL or key
+            // empty, OR both filled but Verify hasn't been run yet.
+            // Run Verify on the user's behalf when fields are
+            // present; otherwise focus the empty field.
+            if serverUrl.isEmpty {
+                serverUrlFocused = true
+            } else if apiKey.isEmpty {
+                // Can't reach ApiKeyInput's private FocusState from
+                // here, but dismissing URL focus shifts the visual
+                // emphasis to the key field — the obvious next tap.
+                serverUrlFocused = false
+            } else if !verifying {
+                runVerify()
+            }
+        case .photos:
+            // Photos gate is "permission granted." Triggering the
+            // same request the page's primary CTA fires makes
+            // Continue an alias for the in-step action.
+            if !photosRequesting {
+                requestPhotos()
+            }
+        default:
+            // welcome / background / thresholds / strictness all
+            // have canAdvance == true; we shouldn't get here.
+            break
+        }
     }
 
     /// Per-step gating for the "Continue" button. Steps with intra-step
