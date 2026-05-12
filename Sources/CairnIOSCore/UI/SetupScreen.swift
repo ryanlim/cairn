@@ -308,7 +308,7 @@ public struct SetupScreen: View {
                         .font(.system(size: 14))
                         .foregroundStyle(t.textMuted)
                         .padding(.leading, 14)
-                    TextField("https://immich.home.arpa", text: $serverUrl)
+                    TextField("immich.home.arpa", text: $serverUrl)
                         .textFieldStyle(.plain)
                         .font(.system(size: 14, design: .monospaced))
                         .foregroundStyle(t.textBody)
