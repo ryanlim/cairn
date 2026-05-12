@@ -2974,8 +2974,15 @@ final class AppDependencies {
                 // into the model. The .invalid TLD never resolves in
                 // production DNS, so a normal user typing a real URL
                 // can never accidentally land here.
+                //
+                // Match via parseServerURL so the same bare-hostname
+                // forgiveness applied to real URLs ("immich.local"
+                // → "https://immich.local") works for the magic URL
+                // too. Reviewers shouldn't have to remember the
+                // scheme.
                 let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
-                if trimmed == AppDependencies.reviewModeMagicURL && !key.isEmpty {
+                let normalizedReviewURL: String? = ImmichClient.parseServerURL(trimmed)?.absoluteString
+                if (trimmed == AppDependencies.reviewModeMagicURL || normalizedReviewURL == AppDependencies.reviewModeMagicURL) && !key.isEmpty {
                     AppDependencies.setReviewModeActive(true)
                     if let self {
                         await MainActor.run {
