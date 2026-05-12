@@ -1,7 +1,4 @@
 import SwiftUI
-#if canImport(UIKit)
-import UIKit  // UIDevice idiom for iPad-aware top padding on the brand header.
-#endif
 import CairnCore
 
 /// First-launch onboarding wizard. Mirrors the prototype's
@@ -220,18 +217,8 @@ public struct SetupScreen: View {
             Spacer()
         }
         .padding(.horizontal, 20)
-        .padding(.top, Self.topPadding)
+        .padding(.top, CairnLayout.brandHeaderTopPadding)
         .padding(.bottom, 18)
-    }
-
-    /// Top padding above the brand header. Larger on iPad than on
-    /// iPhone — see StatusScreen.topPadding for the rationale.
-    fileprivate static var topPadding: CGFloat {
-        #if canImport(UIKit)
-        UIDevice.current.userInterfaceIdiom == .pad ? 96 : 60
-        #else
-        60
-        #endif
     }
 
     private var stepper: some View {

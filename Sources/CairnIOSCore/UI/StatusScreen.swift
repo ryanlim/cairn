@@ -504,22 +504,8 @@ public struct StatusScreen: View {
                 .foregroundStyle(t.textMuted)
         }
         .padding(.horizontal, 20)
-        .padding(.top, Self.topPadding)
+        .padding(.top, CairnLayout.brandHeaderTopPadding)
         .padding(.bottom, 18)
-    }
-
-    /// Top padding above the wordmark header. Larger on iPad than on
-    /// iPhone — when this iPhone-only app runs in compat mode on
-    /// iPad, the iPad's status bar (with Dynamic Island / time /
-    /// battery) is rendered outside the iPhone-window's reported
-    /// safe area, so the header otherwise sits tight against the
-    /// iPad chrome with no visual breathing room.
-    fileprivate static var topPadding: CGFloat {
-        #if canImport(UIKit)
-        UIDevice.current.userInterfaceIdiom == .pad ? 96 : 60
-        #else
-        60
-        #endif
     }
 
     private var reconcilingSubhead: AttributedString {

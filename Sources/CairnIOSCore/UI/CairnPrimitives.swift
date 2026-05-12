@@ -1,10 +1,63 @@
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#endif
 
 // Shared SwiftUI primitives — the mark, headers, list rows, callouts.
 //
 // Each one mirrors a component from the prototype's parts.jsx (see file
 // for vocabulary). Microcopy and visual patterns are deliberately faithful
 // — see HANDOFF.md "Keep these copies verbatim" and "Visual language".
+
+// MARK: - Layout
+
+/// Cross-screen layout helpers driven by runtime system metrics so we
+/// don't sprinkle hardcoded paddings tuned for a single device.
+public enum CairnLayout {
+    /// Top padding for the hand-rolled brand header (Status + Setup
+    /// wordmarks) — sits the cairn mark a comfortable distance below
+    /// whatever system chrome is at the top of the screen.
+    ///
+    /// Reads the live status-bar frame from the active window scene
+    /// rather than hardcoding a per-device value. On iPhone the
+    /// status bar is ~50pt, on iPad with Live Activity / Dynamic
+    /// Island it can be larger, and an iPhone-only app in iPad
+    /// compat mode reports 0pt (the iPad's status bar lives outside
+    /// the iPhone window's reported safe area) — in that case we
+    /// fall back to a generous baseline so the wordmark still clears
+    /// the visually-overlaid iPad chrome.
+    ///
+    /// Computed property (not a constant) so device rotation / scene
+    /// changes pick up the new value on next render.
+    public static var brandHeaderTopPadding: CGFloat {
+        #if canImport(UIKit)
+        let measured = activeStatusBarHeight()
+        // Match prior on-iPhone visual (status bar + ~30pt gap)
+        // while guaranteeing a baseline that clears compat-mode
+        // chrome where the system reports 0.
+        return max(measured + 32, 96)
+        #else
+        return 60
+        #endif
+    }
+
+    #if canImport(UIKit)
+    /// Live status-bar frame height from the foreground window scene.
+    /// Returns 0 if no scene is active (e.g., during launch).
+    private static func activeStatusBarHeight() -> CGFloat {
+        guard
+            let scene = UIApplication.shared.connectedScenes
+                .compactMap({ $0 as? UIWindowScene })
+                .first(where: { $0.activationState == .foregroundActive })
+                ?? UIApplication.shared.connectedScenes
+                    .compactMap({ $0 as? UIWindowScene })
+                    .first,
+            let statusBar = scene.statusBarManager
+        else { return 0 }
+        return statusBar.statusBarFrame.height
+    }
+    #endif
+}
 
 // MARK: - Inline wordmark
 
