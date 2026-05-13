@@ -37,6 +37,42 @@ platform :ios do
     sh("cd .. && xcodegen generate")
   end
 
+  desc "Cut a new marketing version end-to-end: bump → commit → TestFlight upload → annotated git tag → push tag.\nUsage: bundle exec fastlane ship_version to:0.2.0 notes:\"Offline retry queue + About screen\""
+  lane :ship_version do |options|
+    target = options[:to]
+    UI.user_error!("Pass to:X.Y.Z, e.g. ship_version to:0.2.0") if target.nil? || target.empty?
+    unless target.match?(/^\d+\.\d+(\.\d+)?$/)
+      UI.user_error!("'#{target}' isn't a valid semver — use X.Y or X.Y.Z (digits only).")
+    end
+    notes = options[:notes].to_s.strip
+    notes = "Release v#{target}" if notes.empty?
+
+    # Refuse to ship from a dirty tree so the version-bump commit
+    # contains only the bump. Untracked files are fine; staged or
+    # modified tracked files are not.
+    status = sh("cd ../.. && git status --porcelain", log: false).strip.lines.reject { |l| l.start_with?("??") }
+    unless status.empty?
+      UI.user_error!("Working tree has uncommitted changes — commit or stash before shipping a release.\n#{status.join}")
+    end
+
+    # Make sure the tag we're about to create doesn't already exist.
+    existing = sh("cd ../.. && git tag --list v#{target}", log: false).strip
+    UI.user_error!("Tag v#{target} already exists.") unless existing.empty?
+
+    bump_version(to: target)
+
+    sh("cd ../.. && git add iOS/project.yml iOS/App/Info.plist")
+    sh(%Q(cd ../.. && git commit -m "Bump marketing version to #{target}"))
+
+    beta
+
+    sh(%Q(cd ../.. && git tag -a v#{target} -m "#{notes.gsub('"', '\\"')}"))
+    sh("cd ../.. && git push origin v#{target}")
+
+    UI.success "🚢 Shipped v#{target} to TestFlight + tagged v#{target} on origin."
+    UI.important "Next: create version #{target} in ASC, attach the new build, paste release notes, submit for review."
+  end
+
   desc "Bump marketing version (CFBundleShortVersionString) — usage: bundle exec fastlane bump_version to:0.2.0"
   lane :bump_version do |options|
     target = options[:to]
