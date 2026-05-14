@@ -46,7 +46,7 @@ targets:
       path: App/Info.plist
       properties:
         CFBundleDisplayName: cairn
-        CFBundleShortVersionString: "0.1.0"
+        CFBundleShortVersionString: "0.2.0"
         CFBundleVersion: "39"
         # Required for PhotoKit access. The string is shown in the iOS
         # permission prompt and on the app's Settings page — keep it honest
