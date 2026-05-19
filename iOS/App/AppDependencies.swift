@@ -29,6 +29,15 @@ private final class PhotoLibraryChangeBridge: NSObject, PHPhotoLibraryChangeObse
 @Observable
 final class AppDependencies {
 
+    /// Process-wide access for things that can't reach into SwiftUI's
+    /// `@State` graph — primarily `AppIntent.perform()` bodies invoked
+    /// from Shortcuts. Set in `init()`; reads must be on MainActor.
+    /// Nil before the App struct materializes (which won't happen in
+    /// practice during a Shortcut invocation — iOS launches the app
+    /// first, then runs the intent, so by perform() time the singleton
+    /// is populated).
+    static var shared: AppDependencies?
+
     // MARK: - Global stores (shared across all servers)
 
     let secretStore: KeychainSecretStore
@@ -328,6 +337,8 @@ final class AppDependencies {
         model.isBootstrapping = true
 
         rewireActions()
+
+        AppDependencies.shared = self
     }
 
     // MARK: - Server activation
@@ -3581,6 +3592,90 @@ final class AppDependencies {
                 guard let self else { return }
                 try? await self.pendingTrashStore?.remove(id)
                 await self.refreshPendingTrashCount()
+            },
+            findMissedDeletions: { [weak self] minCreatedAt, maxCreatedAt, strictHistorical in
+                guard let self,
+                      let client = await self.immichClient,
+                      let observed = await self.observedStore,
+                      let exclusions = await self.exclusionStore else { return [] }
+                let serverAssets = try await client.listAllAssets(includeTrashed: false, visibility: .timeline)
+                let observedChecksums = try await observed.snapshot()
+                let excludedChecksums = Set((try await exclusions.snapshot()).keys)
+                // Snapshot the metadata cache + currently-alive PHAsset
+                // ids. The intersection gives live local filenames
+                // (suppression). The difference (cached IDs not alive)
+                // gives historical filenames (positive evidence for
+                // strict mode).
+                let metadataSnapshot = (try? await self.localAssetMetadataStore.snapshot()) ?? []
+                let liveIds = PhotoKitPersistentChangeReconciler.enumerateLiveLocalIdentifiers(
+                    includeHiddenAssets: true,
+                    sourceTypes: [.typeUserLibrary, .typeCloudShared, .typeiTunesSynced]
+                )
+                let liveFilenames: Set<String> = Set(
+                    metadataSnapshot
+                        .filter { liveIds.contains($0.localIdentifier) }
+                        .compactMap { $0.originalFileName }
+                )
+                let strictFilenames: Set<String>? = {
+                    guard strictHistorical else { return nil }
+                    return Set(
+                        metadataSnapshot
+                            .filter { !liveIds.contains($0.localIdentifier) }
+                            .compactMap { $0.originalFileName }
+                    )
+                }()
+                return MissedDeletionFinder.find(
+                    serverAssets: serverAssets,
+                    observed: observedChecksums,
+                    excluded: excludedChecksums,
+                    liveLocalFilenames: liveFilenames,
+                    minCreatedAt: minCreatedAt,
+                    maxCreatedAt: maxCreatedAt,
+                    confirmedDeletedFilenames: strictFilenames
+                )
+            },
+            trashMissedDeletions: { [weak self] assets in
+                guard let self,
+                      let client = await self.immichClient,
+                      let journal = await self.journal,
+                      !assets.isEmpty else { return }
+                let runId = "\(ISO8601DateFormatter().string(from: Date()))-\(UUID().uuidString.prefix(8))"
+                let orchestrator = TrashOrchestrator(writer: client, journal: journal)
+                do {
+                    _ = try await orchestrator.run(
+                        runId: runId,
+                        candidates: assets,
+                        assetsInPurview: assets.count,
+                        dryRun: false
+                    )
+                    await self.refreshRunsList()
+                    await self.refreshJournalTail()
+                } catch {
+                    await self.handleTrashFailure(
+                        runId: runId,
+                        candidates: assets,
+                        assetsInPurview: assets.count,
+                        error: error
+                    )
+                    throw error
+                }
+            },
+            simulateBackgroundRefresh: { [weak self] in
+                guard let self else { return }
+                // Same code path as BGAppRefreshTask's handler, minus
+                // the BGTask object lifecycle (no setTaskCompleted/
+                // expirationHandler). Use this when iOS scheduling
+                // can't be trusted to fire in a useful timeframe (a
+                // fresh install, the simulator, or an iOS version
+                // where `_simulateLaunchForTaskWithIdentifier:` traps
+                // on dispatch queue assertions from lldb).
+                bgLog.info("[cairn.bgtask] manual fire from Settings → Advanced")
+                do {
+                    try await self.runScheduledScan()
+                    bgLog.info("[cairn.bgtask] manual fire completed successfully")
+                } catch {
+                    bgLog.error("[cairn.bgtask] manual fire failed: \(String(describing: error), privacy: .public)")
+                }
             }
         )
 

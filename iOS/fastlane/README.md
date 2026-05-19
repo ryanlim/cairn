@@ -23,6 +23,23 @@ For _fastlane_ installation instructions, see [Installing _fastlane_](https://do
 
 Regenerate Cairn.xcodeproj from project.yml (requires xcodegen)
 
+### ios ship_version
+
+```sh
+[bundle exec] fastlane ios ship_version
+```
+
+Cut a new marketing version end-to-end: bump → commit → TestFlight upload → annotated git tag → push tag.
+Usage: bundle exec fastlane ship_version to:0.2.0 notes:"Offline retry queue + About screen"
+
+### ios bump_version
+
+```sh
+[bundle exec] fastlane ios bump_version
+```
+
+Bump marketing version (CFBundleShortVersionString) — usage: bundle exec fastlane bump_version to:0.2.0
+
 ### ios bump_build
 
 ```sh

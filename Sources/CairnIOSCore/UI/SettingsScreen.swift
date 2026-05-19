@@ -77,6 +77,15 @@ public struct SettingsScreen: View {
     /// Host (CairnAppRoot) wires this to mutate `model.presentedSheet`
     /// and persist the picker's resulting selection back into settings.
     public let onOpenAlbumPicker: () -> Void
+    /// Opens the Recovery sheet ("Find missed deletions"). Host
+    /// (CairnAppRoot) sets `model.presentedSheet = .missedDeletions`
+    /// and kicks off the scan.
+    public let onOpenMissedDeletions: () -> Void
+    /// DEBUG-only: trigger the BG refresh handler path without iOS
+    /// scheduling. Surfaced as a row under Settings → Advanced when
+    /// the build is Debug. In Release the closure is no-op + the row
+    /// is `#if DEBUG`-gated.
+    public let onFireBackgroundRefresh: () -> Void
     /// Token incremented by the host when the user re-taps the active
     /// tab — see `CairnTabBar.onReselect`. Each increment scrolls the
     /// screen back to the top.
@@ -126,6 +135,8 @@ public struct SettingsScreen: View {
         onExportData: @escaping (CairnExportScope) -> Void = { _ in },
         onImportData: @escaping (URL, Bool) -> Void = { _, _ in },
         onOpenAlbumPicker: @escaping () -> Void = {},
+        onOpenMissedDeletions: @escaping () -> Void = {},
+        onFireBackgroundRefresh: @escaping () -> Void = {},
         scrollResetToken: Int = 0,
         photoAuthStatus: SetupScreen.PhotoAuthOutcome? = nil
     ) {
@@ -152,6 +163,8 @@ public struct SettingsScreen: View {
         self.onExportData = onExportData
         self.onImportData = onImportData
         self.onOpenAlbumPicker = onOpenAlbumPicker
+        self.onOpenMissedDeletions = onOpenMissedDeletions
+        self.onFireBackgroundRefresh = onFireBackgroundRefresh
         self.scrollResetToken = scrollResetToken
         self.photoAuthStatus = photoAuthStatus
     }
@@ -172,6 +185,7 @@ public struct SettingsScreen: View {
                 howItWorksSection
                 advancedSection
                 dataSection
+                recoverySection
                 dangerZoneSection
                 aboutSection
                 footer
@@ -258,15 +272,22 @@ public struct SettingsScreen: View {
                 Text("Removes all \(excludedCount) excluded checksums for this account. The index, journal, credentials, and saved servers are kept. Excluded items will start flowing through reconciliation again on the next sync — including any that were previously preserved via restore-via-cairn.")
             }
         )
-        .confirmationDialog(
+        // `.alert` rather than `.confirmationDialog` — on iOS 26 the
+        // dialog adapts to a popover that anchors to whatever source
+        // view SwiftUI picks, often unrelated to the tapped row. Same
+        // reasoning as the destructive confirmations above.
+        .alert(
             "Export scope",
             isPresented: $showExportPicker,
-            titleVisibility: .visible
-        ) {
-            Button("Current server") { onExportData(.currentServer) }
-            Button("All servers") { onExportData(.allServers) }
-            Button("Cancel", role: .cancel) {}
-        }
+            actions: {
+                Button("Current server") { onExportData(.currentServer) }
+                Button("All servers") { onExportData(.allServers) }
+                Button("Cancel", role: .cancel) {}
+            },
+            message: {
+                Text("Current server backs up only the active Immich account's state. All servers includes every (URL, user) partition on this device.")
+            }
+        )
         .fileImporter(
             isPresented: $showImportPicker,
             allowedContentTypes: [.json],
@@ -721,6 +742,13 @@ public struct SettingsScreen: View {
                             chevron: true,
                             onTap: onReplayOnboarding
                         )
+                        RowDivider()
+                        KeyValRow(
+                            "Fire BG refresh now (dev)",
+                            value: { Text("Run scheduled scan").foregroundStyle(t.infoInk) },
+                            chevron: true,
+                            onTap: onFireBackgroundRefresh
+                        )
                         #endif
                     }
                 }
@@ -750,6 +778,29 @@ public struct SettingsScreen: View {
                     )
                 }
             }
+        }
+    }
+
+    // MARK: - Recovery
+
+    /// Manual recovery tools — actions that scan the Immich server and
+    /// fix accumulated drift cairn's normal sync pipeline couldn't
+    /// catch (missed deletions during a sync gap, etc.). Filename-
+    /// matched, so the user reviews each candidate before acting.
+    private var recoverySection: some View {
+        Group {
+            KeylineSection("Recovery", icon: "wand.and.stars", iconTint: t.pendingInk)
+            CairnCard {
+                VStack(spacing: 0) {
+                    KeyValRow(
+                        "Find missed deletions",
+                        value: { Text("Scan server").foregroundStyle(t.infoInk) },
+                        chevron: true,
+                        onTap: onOpenMissedDeletions
+                    )
+                }
+            }
+            .padding(.bottom, 4)
         }
     }
 

@@ -1124,7 +1124,7 @@ public final class PhotoKitPersistentChangeReconciler {
     /// Off-main wrapper for `PHAsset.fetchAssets` + `enumerateObjects`.
     /// Same reasoning as `collectIncrementalChanges`: enumerating 6k+
     /// assets on the main thread is a perceptible UI stall during sync.
-    nonisolated static func enumerateLiveLocalIdentifiers(
+    public nonisolated static func enumerateLiveLocalIdentifiers(
         includeHiddenAssets: Bool,
         sourceTypes: PHAssetSourceType
     ) -> Set<String> {

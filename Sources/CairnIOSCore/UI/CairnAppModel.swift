@@ -580,6 +580,20 @@ public final class CairnAppModel {
     /// `.pendingTrashes`; same shape as `deferredQueueEntries`.
     public var pendingTrashIntents: [PendingTrashIntent] = []
 
+    /// State of the Settings → Recovery → Find missed deletions sheet.
+    /// `idle` outside the flow; `scanning` while the host fetches the
+    /// server list + filters; `loaded` once results are ready;
+    /// `error` if the scan failed (network, permission). Mutates on
+    /// MainActor — the sheet observes it directly.
+    public var missedDeletionsState: MissedDeletionsState = .idle
+
+    public enum MissedDeletionsState: Sendable, Equatable {
+        case idle
+        case scanning
+        case loaded([ServerAsset])
+        case error(String)
+    }
+
     /// Count of items in `ConfirmedDeletedStore` still within the
     /// quarantine window. Populated from the store directly at
     /// bootstrap and after each sync/trash, so the Status pending
@@ -675,6 +689,12 @@ public final class CairnAppModel {
         /// failed" affordance and from the Retry-now path when stuck
         /// intents exist.
         case pendingTrashes
+        /// Settings → Recovery → "Find missed deletions" — scans the
+        /// Immich server for assets that look like prior iPhone uploads
+        /// cairn never observed and aren't currently alive on the
+        /// device. Manual flow (not auto-running) because the signal
+        /// is filename-based, less precise than the SHA1 pipeline.
+        case missedDeletions
 
         public var id: String {
             switch self {
@@ -685,6 +705,7 @@ public final class CairnAppModel {
             case .albumPicker: "album-picker"
             case .syncDetail: "sync-detail"
             case .pendingTrashes: "pending-trashes"
+            case .missedDeletions: "missed-deletions"
             }
         }
     }
@@ -1008,6 +1029,35 @@ public struct CairnAppActions: Sendable {
     /// The host removes from store + refreshes counts.
     public var discardPendingTrash: @Sendable (_ id: UUID) async -> Void
 
+    /// DEBUG-only: trigger the same handler code path as the
+    /// `BGAppRefreshTask` slot, without iOS's scheduling layer. Useful
+    /// for verifying the new logging + scan-completion code on device
+    /// when `_simulateLaunchForTaskWithIdentifier:` is unreliable on a
+    /// given iOS version (queue assertions). Surfaced via Settings →
+    /// Advanced when DEBUG is set. No-op in Release builds.
+    public var simulateBackgroundRefresh: @Sendable () async -> Void
+
+    /// Settings → Recovery: scan Immich for assets that look like
+    /// prior iPhone uploads cairn never observed, then filter against
+    /// the currently-alive local library so we don't surface
+    /// legitimately-kept photos. Returns a newest-first list.
+    /// `MissedDeletionFinder.find` does the heavy lifting; the host
+    /// supplies the inputs (server list, observed set, exclusions,
+    /// live local filenames).
+    ///
+    /// `minCreatedAt` and `maxCreatedAt` constrain the server-side
+    /// `fileCreatedAt` range. `nil` for either side disables that bound.
+    /// The Recovery sheet surfaces these as date pickers so the user
+    /// can narrow the window manually — the practical mitigation for
+    /// the structural false-positive class (Immich-album uploads with
+    /// iPhone-style filenames that were never on this device).
+    public var findMissedDeletions: @Sendable (_ minCreatedAt: Date?, _ maxCreatedAt: Date?, _ strictHistorical: Bool) async throws -> [ServerAsset]
+
+    /// Trash a user-picked subset of missed-deletion candidates. Goes
+    /// straight to `TrashOrchestrator.run` — no quarantine, no
+    /// reconciliation, the user has already reviewed each one.
+    public var trashMissedDeletions: @Sendable (_ assets: [ServerAsset]) async throws -> Void
+
     public init(
         requestSync: @escaping @Sendable () async throws -> Void = {},
         confirmTrash: @escaping @Sendable () async throws -> Void = {},
@@ -1045,7 +1095,10 @@ public struct CairnAppActions: Sendable {
         clearRecentServers: @escaping @Sendable () async -> Void = {},
         retryPendingTrashes: @escaping @Sendable () async -> Void = {},
         loadPendingTrashes: @escaping @Sendable () async -> [PendingTrashIntent] = { [] },
-        discardPendingTrash: @escaping @Sendable (UUID) async -> Void = { _ in }
+        discardPendingTrash: @escaping @Sendable (UUID) async -> Void = { _ in },
+        findMissedDeletions: @escaping @Sendable (Date?, Date?, Bool) async throws -> [ServerAsset] = { _, _, _ in [] },
+        trashMissedDeletions: @escaping @Sendable ([ServerAsset]) async throws -> Void = { _ in },
+        simulateBackgroundRefresh: @escaping @Sendable () async -> Void = {}
     ) {
         self.requestSync = requestSync
         self.confirmTrash = confirmTrash
@@ -1082,6 +1135,9 @@ public struct CairnAppActions: Sendable {
         self.retryPendingTrashes = retryPendingTrashes
         self.loadPendingTrashes = loadPendingTrashes
         self.discardPendingTrash = discardPendingTrash
+        self.findMissedDeletions = findMissedDeletions
+        self.trashMissedDeletions = trashMissedDeletions
+        self.simulateBackgroundRefresh = simulateBackgroundRefresh
     }
 
     /// All-no-op closures with successful default returns. Use in previews

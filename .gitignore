@@ -1,5 +1,6 @@
 .env
 .env.*
+.env_*
 !.env.example
 .build/
 .swiftpm/

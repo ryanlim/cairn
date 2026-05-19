@@ -581,6 +581,17 @@ public struct CairnAppRoot: View {
                     }
                 },
                 onOpenAlbumPicker: { model.presentedSheet = .albumPicker },
+                onOpenMissedDeletions: {
+                    // Open the sheet idle — the user picks a date range
+                    // and taps Start scan. Avoids an immediate full-
+                    // library scan with default bounds the user may not
+                    // want.
+                    model.missedDeletionsState = .idle
+                    model.presentedSheet = .missedDeletions
+                },
+                onFireBackgroundRefresh: {
+                    Task { await model.actions.simulateBackgroundRefresh() }
+                },
                 scrollResetToken: scrollResetTokens["settings"] ?? 0,
                 photoAuthStatus: model.photoAuthStatus
             )
@@ -768,6 +779,58 @@ public struct CairnAppRoot: View {
                         model.pendingTrashIntents = await model.actions.loadPendingTrashes()
                     }
                 }
+            )
+            .cairnTheme(palette)
+        case .missedDeletions:
+            MissedDeletionsSheet(
+                state: model.missedDeletionsState,
+                onClose: {
+                    model.presentedSheet = nil
+                    model.missedDeletionsState = .idle
+                },
+                onScan: { minCreatedAt, maxCreatedAt, strictHistorical in
+                    model.missedDeletionsState = .scanning
+                    Task { @MainActor in
+                        do {
+                            let assets = try await model.actions.findMissedDeletions(minCreatedAt, maxCreatedAt, strictHistorical)
+                            model.missedDeletionsState = .loaded(assets)
+                        } catch {
+                            model.missedDeletionsState = .error(error.localizedDescription)
+                        }
+                    }
+                },
+                onTrash: { assets in
+                    Task { @MainActor in
+                        do {
+                            try await model.actions.trashMissedDeletions(assets)
+                            // Drop the trashed ones from the list rather
+                            // than re-scanning — re-scan would touch the
+                            // network again and could race the server's
+                            // trash propagation.
+                            let trashedIds = Set(assets.map(\.id))
+                            if case .loaded(let current) = model.missedDeletionsState {
+                                let remaining = current.filter { !trashedIds.contains($0.id) }
+                                model.missedDeletionsState = .loaded(remaining)
+                            }
+                        } catch {
+                            model.missedDeletionsState = .error(error.localizedDescription)
+                        }
+                    }
+                },
+                onKeep: { assets in
+                    Task { @MainActor in
+                        let checksums = assets.map { $0.checksum.base64 }
+                        let filenames = assets.compactMap(\.originalFileName)
+                        let recoveryRunId = "recovery-\(ISO8601DateFormatter().string(from: Date()))"
+                        try? await model.actions.exclude(checksums, filenames, recoveryRunId)
+                        let keptIds = Set(assets.map(\.id))
+                        if case .loaded(let current) = model.missedDeletionsState {
+                            let remaining = current.filter { !keptIds.contains($0.id) }
+                            model.missedDeletionsState = .loaded(remaining)
+                        }
+                    }
+                },
+                onDismissOne: { _ in }
             )
             .cairnTheme(palette)
         }
