@@ -2,6 +2,21 @@ import SwiftUI
 import BackgroundTasks
 import CairnCore
 import CairnIOSCore
+import os
+
+/// Logger for background-task lifecycle: registration, submit
+/// (success/failure), fire, completion. Stream this in Console.app
+/// (subsystem `app.cairn.ios`, category `bgtask`) on a tethered device
+/// to verify scheduling is happening end-to-end. `BGTaskScheduler.submit`
+/// is `try?`d in handlers, so logging is the only signal that a
+/// submission failed (typically rate-limit, missing entitlement, or
+/// the system already throttling this app).
+/// Internal so `AppDependencies` can write to the same stream when
+/// the user manually triggers the BG-refresh path from Settings →
+/// Advanced (DEBUG-only "Fire BG refresh now"). Same subsystem +
+/// category as the task-handler-driven logs so a single
+/// `idevicesyslog -m "[cairn.bgtask]"` filter shows everything.
+let bgLog = Logger(subsystem: "app.cairn.ios", category: "bgtask")
 
 /// The cairn iOS app entry point.
 ///
@@ -86,17 +101,31 @@ struct CairnApp: App {
             .task {
                 await dependencies.bootstrap()
             }
-            .onChange(of: ScenePhaseObserver.shared.phase) { oldPhase, newPhase in
-                if newPhase == .background {
-                    scheduleNextBackgroundRefresh()
-                    if !dependencies.model.hasCompletedInitialScan
-                        || dependencies.model.deferredQueue.count > 0 {
-                        scheduleInitialHashContinuation()
-                    }
-                } else if newPhase == .active && oldPhase == .background {
-                    Task { await dependencies.checkServerHealth() }
-                }
-            }
+            .background(
+                ScenePhaseBridge(onChange: handleScenePhaseChange)
+            )
+    }
+
+    /// Reacts to scene-phase transitions. Called from `ScenePhaseBridge`
+    /// (which observes `@Environment(\.scenePhase)` directly) rather
+    /// than from `.onChange(of: ScenePhaseObserver.shared.phase)` — that
+    /// older approach silently broke because `.onChange` doesn't
+    /// subscribe to `ObservableObject` updates; it just diffs values on
+    /// parent body re-renders, which the singleton write didn't trigger.
+    private func handleScenePhaseChange(_ oldPhase: ScenePhase, _ newPhase: ScenePhase) {
+        if newPhase == .background {
+            scheduleNextBackgroundRefresh()
+            // Always submit a BGProcessingTask too, not just when
+            // there's pending initial-scan/hash work. iOS only fires
+            // these on charging+idle (typically overnight), and the
+            // multi-minute budget is exactly what cairn needs to scan
+            // for new deletions on a fresh BG slot. Without
+            // resubmission, the chain dies once initial scan
+            // completes and the user loses the overnight catch-up.
+            scheduleInitialHashContinuation()
+        } else if newPhase == .active && oldPhase == .background {
+            Task { await dependencies.checkServerHealth() }
+        }
     }
 
     // MARK: - Background tasks
@@ -127,6 +156,7 @@ struct CairnApp: App {
         ) { task in
             handleBackgroundHash(task: task as! BGProcessingTask)
         }
+        bgLog.info("[cairn.bgtask] registered handlers for refresh + hash")
     }
 
     /// Run the incremental reconciliation from a `BGAppRefreshTask` slot.
@@ -137,17 +167,21 @@ struct CairnApp: App {
     /// missed deadline marks the run failed and may reduce future
     /// scheduling priority.
     private func handleBackgroundRefresh(task: BGAppRefreshTask) {
+        bgLog.info("[cairn.bgtask] refresh fired")
         scheduleNextBackgroundRefresh()
 
         let work = Task {
             do {
                 try await dependencies.runScheduledScan()
+                bgLog.info("[cairn.bgtask] refresh completed successfully")
                 task.setTaskCompleted(success: true)
             } catch {
+                bgLog.error("[cairn.bgtask] refresh failed: \(String(describing: error), privacy: .public)")
                 task.setTaskCompleted(success: false)
             }
         }
         task.expirationHandler = {
+            bgLog.error("[cairn.bgtask] refresh expired before completion")
             work.cancel()
         }
     }
@@ -162,6 +196,7 @@ struct CairnApp: App {
     /// restarts. If the initial scan is still incomplete, re-schedules
     /// another continuation before returning, keeping the chain alive.
     private func handleBackgroundHash(task: BGProcessingTask) {
+        bgLog.info("[cairn.bgtask] hash fired")
         let work = Task {
             do {
                 // `runBackgroundDrain` does the incremental/full scan
@@ -172,11 +207,14 @@ struct CairnApp: App {
                 // `requiresNetworkConnectivity`), which is the only
                 // context it's OK to download multi-GB content from.
                 try await dependencies.runBackgroundDrain()
+                bgLog.info("[cairn.bgtask] hash completed successfully")
                 task.setTaskCompleted(success: true)
             } catch is CancellationError {
                 // iOS expired us; resume picks up next time.
+                bgLog.notice("[cairn.bgtask] hash cancelled by expiration handler")
                 task.setTaskCompleted(success: false)
             } catch {
+                bgLog.error("[cairn.bgtask] hash failed: \(String(describing: error), privacy: .public)")
                 task.setTaskCompleted(success: false)
             }
             // Keep the chain alive while work remains. Done after
@@ -189,20 +227,26 @@ struct CairnApp: App {
             }
         }
         task.expirationHandler = {
+            bgLog.error("[cairn.bgtask] hash expired before completion")
             work.cancel()
         }
     }
 
-    /// Submit the next `BGAppRefreshTaskRequest` with a ~5min earliest-begin
-    /// hint, matching Immich's mobile app cadence. iOS treats the date as
-    /// "no earlier than" and ultimately schedules at its discretion — a
-    /// more aggressive ask gets us more BG slots, important for catching
-    /// the take→quickly-delete pattern without relying on the user
-    /// opening cairn between those events.
+    /// Submit the next `BGAppRefreshTaskRequest` with no earliest-begin
+    /// hint — iOS treats `nil` as "fire whenever you have a slot."
+    /// We deliberately don't set a minimum delay because for cairn's
+    /// take→quickly-delete catch case, any slot iOS is willing to give
+    /// is better than waiting an artificial 5-minute floor. The
+    /// scheduler still throttles based on app engagement, device
+    /// state, etc. — we just stop adding our own restriction on top.
     private func scheduleNextBackgroundRefresh() {
         let request = BGAppRefreshTaskRequest(identifier: Self.backgroundRefreshIdentifier)
-        request.earliestBeginDate = Date(timeIntervalSinceNow: 5 * 60)
-        try? BGTaskScheduler.shared.submit(request)
+        do {
+            try BGTaskScheduler.shared.submit(request)
+            bgLog.info("[cairn.bgtask] scheduled next refresh (no earliest-begin floor)")
+        } catch {
+            bgLog.error("[cairn.bgtask] refresh submit failed: \(String(describing: error), privacy: .public)")
+        }
     }
 
     /// Submit a `BGProcessingTaskRequest` for long-running initial-hash work.
@@ -220,7 +264,12 @@ struct CairnApp: App {
         let request = BGProcessingTaskRequest(identifier: Self.backgroundHashIdentifier)
         request.requiresNetworkConnectivity = true
         request.requiresExternalPower = false
-        try? BGTaskScheduler.shared.submit(request)
+        do {
+            try BGTaskScheduler.shared.submit(request)
+            bgLog.info("[cairn.bgtask] scheduled hash continuation")
+        } catch {
+            bgLog.error("[cairn.bgtask] hash submit failed: \(String(describing: error), privacy: .public)")
+        }
     }
 }
 
@@ -229,11 +278,38 @@ struct CairnApp: App {
 /// `@Environment(\.scenePhase)` on the App's body forces every sub-tree to
 /// re-resolve whenever the phase changes. Publishing through this singleton
 /// lets only the one `onChange` listener at the root react.
+///
+/// Writes flow in via `ScenePhaseBridge` — a hidden `.background` view that
+/// reads `@Environment(\.scenePhase)` and forwards each transition to this
+/// singleton. Without that bridge nothing updates `phase`, so background
+/// scheduling silently stops working.
 @MainActor
 final class ScenePhaseObserver: ObservableObject {
     static let shared = ScenePhaseObserver()
     @Published var phase: ScenePhase = .active
     private init() {}
+}
+
+/// Hidden view that observes `@Environment(\.scenePhase)` and forwards
+/// each transition both to the singleton (for anyone else who wants to
+/// read it) and to a callback supplied by `CairnApp` so the App's
+/// non-View context can react. Placed inside `mainContent` via
+/// `.background(ScenePhaseBridge(...))` so the environment is resolved
+/// against the active scene. Renders nothing.
+private struct ScenePhaseBridge: View {
+    @Environment(\.scenePhase) private var scenePhase
+    let onChange: (ScenePhase, ScenePhase) -> Void
+
+    var body: some View {
+        Color.clear
+            .onChange(of: scenePhase) { oldPhase, newPhase in
+                ScenePhaseObserver.shared.phase = newPhase
+                onChange(oldPhase, newPhase)
+            }
+            .onAppear {
+                ScenePhaseObserver.shared.phase = scenePhase
+            }
+    }
 }
 
 #if DEBUG
