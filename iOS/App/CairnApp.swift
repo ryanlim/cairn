@@ -144,39 +144,41 @@ struct CairnApp: App {
     ///   charging and idle (overnight). Re-submitted from the handler
     ///   until `hasCompletedInitialScan == true`.
     private func registerBackgroundTasks() {
-        // iOS invokes these handler closures on an internal dispatch
-        // queue (NOT the main queue). Build 41 crashed because the
-        // closure called instance methods on `self` (a @MainActor App
-        // struct) — Swift's runtime tried to enforce MainActor
-        // isolation synchronously and fired libdispatch's queue
-        // assertion (EXC_BREAKPOINT brk 1). Build 42's
-        // `Task { @MainActor in handleBackgroundRefresh(...) }` wrap
-        // didn't actually help because the Task body still resolved
-        // the @MainActor instance method against `self`, which
-        // captures `self` synchronously at Task creation.
+        // Three crash iterations got us here. Builds 41/42/44 all
+        // crashed with EXC_BREAKPOINT brk 1 in libdispatch's
+        // _dispatch_assert_queue_fail, called from
+        // libswift_Concurrency at Task-spawn time, called from the
+        // closure stored by BGTaskScheduler. Theory we ruled out:
+        // capturing @MainActor `self` was the problem (build 44 used
+        // static handlers; still crashed). Real diagnosis: the
+        // closure literal inside this method inherits @MainActor
+        // isolation because the enclosing type (App-conforming
+        // CairnApp) is implicitly @MainActor. When iOS invokes that
+        // closure on its internal off-main queue, Swift's runtime
+        // asserts the closure's declared MainActor isolation
+        // synchronously and crashes before our `Task { @MainActor }`
+        // wrapping has any chance to hop.
         //
-        // Real fix (build 43+): the closures don't capture `self` at
-        // all. They call STATIC handler methods, which reach app
-        // state through `AppDependencies.shared`. The whole BG-task
-        // pipeline is decoupled from the App struct's @MainActor
-        // isolation, and the only synchronous work in the closure is
-        // a `Task { @MainActor in <static call> }` spawn — no
-        // captured isolated context.
+        // Final fix: pass `using: .main` so BGTaskScheduler invokes
+        // the launch handler ON the main queue. Once we're on main,
+        // `MainActor.assumeIsolated` is the runtime-cheap way to
+        // bridge to @MainActor static methods synchronously without
+        // spawning a Task.
         BGTaskScheduler.shared.register(
             forTaskWithIdentifier: Self.backgroundRefreshIdentifier,
-            using: nil
+            using: .main
         ) { task in
             let bgTask = task as! BGAppRefreshTask
-            Task { @MainActor in
+            MainActor.assumeIsolated {
                 CairnApp.handleBackgroundRefresh(task: bgTask)
             }
         }
         BGTaskScheduler.shared.register(
             forTaskWithIdentifier: Self.backgroundHashIdentifier,
-            using: nil
+            using: .main
         ) { task in
             let bgTask = task as! BGProcessingTask
-            Task { @MainActor in
+            MainActor.assumeIsolated {
                 CairnApp.handleBackgroundHash(task: bgTask)
             }
         }
