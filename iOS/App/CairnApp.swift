@@ -144,17 +144,36 @@ struct CairnApp: App {
     ///   charging and idle (overnight). Re-submitted from the handler
     ///   until `hasCompletedInitialScan == true`.
     private func registerBackgroundTasks() {
+        // iOS invokes these handler closures on an internal dispatch
+        // queue (NOT the main queue) when `using: nil`. The handler
+        // bodies read MainActor-isolated state (the @State
+        // `dependencies`, which reaches into Observable model state).
+        // Calling them synchronously from off-main fires libdispatch's
+        // queue assertion (EXC_BREAKPOINT brk 1). Wrap the handler
+        // invocation in `Task { @MainActor in … }` so the body runs
+        // on MainActor. The outer closure returns immediately; the
+        // BGTask object's lifetime survives via the Task capture.
+        // Confirmed via TestFlight crash 642672F7… on iOS 26.5: the
+        // crash was buried in the BG handler path and never surfaced
+        // through the in-app DEBUG fire button (which is already on
+        // MainActor at invocation).
         BGTaskScheduler.shared.register(
             forTaskWithIdentifier: Self.backgroundRefreshIdentifier,
             using: nil
         ) { task in
-            handleBackgroundRefresh(task: task as! BGAppRefreshTask)
+            let bgTask = task as! BGAppRefreshTask
+            Task { @MainActor in
+                handleBackgroundRefresh(task: bgTask)
+            }
         }
         BGTaskScheduler.shared.register(
             forTaskWithIdentifier: Self.backgroundHashIdentifier,
             using: nil
         ) { task in
-            handleBackgroundHash(task: task as! BGProcessingTask)
+            let bgTask = task as! BGProcessingTask
+            Task { @MainActor in
+                handleBackgroundHash(task: bgTask)
+            }
         }
         bgLog.info("[cairn.bgtask] registered handlers for refresh + hash")
     }
