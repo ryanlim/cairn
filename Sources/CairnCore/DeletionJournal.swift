@@ -162,6 +162,21 @@ public struct JournalEntry: Codable, Sendable, Equatable {
             case .unknown: return "—"
             }
         }
+
+        /// Short lowercase token for `key=value`-style log/journal
+        /// messages. Matches the existing tail convention
+        /// (`indexed=N`, `cand=N`, `edit-prot=N`, etc.) rather than
+        /// the title-cased `displayName` used in UI rows.
+        public var shortToken: String {
+            switch self {
+            case .manualForeground: return "manual"
+            case .scheduledBackground: return "background"
+            case .scheduledHashContinuation: return "overnight"
+            case .shortcut: return "shortcut"
+            case .debugManualFire: return "debug"
+            case .unknown: return "unknown"
+            }
+        }
     }
 
     public init(timestamp: Date = Date(), runId: String, event: Event) {

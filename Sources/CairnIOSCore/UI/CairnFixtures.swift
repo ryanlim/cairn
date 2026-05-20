@@ -621,7 +621,7 @@ public enum CairnFixtures {
                 // those stay non-routine and surface in the filtered
                 // tail by default.
                 routine = (trigger == .manualForeground || trigger == .unknown)
-                message = "triggered by \(trigger.displayName.lowercased())"
+                message = "trigger=\(trigger.shortToken)"
             case .syncCompleted(let indexed, let candidates, let pending, let large, let largeBytes, let timeout, let elapsedMs):
                 eventName = "sync"
                 glyph = "arrow.triangle.2.circlepath"

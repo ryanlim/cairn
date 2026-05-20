@@ -430,8 +430,56 @@ final class AppDependencies {
         // dominates — see comments on `model.persistedSyncRate`.
         model.persistedSyncRate = Self.loadPersistedSyncRate()
 
-        var url = try? secretStore.serverURL()
-        var apiKey = try? secretStore.apiKey()
+        // Keychain reads can fail in two structurally-different ways
+        // that the old `try?` flattened together:
+        //
+        //   1. SecretStoreError.missing — the user has never saved
+        //      credentials, or signed out. Correct to route to
+        //      onboarding.
+        //
+        //   2. Any other Keychain OSStatus error — most often
+        //      errSecInteractionNotAllowed (device just unlocked /
+        //      app resumed during the locked window) or transient
+        //      errSecAuthFailed. The credentials are intact; we just
+        //      can't read them right now. Routing to onboarding here
+        //      blows away the user's session over a millisecond hiccup
+        //      — confirmed in the field as the "black screen → brief
+        //      onboarding flash → fixed after relaunch" pattern.
+        //
+        // Strategy: retry up to 5x with a small delay before giving
+        // up on a transient error. If after retries either field is
+        // genuinely missing, go to onboarding. If both fields had
+        // transient errors throughout, surface an error and DON'T
+        // flip needsOnboarding (preserves the user's session).
+        var url: URL? = nil
+        var apiKey: String? = nil
+        var transientFailure = false
+        for attempt in 0..<5 {
+            transientFailure = false
+            do {
+                url = try secretStore.serverURL()
+            } catch SecretStoreError.missing {
+                url = nil
+            } catch {
+                transientFailure = true
+                if attempt == 4 {
+                    syncLog.error("[cairn.boot] keychain serverURL read failed after 5 attempts: \(String(describing: error), privacy: .public)")
+                }
+            }
+            do {
+                apiKey = try secretStore.apiKey()
+            } catch SecretStoreError.missing {
+                apiKey = nil
+            } catch {
+                transientFailure = true
+                if attempt == 4 {
+                    syncLog.error("[cairn.boot] keychain apiKey read failed after 5 attempts: \(String(describing: error), privacy: .public)")
+                }
+            }
+            if !transientFailure { break }
+            try? await Task.sleep(for: .milliseconds(200))
+        }
+
         #if DEBUG
         if url == nil || apiKey == nil {
             let ud = UserDefaults.standard
@@ -447,7 +495,20 @@ final class AppDependencies {
             }
         }
         #endif
+
+        if transientFailure {
+            // Persistent Keychain error across retries. Don't route
+            // to onboarding — that would invalidate a session whose
+            // credentials are intact. Surface as an error the user
+            // can dismiss + retry by relaunching.
+            syncLog.error("[cairn.boot] credentials unreadable; preserving session, surfacing error instead of forcing onboarding")
+            model.lastError = "cairn couldn't read its credentials from the Keychain. This is usually temporary — try opening the app again in a moment."
+            model.isBootstrapping = false
+            return
+        }
+
         guard let url, let apiKey else {
+            syncLog.notice("[cairn.boot] no credentials in keychain — routing to onboarding (url=\(url == nil ? "missing" : "present", privacy: .public), apiKey=\(apiKey == nil ? "missing" : "present", privacy: .public))")
             model.needsOnboarding = true
             model.isBootstrapping = false
             return
