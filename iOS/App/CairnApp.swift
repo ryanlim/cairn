@@ -114,7 +114,7 @@ struct CairnApp: App {
     /// parent body re-renders, which the singleton write didn't trigger.
     private func handleScenePhaseChange(_ oldPhase: ScenePhase, _ newPhase: ScenePhase) {
         if newPhase == .background {
-            scheduleNextBackgroundRefresh()
+            Self.scheduleNextBackgroundRefresh()
             // Always submit a BGProcessingTask too, not just when
             // there's pending initial-scan/hash work. iOS only fires
             // these on charging+idle (typically overnight), and the
@@ -122,7 +122,7 @@ struct CairnApp: App {
             // for new deletions on a fresh BG slot. Without
             // resubmission, the chain dies once initial scan
             // completes and the user loses the overnight catch-up.
-            scheduleInitialHashContinuation()
+            Self.scheduleInitialHashContinuation()
         } else if newPhase == .active && oldPhase == .background {
             Task { await dependencies.checkServerHealth() }
         }
@@ -145,25 +145,30 @@ struct CairnApp: App {
     ///   until `hasCompletedInitialScan == true`.
     private func registerBackgroundTasks() {
         // iOS invokes these handler closures on an internal dispatch
-        // queue (NOT the main queue) when `using: nil`. The handler
-        // bodies read MainActor-isolated state (the @State
-        // `dependencies`, which reaches into Observable model state).
-        // Calling them synchronously from off-main fires libdispatch's
-        // queue assertion (EXC_BREAKPOINT brk 1). Wrap the handler
-        // invocation in `Task { @MainActor in … }` so the body runs
-        // on MainActor. The outer closure returns immediately; the
-        // BGTask object's lifetime survives via the Task capture.
-        // Confirmed via TestFlight crash 642672F7… on iOS 26.5: the
-        // crash was buried in the BG handler path and never surfaced
-        // through the in-app DEBUG fire button (which is already on
-        // MainActor at invocation).
+        // queue (NOT the main queue). Build 41 crashed because the
+        // closure called instance methods on `self` (a @MainActor App
+        // struct) — Swift's runtime tried to enforce MainActor
+        // isolation synchronously and fired libdispatch's queue
+        // assertion (EXC_BREAKPOINT brk 1). Build 42's
+        // `Task { @MainActor in handleBackgroundRefresh(...) }` wrap
+        // didn't actually help because the Task body still resolved
+        // the @MainActor instance method against `self`, which
+        // captures `self` synchronously at Task creation.
+        //
+        // Real fix (build 43+): the closures don't capture `self` at
+        // all. They call STATIC handler methods, which reach app
+        // state through `AppDependencies.shared`. The whole BG-task
+        // pipeline is decoupled from the App struct's @MainActor
+        // isolation, and the only synchronous work in the closure is
+        // a `Task { @MainActor in <static call> }` spawn — no
+        // captured isolated context.
         BGTaskScheduler.shared.register(
             forTaskWithIdentifier: Self.backgroundRefreshIdentifier,
             using: nil
         ) { task in
             let bgTask = task as! BGAppRefreshTask
             Task { @MainActor in
-                handleBackgroundRefresh(task: bgTask)
+                CairnApp.handleBackgroundRefresh(task: bgTask)
             }
         }
         BGTaskScheduler.shared.register(
@@ -172,7 +177,7 @@ struct CairnApp: App {
         ) { task in
             let bgTask = task as! BGProcessingTask
             Task { @MainActor in
-                handleBackgroundHash(task: bgTask)
+                CairnApp.handleBackgroundHash(task: bgTask)
             }
         }
         bgLog.info("[cairn.bgtask] registered handlers for refresh + hash")
@@ -185,11 +190,18 @@ struct CairnApp: App {
     /// `Task` that the expiration handler can cancel. iOS gives us ~30s; a
     /// missed deadline marks the run failed and may reduce future
     /// scheduling priority.
-    private func handleBackgroundRefresh(task: BGAppRefreshTask) {
+    @MainActor
+    private static func handleBackgroundRefresh(task: BGAppRefreshTask) {
         bgLog.info("[cairn.bgtask] refresh fired")
         scheduleNextBackgroundRefresh()
 
-        let work = Task {
+        guard let dependencies = AppDependencies.shared else {
+            bgLog.error("[cairn.bgtask] refresh: AppDependencies.shared not set yet, completing as failed")
+            task.setTaskCompleted(success: false)
+            return
+        }
+
+        let work = Task { @MainActor in
             do {
                 // Route through requestSync so the journal records a
                 // syncStarted(trigger:) + syncCompleted pair just like
@@ -219,9 +231,15 @@ struct CairnApp: App {
     /// expiration handler is safe — the next slot resumes rather than
     /// restarts. If the initial scan is still incomplete, re-schedules
     /// another continuation before returning, keeping the chain alive.
-    private func handleBackgroundHash(task: BGProcessingTask) {
+    @MainActor
+    private static func handleBackgroundHash(task: BGProcessingTask) {
         bgLog.info("[cairn.bgtask] hash fired")
-        let work = Task {
+        guard let dependencies = AppDependencies.shared else {
+            bgLog.error("[cairn.bgtask] hash: AppDependencies.shared not set yet, completing as failed")
+            task.setTaskCompleted(success: false)
+            return
+        }
+        let work = Task { @MainActor in
             do {
                 // Route the scan part through requestSync so the
                 // journal records the BG trigger; then drain the
@@ -242,7 +260,7 @@ struct CairnApp: App {
             // Keep the chain alive while work remains. Done after
             // setTaskCompleted to avoid racing with the system's
             // bookkeeping for this slot.
-            let needsMore = await !dependencies.model.hasCompletedInitialScan
+            let needsMore = !dependencies.model.hasCompletedInitialScan
                 || dependencies.model.deferredQueue.count > 0
             if needsMore {
                 scheduleInitialHashContinuation()
@@ -261,7 +279,7 @@ struct CairnApp: App {
     /// is better than waiting an artificial 5-minute floor. The
     /// scheduler still throttles based on app engagement, device
     /// state, etc. — we just stop adding our own restriction on top.
-    private func scheduleNextBackgroundRefresh() {
+    private static func scheduleNextBackgroundRefresh() {
         let request = BGAppRefreshTaskRequest(identifier: Self.backgroundRefreshIdentifier)
         do {
             try BGTaskScheduler.shared.submit(request)
@@ -282,7 +300,7 @@ struct CairnApp: App {
     /// need a network fetch to hash. `requiresExternalPower` stays at its
     /// default `false` so iOS has flexibility; in practice BGProcessingTask
     /// rarely runs off-power anyway.
-    private func scheduleInitialHashContinuation() {
+    private static func scheduleInitialHashContinuation() {
         let request = BGProcessingTaskRequest(identifier: Self.backgroundHashIdentifier)
         request.requiresNetworkConnectivity = true
         request.requiresExternalPower = false
