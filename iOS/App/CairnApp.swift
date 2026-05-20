@@ -191,7 +191,12 @@ struct CairnApp: App {
 
         let work = Task {
             do {
-                try await dependencies.runScheduledScan()
+                // Route through requestSync so the journal records a
+                // syncStarted(trigger:) + syncCompleted pair just like
+                // a foreground sync would. runScheduledScan alone runs
+                // the reconciler but skips the journal writes the
+                // Status tab depends on.
+                try await dependencies.model.actions.requestSync(.scheduledBackground)
                 bgLog.info("[cairn.bgtask] refresh completed successfully")
                 task.setTaskCompleted(success: true)
             } catch {
@@ -218,14 +223,12 @@ struct CairnApp: App {
         bgLog.info("[cairn.bgtask] hash fired")
         let work = Task {
             do {
-                // `runBackgroundDrain` does the incremental/full scan
-                // AND drains the deferred-hash queue with the soft
-                // limit disabled. This is the slot where large iCloud
-                // videos we skipped in foreground finally hash —
-                // device is plugged in + on Wi-Fi (per the request's
-                // `requiresNetworkConnectivity`), which is the only
-                // context it's OK to download multi-GB content from.
-                try await dependencies.runBackgroundDrain()
+                // Route the scan part through requestSync so the
+                // journal records the BG trigger; then drain the
+                // deferred-hash queue separately (which is BG-only
+                // unlimited-throughput work, not a "sync" semantically).
+                try await dependencies.model.actions.requestSync(.scheduledHashContinuation)
+                try await dependencies.drainDeferredQueueOnly()
                 bgLog.info("[cairn.bgtask] hash completed successfully")
                 task.setTaskCompleted(success: true)
             } catch is CancellationError {

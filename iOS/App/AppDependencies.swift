@@ -746,7 +746,7 @@ final class AppDependencies {
                 syncLog.info("[cairn.observer] suppressing post-sync trigger; cooldown not expired")
                 return
             }
-            try? await self.model.actions.requestSync()
+            try? await self.model.actions.requestSync(nil)
         }
     }
 
@@ -771,6 +771,18 @@ final class AppDependencies {
         let scan = try await reconciler.runDeletionScan()
         let drain = try await reconciler.drainDeferred()
         return (scan, drain)
+    }
+
+    /// Drain-only variant for BGProcessingTask slots that already
+    /// invoked the sync portion via `requestSync(.scheduledHashContinuation)`.
+    /// Keeps the deferred-queue drain (unlimited throughput, BG-only)
+    /// separate from the journal-emitting sync.
+    @discardableResult
+    func drainDeferredQueueOnly() async throws -> PhotoKitPersistentChangeReconciler.Result {
+        guard let reconciler = persistentChangeReconciler else {
+            throw CancellationError()
+        }
+        return try await reconciler.drainDeferred()
     }
 
     /// Backfill `LocalAssetMetadataStore` for cached ids that are still
@@ -1297,6 +1309,17 @@ final class AppDependencies {
         if isEventfulSync, let journal {
             let runId = "\(ISO8601DateFormatter().string(from: Date()))-\(UUID().uuidString.prefix(8))"
             let elapsedMs = Int(Date().timeIntervalSince(syncStart) * 1000)
+            // Record what kicked off this sync FIRST so the journal
+            // tail can render "triggered by background" before the
+            // syncCompleted counts. Falls back to .unknown for legacy
+            // call sites that don't pre-set the model trigger (the
+            // initial bootstrap path, etc.).
+            let trigger = await MainActor.run { self.model.lastSyncTrigger ?? .unknown }
+            try? await journal.append(.init(
+                timestamp: Date(timeIntervalSince1970: syncStart.timeIntervalSince1970),
+                runId: runId,
+                event: .syncStarted(trigger: trigger)
+            ))
             do {
                 try await journal.append(.init(
                     runId: runId,
@@ -2255,9 +2278,11 @@ final class AppDependencies {
         let secrets = self.secretStore
 
         let actions = CairnAppActions(
-            requestSync: { [weak self] in
+            requestSync: { [weak self] trigger in
                 guard let self else { return }
+                let resolvedTrigger: JournalEntry.SyncTrigger = trigger ?? .manualForeground
                 await MainActor.run {
+                    self.model.lastSyncTrigger = resolvedTrigger
                     self.model.isSyncing = true
                     self.model.lastError = nil
                     if let paused = self.model.pausedSyncElapsedSeconds {
@@ -3671,7 +3696,7 @@ final class AppDependencies {
                 // on dispatch queue assertions from lldb).
                 bgLog.info("[cairn.bgtask] manual fire from Settings → Advanced")
                 do {
-                    try await self.runScheduledScan()
+                    try await self.model.actions.requestSync(.debugManualFire)
                     bgLog.info("[cairn.bgtask] manual fire completed successfully")
                 } catch {
                     bgLog.error("[cairn.bgtask] manual fire failed: \(String(describing: error), privacy: .public)")
@@ -3979,7 +4004,7 @@ final class AppDependencies {
     @MainActor
     private static func makeReviewModeActions(model: CairnAppModel) -> CairnAppActions {
         CairnAppActions(
-            requestSync: { [weak model] in
+            requestSync: { [weak model] _ in
                 // Two paths depending on whether candidates are
                 // currently visible:
                 //   1. Reconciliation is nil/empty (post-trash, or

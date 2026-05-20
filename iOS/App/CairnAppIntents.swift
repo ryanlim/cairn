@@ -45,7 +45,7 @@ struct RunCairnSyncIntent: AppIntent {
             return .result(dialog: "cairn isn't ready yet. Open the app once, then try again.")
         }
         do {
-            try await dependencies.model.actions.requestSync()
+            try await dependencies.model.actions.requestSync(.shortcut)
             let candidateCount = (dependencies.model.reconciliation?.deleteCandidates.count ?? 0)
                 + (dependencies.model.reconciliation?.pendingReviewCandidates.count ?? 0)
             if candidateCount == 0 {

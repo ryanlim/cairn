@@ -610,6 +610,18 @@ public enum CairnFixtures {
                 glyph = "clock.arrow.circlepath"
                 severity = .warn
                 message = "\(ids.count) asset\(ids.count == 1 ? "" : "s") awaiting review"
+            case .syncStarted(let trigger):
+                eventName = "sync.start"
+                glyph = "arrow.triangle.2.circlepath"
+                severity = .info
+                // Routine: foreground/manual triggers don't add much
+                // forensic value vs the syncCompleted that follows.
+                // Background and Shortcut triggers ARE the signal the
+                // user is looking for ("did BG actually run?"), so
+                // those stay non-routine and surface in the filtered
+                // tail by default.
+                routine = (trigger == .manualForeground || trigger == .unknown)
+                message = "triggered by \(trigger.displayName.lowercased())"
             case .syncCompleted(let indexed, let candidates, let pending, let large, let largeBytes, let timeout, let elapsedMs):
                 eventName = "sync"
                 glyph = "arrow.triangle.2.circlepath"

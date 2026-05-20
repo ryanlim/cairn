@@ -168,6 +168,8 @@ struct JournalShow: AsyncParsableCommand {
             return ("assetsExcluded", "\(cks.count) checksum(s)\(context)")
         case .pendingReview(let assetIds, let cks):
             return ("pendingReview", "\(assetIds.count) asset(s) held for manual approval (strict-mode); \(cks.count) checksum(s)")
+        case .syncStarted(let trigger):
+            return ("syncStarted", "trigger=\(trigger.rawValue)")
         case .syncCompleted(let indexed, let candidates, let pending, let large, let largeBytes, let timeout, let elapsedMs):
             var parts = ["indexed=\(indexed)", "candidates=\(candidates)"]
             if pending > 0 { parts.append("pendingReview=\(pending)") }

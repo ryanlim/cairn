@@ -352,7 +352,7 @@ public struct CairnAppRoot: View {
         activeSyncTask?.cancel()
         let task = Task { @MainActor in
             let errorBefore = model.lastError
-            try? await model.actions.requestSync()
+            try? await model.actions.requestSync(nil)
             if suppressErrors { model.lastError = errorBefore }
             onComplete()
         }

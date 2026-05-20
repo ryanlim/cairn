@@ -98,6 +98,14 @@ public final class CairnAppModel {
     /// blocks keep working without real data.
     public var reconciliation: LiveReconciliation?
 
+    /// What initiated the most recent sync. Set by the host's
+    /// `requestSync` action wrapper before reconciliation begins; nil
+    /// until the first sync. Surfaced in the Status journal tail (via
+    /// the `.syncStarted` journal event) so the user can see at a
+    /// glance whether a recent sync came from a tap, a Shortcut, or
+    /// an iOS background slot.
+    public var lastSyncTrigger: JournalEntry.SyncTrigger?
+
     /// Snapshot of what `requestSync` produced. Intentionally mirrors the
     /// `ReconciliationOutput` shape but holds only what the UI needs — the
     /// three candidate buckets in display order, plus the timestamps and
@@ -820,7 +828,12 @@ public struct CairnAppActions: Sendable {
     /// User tapped "Review & sync" on Status. Host runs the dry-run
     /// reconciliation pipeline and returns the result. The model then
     /// presents the DryRunSheet with the candidates.
-    public var requestSync: @Sendable () async throws -> Void
+    /// `trigger` records what initiated the sync. Default-nil callers
+    /// (mostly SwiftUI buttons) get treated as `.manualForeground`.
+    /// Background-task handlers, Shortcuts intents, and the DEBUG
+    /// Fire button pass their specific trigger so the Status journal
+    /// tail can show "triggered by background" etc.
+    public var requestSync: @Sendable (_ trigger: JournalEntry.SyncTrigger?) async throws -> Void
 
     /// User confirmed trashing in DryRunSheet. Host runs TrashOrchestrator.
     public var confirmTrash: @Sendable () async throws -> Void
@@ -1059,7 +1072,7 @@ public struct CairnAppActions: Sendable {
     public var trashMissedDeletions: @Sendable (_ assets: [ServerAsset]) async throws -> Void
 
     public init(
-        requestSync: @escaping @Sendable () async throws -> Void = {},
+        requestSync: @escaping @Sendable (JournalEntry.SyncTrigger?) async throws -> Void = { _ in },
         confirmTrash: @escaping @Sendable () async throws -> Void = {},
         restore: @escaping @Sendable ([String], String) async throws -> Void = { _, _ in },
         exclude: @escaping @Sendable ([String], [String], String) async throws -> Void = { _, _, _ in },

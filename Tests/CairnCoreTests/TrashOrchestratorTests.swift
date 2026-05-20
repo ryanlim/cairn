@@ -24,6 +24,7 @@ fileprivate func eventName(_ event: JournalEntry.Event) -> String {
     case .pendingReview: return "pendingReview"
     case .syncCompleted: return "syncCompleted"
     case .syncTransitions: return "syncTransitions"
+    case .syncStarted: return "syncStarted"
     }
 }
 

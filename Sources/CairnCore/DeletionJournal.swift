@@ -131,6 +131,39 @@ public struct JournalEntry: Codable, Sendable, Equatable {
     public let runId: String
     public let event: Event
 
+    /// What initiated a given sync. Surfaced in the Runs tab so the
+    /// user can distinguish a manual tap from an iOS-scheduled
+    /// background slot. Encoded as a plain string for forward-
+    /// compatibility; future cases default-decode as `.unknown` on
+    /// older readers.
+    public enum SyncTrigger: String, Codable, Sendable, Equatable, CaseIterable {
+        /// User tapped Sync in the app foreground.
+        case manualForeground = "manual_foreground"
+        /// iOS fired a `BGAppRefreshTask` slot (~30s budget).
+        case scheduledBackground = "scheduled_background"
+        /// iOS fired a `BGProcessingTask` slot (several minutes;
+        /// typically requires charging + idle).
+        case scheduledHashContinuation = "scheduled_hash_continuation"
+        /// Triggered by a Shortcut (Shortcuts app, Siri, or
+        /// Personal Automation via `RunCairnSyncIntent`).
+        case shortcut = "shortcut"
+        /// DEBUG-only "Fire BG refresh now" Settings row.
+        case debugManualFire = "debug_manual_fire"
+        /// Pre-trigger-recording sync or unknown source.
+        case unknown = "unknown"
+
+        public var displayName: String {
+            switch self {
+            case .manualForeground: return "Manual"
+            case .scheduledBackground: return "Background"
+            case .scheduledHashContinuation: return "Overnight"
+            case .shortcut: return "Shortcut"
+            case .debugManualFire: return "Debug"
+            case .unknown: return "—"
+            }
+        }
+    }
+
     public init(timestamp: Date = Date(), runId: String, event: Event) {
         self.timestamp = timestamp
         self.runId = runId
@@ -142,6 +175,11 @@ public struct JournalEntry: Codable, Sendable, Equatable {
     /// cases via `readAll`'s row-level tolerance); changing an existing
     /// case's payload is not — bump the schema or add a new case.
     public enum Event: Codable, Sendable, Equatable {
+        /// What triggered a sync. Written by `performLiveReconciliation`
+        /// alongside `syncCompleted` so the Runs tab can show whether
+        /// a run came from a user tap, a background slot, a Shortcut,
+        /// etc. Legacy runs without this event display as `.unknown`.
+        case syncStarted(trigger: SyncTrigger)
         case runStarted(dryRun: Bool, candidateCount: Int, assetsInPurview: Int)
         case planningTrash(targets: [TrashTarget])
         // `durationMs` is the wall-clock time of just the underlying API
