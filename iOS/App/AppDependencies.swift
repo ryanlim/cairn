@@ -1364,18 +1364,31 @@ final class AppDependencies {
             detail: "engine: delete=\(result.deleteCandidates.count.formatted(.number)) pending=\(result.pendingReviewCandidates.count.formatted(.number)) held=\(result.heldByQuarantineCandidates.count.formatted(.number))"
         ))
 
+        // Record what kicked off this sync FIRST. Falls back to
+        // .unknown for legacy call sites that don't pre-set the
+        // model trigger (the initial bootstrap path, etc.).
+        let trigger = await MainActor.run { self.model.lastSyncTrigger ?? .unknown }
+        // No-op-sync filter: BG-triggered fires that found nothing
+        // to do don't journal — otherwise the tail would fill with
+        // empty hourly background pokes. Manual / Shortcut / Debug
+        // triggers ALWAYS journal even when no-op, because a user
+        // who taps Sync wants confirmation that cairn ran. Unknown
+        // (legacy) follows the BG semantics — conservative.
+        let triggerForcesLog: Bool = {
+            switch trigger {
+            case .manualForeground, .shortcut, .debugManualFire:
+                return true
+            case .scheduledBackground, .scheduledHashContinuation, .unknown:
+                return false
+            }
+        }()
         let isEventfulSync = scan.didFullEnumeration
             || scan.changeEventsProcessed > 0
             || scan.drainedFromQueue > 0
+            || triggerForcesLog
         if isEventfulSync, let journal {
             let runId = "\(ISO8601DateFormatter().string(from: Date()))-\(UUID().uuidString.prefix(8))"
             let elapsedMs = Int(Date().timeIntervalSince(syncStart) * 1000)
-            // Record what kicked off this sync FIRST so the journal
-            // tail can render "triggered by background" before the
-            // syncCompleted counts. Falls back to .unknown for legacy
-            // call sites that don't pre-set the model trigger (the
-            // initial bootstrap path, etc.).
-            let trigger = await MainActor.run { self.model.lastSyncTrigger ?? .unknown }
             try? await journal.append(.init(
                 timestamp: Date(timeIntervalSince1970: syncStart.timeIntervalSince1970),
                 runId: runId,

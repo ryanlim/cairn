@@ -175,6 +175,11 @@ public struct StatusScreen: View {
     @Environment(\.cairnTokens) private var t
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var journalExpanded: Bool = false
+    /// IDs of collapsed sync-run bundles the user has expanded inline.
+    /// A bundle ID is the concatenated runIds of its contained groups
+    /// (see `collapseSyncBundles`). Persists for the lifetime of the
+    /// view — re-collapses on tab switch / scroll-reset.
+    @State private var expandedSyncBundles: Set<String> = []
     /// Long-press on a journal row stashes its entry here; the sheet
     /// is presented while the value is non-nil. Pretty-printed JSON
     /// of the underlying `JournalEntry` is in `entry.rawJSON`.
@@ -1483,34 +1488,87 @@ public struct StatusScreen: View {
                     // Visual segmentation comes solely from each
                     // separator's own background tint.
                     let groups = Self.groupJournalEntries(visible: visible, bandTints: bandTints)
+                    let displayItems = Self.collapseSyncBundles(groups)
                     ScrollView([.horizontal, .vertical], showsIndicators: false) {
                         LazyVStack(alignment: .leading, spacing: 4) {
-                            ForEach(groups) { group in
-                                VStack(alignment: .leading, spacing: 6) {
-                                    if let runId = group.runId {
-                                        JournalRunSeparator(
-                                            runId: runId,
-                                            timeLabel: group.entries.first?.time ?? "",
-                                            run: runById[runId],
+                            ForEach(displayItems) { item in
+                                switch item {
+                                case .single(let group):
+                                    VStack(alignment: .leading, spacing: 6) {
+                                        if let runId = group.runId {
+                                            JournalRunSeparator(
+                                                runId: runId,
+                                                timeLabel: group.entries.first?.time ?? "",
+                                                run: runById[runId],
+                                                width: measuredWidth,
+                                                isTappable: runIds.contains(runId),
+                                                onTap: { onJournalRowTap(runId) }
+                                            )
+                                        }
+                                        ForEach(group.entries) { entry in
+                                            JournalTailRow(
+                                                entry: entry,
+                                                eventInk: eventColor(entry.event),
+                                                isTappable: runIds.contains(entry.runId),
+                                                rowWidth: measuredWidth,
+                                                runIdSuffixColor: runIdSuffixColor(for: entry.runId, in: runOutcomeMap),
+                                                onTap: { onJournalRowTap(entry.runId) },
+                                                onLongPress: { journalRawJSONEntry = entry }
+                                            )
+                                        }
+                                    }
+                                    .padding(.vertical, 4)
+                                    .frame(width: measuredWidth, alignment: .leading)
+
+                                case .syncBundle(let bundleId, let bundleGroups):
+                                    let expanded = expandedSyncBundles.contains(bundleId)
+                                    VStack(alignment: .leading, spacing: 6) {
+                                        SyncBundleHeader(
+                                            groups: bundleGroups,
+                                            expanded: expanded,
                                             width: measuredWidth,
-                                            isTappable: runIds.contains(runId),
-                                            onTap: { onJournalRowTap(runId) }
+                                            onToggle: {
+                                                withAnimation(reduceMotion ? .none : .snappy(duration: 0.16)) {
+                                                    if expanded {
+                                                        expandedSyncBundles.remove(bundleId)
+                                                    } else {
+                                                        expandedSyncBundles.insert(bundleId)
+                                                    }
+                                                }
+                                            }
                                         )
+                                        if expanded {
+                                            ForEach(bundleGroups) { group in
+                                                VStack(alignment: .leading, spacing: 6) {
+                                                    if let runId = group.runId {
+                                                        JournalRunSeparator(
+                                                            runId: runId,
+                                                            timeLabel: group.entries.first?.time ?? "",
+                                                            run: runById[runId],
+                                                            width: measuredWidth,
+                                                            isTappable: runIds.contains(runId),
+                                                            onTap: { onJournalRowTap(runId) }
+                                                        )
+                                                    }
+                                                    ForEach(group.entries) { entry in
+                                                        JournalTailRow(
+                                                            entry: entry,
+                                                            eventInk: eventColor(entry.event),
+                                                            isTappable: runIds.contains(entry.runId),
+                                                            rowWidth: measuredWidth,
+                                                            runIdSuffixColor: runIdSuffixColor(for: entry.runId, in: runOutcomeMap),
+                                                            onTap: { onJournalRowTap(entry.runId) },
+                                                            onLongPress: { journalRawJSONEntry = entry }
+                                                        )
+                                                    }
+                                                }
+                                                .padding(.leading, 12)
+                                            }
+                                        }
                                     }
-                                    ForEach(group.entries) { entry in
-                                        JournalTailRow(
-                                            entry: entry,
-                                            eventInk: eventColor(entry.event),
-                                            isTappable: runIds.contains(entry.runId),
-                                            rowWidth: measuredWidth,
-                                            runIdSuffixColor: runIdSuffixColor(for: entry.runId, in: runOutcomeMap),
-                                            onTap: { onJournalRowTap(entry.runId) },
-                                            onLongPress: { journalRawJSONEntry = entry }
-                                        )
-                                    }
+                                    .padding(.vertical, 4)
+                                    .frame(width: measuredWidth, alignment: .leading)
                                 }
-                                .padding(.vertical, 4)
-                                .frame(width: measuredWidth, alignment: .leading)
                             }
                         }
                         .frame(width: measuredWidth, alignment: .leading)
@@ -1673,6 +1731,100 @@ public struct StatusScreen: View {
             ))
         }
         return groups
+    }
+
+    /// One display item in the journal tail. Either a single
+    /// `JournalGroup` rendered normally, or a folded "bundle" of N
+    /// consecutive sync-only groups that the user can expand by tap.
+    /// Used to keep a long evening of routine BG syncs from drowning
+    /// out the interesting (trash / restore / exclude) rows.
+    fileprivate enum JournalDisplayItem: Identifiable {
+        case single(JournalGroup)
+        case syncBundle(id: String, groups: [JournalGroup])
+
+        var id: String {
+            switch self {
+            case .single(let g): return "g-\(g.id)"
+            case .syncBundle(let id, _): return "bundle-\(id)"
+            }
+        }
+    }
+
+    /// Event names that are "routine sync infrastructure" — high
+    /// frequency, low per-row information. Multiple consecutive groups
+    /// composed entirely of these collapse into a single tappable
+    /// bundle. Anything outside this set (run.start, trash.ok,
+    /// restore.ok, etc.) is a discrete user-meaningful action and
+    /// stays as its own row.
+    private static let collapsibleSyncEventNames: Set<String> = [
+        "sync.start", "sync", "sync.trans"
+    ]
+
+    /// Threshold for collapsing — N or more consecutive sync-only
+    /// groups fold into a bundle. Below the threshold the rows stay
+    /// inline because the savings aren't worth the tap-to-expand
+    /// indirection. 3 is the smallest set where you visibly clutter
+    /// without the collapse.
+    private static let syncBundleCollapseThreshold = 3
+
+    /// Walk the run-band groups and bundle consecutive groups whose
+    /// entries are entirely composed of `collapsibleSyncEventNames`
+    /// AND whose sync.start trigger is a background variant (or
+    /// missing/unknown). Manual / shortcut / debug-triggered syncs
+    /// never bundle — those are user-initiated and the user wants
+    /// to see each one. Groups with any non-sync event (trash,
+    /// restore, exclude, run.*) also break the bundle boundary.
+    fileprivate static func collapseSyncBundles(_ groups: [JournalGroup]) -> [JournalDisplayItem] {
+        guard !groups.isEmpty else { return [] }
+        var result: [JournalDisplayItem] = []
+        var pendingBundle: [JournalGroup] = []
+
+        func flushBundle() {
+            guard !pendingBundle.isEmpty else { return }
+            if pendingBundle.count >= syncBundleCollapseThreshold {
+                let bundleId = pendingBundle
+                    .compactMap { $0.runId ?? "g\($0.id)" }
+                    .joined(separator: "-")
+                result.append(.syncBundle(id: bundleId, groups: pendingBundle))
+            } else {
+                // Below threshold — render each pending group as a
+                // single. Avoids hiding tiny streaks behind a chevron.
+                for g in pendingBundle {
+                    result.append(.single(g))
+                }
+            }
+            pendingBundle = []
+        }
+
+        for group in groups {
+            let isAllSyncEvents = group.entries.allSatisfy {
+                collapsibleSyncEventNames.contains($0.event)
+            }
+            // Look for the trigger string on the syncStarted row, if
+            // present. Message format is `trigger=<token>` per
+            // SyncTrigger.shortToken. Manual / shortcut / debug must
+            // stay visible — bail out of bundling for those.
+            let isBundleableTrigger: Bool = {
+                guard isAllSyncEvents else { return false }
+                let triggers = group.entries.compactMap { entry -> String? in
+                    guard entry.event == "sync.start" else { return nil }
+                    return entry.message.replacingOccurrences(of: "trigger=", with: "")
+                }
+                // No sync.start at all = legacy/unknown — treat as
+                // bundleable (default to compression for noise).
+                if triggers.isEmpty { return true }
+                let userInitiated: Set<String> = ["manual", "shortcut", "debug"]
+                return !triggers.contains(where: { userInitiated.contains($0) })
+            }()
+            if isBundleableTrigger {
+                pendingBundle.append(group)
+            } else {
+                flushBundle()
+                result.append(.single(group))
+            }
+        }
+        flushBundle()
+        return result
     }
 
     /// Per-row band-tint flags. Walks `entries` and toggles a running
@@ -1931,6 +2083,75 @@ private struct JournalRawJSONSheet: View {
 ///
 /// Only emitted for groups whose entries have a non-empty `runId` —
 /// sync-only sections (no associated run) don't get a header.
+/// Collapsed-state header for a `JournalDisplayItem.syncBundle`. Shows
+/// a chevron, the run count, an aggregated time range, and the
+/// dominant trigger token from the contained sync rows. Tap toggles
+/// the expanded state (the host inserts the contained groups below
+/// when expanded). Width-pinned to keep horizontal scroll geometry
+/// consistent with the rest of the journal tail.
+private struct SyncBundleHeader: View {
+    let groups: [StatusScreen.JournalGroup]
+    let expanded: Bool
+    let width: CGFloat
+    let onToggle: () -> Void
+
+    @Environment(\.cairnTokens) private var t
+
+    /// Roll up the contained groups into a one-line summary. Counts the
+    /// distinct run IDs (each ≈ one sync execution) rather than total
+    /// rows, since a single sync emits multiple row events.
+    private var summary: String {
+        let runCount = Set(groups.compactMap { $0.runId }).count
+        let triggers = Set(groups.flatMap { $0.entries }
+            .compactMap { entry -> String? in
+                guard entry.event == "sync.start" else { return nil }
+                // syncStarted message format: "trigger=background"
+                return entry.message.replacingOccurrences(of: "trigger=", with: "")
+            })
+        let label = runCount == 1 ? "sync" : "syncs"
+        let triggerSuffix: String
+        if triggers.isEmpty {
+            triggerSuffix = ""
+        } else if triggers.count == 1, let only = triggers.first {
+            triggerSuffix = " · trigger=\(only)"
+        } else {
+            triggerSuffix = " · trigger=mixed"
+        }
+        return "\(runCount) \(label)\(triggerSuffix)"
+    }
+
+    private var timeRange: String {
+        let times = groups.flatMap { $0.entries }.map(\.time)
+        guard let first = times.first, let last = times.last else { return "" }
+        return first == last ? first : "\(last)–\(first)" // newest-first list → last is earliest
+    }
+
+    var body: some View {
+        Button(action: onToggle) {
+            HStack(spacing: 8) {
+                Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(t.textMuted)
+                    .frame(width: 12, alignment: .leading)
+                Text(timeRange)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(t.textHint)
+                Text(summary)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(t.textBody)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 6)
+            .padding(.vertical, 4)
+            .frame(width: width, alignment: .leading)
+            .background(t.surfaceAlt.opacity(expanded ? 0.5 : 0.25))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
 private struct JournalRunSeparator: View {
     let runId: String
     let timeLabel: String
