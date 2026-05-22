@@ -47,7 +47,7 @@ targets:
       properties:
         CFBundleDisplayName: cairn
         CFBundleShortVersionString: "0.3.1"
-        CFBundleVersion: "47"
+        CFBundleVersion: "48"
         # Required for PhotoKit access. The string is shown in the iOS
         # permission prompt and on the app's Settings page — keep it honest
         # and specific so reviewers and users understand what we do with it.
@@ -55,6 +55,18 @@ targets:
           cairn needs Full library access to detect photos you've deleted from
           your iPhone and reconcile them against your Immich server. Photos
           never leave your device or your Immich server.
+        # Required for connections to LAN / .local / private-IP hosts on
+        # iOS 14+. Self-hosted Immich is the canonical case — every
+        # connection cairn makes goes to the user's chosen server, which
+        # is typically on their home network. Without this key iOS may
+        # silently deny the connection (-1004 NSURLErrorCannotConnect-
+        # ToHost) before any TLS / HTTP work happens. Field-confirmed
+        # via TestFlight on iOS 26.5 — cairn was failing every connection
+        # to a Wi-Fi-reachable Immich because the key wasn't declared.
+        NSLocalNetworkUsageDescription: >-
+          cairn connects to your Immich server, which is usually on your
+          local network. Allowing this lets cairn reach the server URL
+          you entered during setup. No other network access is made.
         # Background refresh task identifiers — must match the values passed
         # to BGTaskScheduler.shared.register() at app launch.
         #   - app.cairn.refresh → short BGAppRefreshTask (~30s) for the

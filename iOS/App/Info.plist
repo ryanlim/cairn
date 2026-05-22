@@ -24,9 +24,11 @@
 	<key>CFBundleShortVersionString</key>
 	<string>0.3.1</string>
 	<key>CFBundleVersion</key>
-	<string>47</string>
+	<string>48</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>cairn connects to your Immich server, which is usually on your local network. Allowing this lets cairn reach the server URL you entered during setup. No other network access is made.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>cairn needs Full library access to detect photos you've deleted from your iPhone and reconcile them against your Immich server. Photos never leave your device or your Immich server.</string>
 	<key>OSLogPreferences</key>
