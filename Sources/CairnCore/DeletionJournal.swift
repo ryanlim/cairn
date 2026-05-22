@@ -155,8 +155,17 @@ public struct JournalEntry: Codable, Sendable, Equatable {
         public var displayName: String {
             switch self {
             case .manualForeground: return "Manual"
-            case .scheduledBackground: return "Background"
-            case .scheduledHashContinuation: return "Overnight"
+            // Both BG task types display as "Background" — the
+            // distinction (BGAppRefreshTask short slot vs
+            // BGProcessingTask long slot) is an iOS implementation
+            // detail. The earlier "Overnight" label for the long
+            // slot was misleading: iOS fires BGProcessingTask any
+            // time the device is charging + idle + on Wi-Fi, which
+            // happens in the middle of the day too. Diagnostic
+            // detail is preserved in the [cairn.bgtask] os.Logger
+            // stream ("refresh fired" vs "hash fired"), which is
+            // what `log collect --device` captures.
+            case .scheduledBackground, .scheduledHashContinuation: return "Background"
             case .shortcut: return "Shortcut"
             case .debugManualFire: return "Debug"
             case .unknown: return "—"
@@ -170,8 +179,7 @@ public struct JournalEntry: Codable, Sendable, Equatable {
         public var shortToken: String {
             switch self {
             case .manualForeground: return "manual"
-            case .scheduledBackground: return "background"
-            case .scheduledHashContinuation: return "overnight"
+            case .scheduledBackground, .scheduledHashContinuation: return "background"
             case .shortcut: return "shortcut"
             case .debugManualFire: return "debug"
             case .unknown: return "unknown"
