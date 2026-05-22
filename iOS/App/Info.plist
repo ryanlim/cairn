@@ -27,6 +27,11 @@
 	<string>48</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>cairn connects to your Immich server, which is usually on your local network. Allowing this lets cairn reach the server URL you entered during setup. No other network access is made.</string>
 	<key>NSPhotoLibraryUsageDescription</key>

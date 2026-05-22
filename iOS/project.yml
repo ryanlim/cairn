@@ -67,6 +67,19 @@ targets:
           cairn connects to your Immich server, which is usually on your
           local network. Allowing this lets cairn reach the server URL
           you entered during setup. No other network access is made.
+        # App Transport Security: allow plain-HTTP connections to RFC
+        # 1918 private IP ranges and .local hostnames. Self-hosted
+        # Immich users frequently expose the container on
+        # `http://192.168.x.x:2283` with no TLS termination — that's
+        # the documented direct-access URL in Immich's own setup
+        # guide. Without this exception ATS blocks the connection
+        # silently at the OS layer, indistinguishable from a network
+        # error. `NSAllowsLocalNetworking` is the Apple-blessed
+        # narrow opt-in for this case — it does NOT open the door
+        # to plain HTTP for public hostnames, which would be the
+        # case if we instead set `NSAllowsArbitraryLoads`.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
         # Background refresh task identifiers — must match the values passed
         # to BGTaskScheduler.shared.register() at app launch.
         #   - app.cairn.refresh → short BGAppRefreshTask (~30s) for the
