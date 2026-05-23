@@ -682,7 +682,35 @@ final class AppDependencies {
 
         rewireActions()
         registerPhotoLibraryObserver()
+        registerLocaleChangeObserver()
         model.isBootstrapping = false
+    }
+
+    /// Re-render the cached journal tail when the user flips iOS
+    /// Settings → General → Date & Time → 24-Hour Time (or otherwise
+    /// changes the system locale). `model.journalTail` is a list of
+    /// pre-formatted strings rebuilt only by `refreshJournalTail`;
+    /// without this observer, the displayed times stay stale until
+    /// the next sync. SwiftUI-driven render paths (RunsScreen rows,
+    /// etc.) auto-react via `@Environment(\.locale)` so they don't
+    /// need this — only the cached-string surfaces do.
+    ///
+    /// `NotificationCenter` retains the block observer for the app's
+    /// lifetime; since `AppDependencies` is held by `CairnApp`'s
+    /// `@State` for the whole process lifetime, there's no point in
+    /// tracking the token for cleanup.
+    private func registerLocaleChangeObserver() {
+        NotificationCenter.default.addObserver(
+            forName: NSLocale.currentLocaleDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            syncLog.info("[cairn.boot] system locale changed; refreshing journal tail")
+            Task { @MainActor in
+                await self.refreshJournalTail()
+            }
+        }
     }
 
     /// Register a foreground PhotoKit change observer. When the photo

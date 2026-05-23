@@ -384,6 +384,7 @@ private struct RunListRow: View {
     }
 
     @Environment(\.cairnTimeFormat) private var timeFormat
+    @Environment(\.locale) private var locale
 
     private var timeOfDay: String {
         // Was a hardcoded `h:mm a`. Now honors the user's
@@ -391,7 +392,20 @@ private struct RunListRow: View {
         // 12/24-hour preference when `.system`). Same rendering path
         // the journal tail goes through, so the two surfaces stay
         // visually in sync.
-        timeFormat.formatClockTime(run.startedAt)
+        //
+        // The `\.locale` environment read above is load-bearing for
+        // *reactivity*: SwiftUI auto-updates `\.locale` whenever the
+        // system locale changes (including the iOS 24-Hour Time
+        // toggle), and reading it here makes this view's body
+        // dependent on it — so a user flipping the toggle in iOS
+        // Settings triggers a re-render of every row's `timeOfDay`
+        // immediately, without us having to listen to
+        // `NSLocale.currentLocaleDidChangeNotification` ourselves.
+        // Passing the same locale into the formatter doubles as
+        // belt-and-suspenders: any `Locale.autoupdatingCurrent`
+        // cache that hasn't refreshed yet gets overridden by what
+        // SwiftUI considers current.
+        timeFormat.formatClockTime(run.startedAt, locale: locale)
     }
 }
 
