@@ -1,0 +1,1 @@
+Journal labels: background-sync rows no longer show "trigger=overnight". iOS fires its background slots any time the device is charging, idle, and on Wi-Fi — which happens in the middle of the day too, not just at night — so the original label was asserting a time-of-day claim it couldn't verify. All background syncs now consistently show "trigger=background".

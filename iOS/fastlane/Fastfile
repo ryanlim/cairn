@@ -189,6 +189,23 @@ platform :ios do
       key_filepath: ENV["APP_STORE_CONNECT_API_KEY_KEY_FILEPATH"]
     )
 
+    # Per-build TestFlight changelog. Lives separately from the
+    # App Store version-level metadata at metadata/en-US/release_notes.txt
+    # (which Apple shows on the public listing for the *whole* version).
+    # This file gets replaced every TF build with a short prose
+    # description of that build's user-visible delta. Lane fails fast
+    # if it's missing or empty — that's the forcing function that
+    # keeps every TF upload accompanied by real notes rather than the
+    # old hardcoded "Bug fixes and improvements" placeholder.
+    changelog_path = File.join(__dir__, "beta_changelog.txt")
+    unless File.exist?(changelog_path)
+      UI.user_error!("Missing #{changelog_path}. Write this build's TestFlight release notes there before running `make beta`.")
+    end
+    changelog = File.read(changelog_path).strip
+    if changelog.empty?
+      UI.user_error!("#{changelog_path} is empty. Write this build's TestFlight release notes before running `make beta`.")
+    end
+
     build_ipa
 
     upload_to_testflight(
@@ -197,7 +214,7 @@ platform :ios do
       skip_waiting_for_build_processing: false,
       distribute_external: false,
       notify_external_testers: false,
-      changelog: "Bug fixes and improvements"
+      changelog: changelog
     )
     UI.success "🚀 Uploaded to TestFlight"
   end
