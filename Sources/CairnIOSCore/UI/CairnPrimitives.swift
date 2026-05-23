@@ -832,46 +832,60 @@ public struct HelpPopover<Content: View>: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Help")
-        .popover(isPresented: $showing, arrowEdge: .top) {
-            // Wrap in a ScrollView so long help bodies don't get
-            // clipped by iOS's popover sizing. The inner VStack's
-            // intrinsic height drives the scroll region; when the
-            // content fits, no scrolling happens; when it's taller
-            // than the popover's natural cap, the user can scroll.
-            //
-            // `presentationCompactAdaptation(.popover)` forces iPhone
-            // to use an actual popover rather than the default sheet
-            // adaptation — matches iPad behavior.
-            //
-            // Visual treatment:
-            //   - Inner padding of 20 keeps text from running flush to
-            //     the popover edge as it scrolls (previously 16 read
-            //     as cramped on iPhone-sized popovers).
-            //   - A 1pt `t.textMuted` rounded-rect stroke traces the
-            //     popover's content bounds so the help surface reads
-            //     as a defined card rather than blending into the
-            //     screen behind it. `textMuted` derives a darker
-            //     stroke in light mode and a lighter one in dark
-            //     mode automatically.
-            ScrollView {
-                VStack(alignment: .leading, spacing: 10) {
-                    content
-                }
-                .font(.system(size: 14))
-                .foregroundStyle(t.textBody)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(20)
+        #if canImport(UIKit)
+        // Presents via a UIKit bridge (see CairnHelpPopoverBridge) so
+        // we can install a custom `UIPopoverBackgroundView` and stroke
+        // the entire popover chrome — body and arrow — as one
+        // continuous outline. SwiftUI's `.popover` doesn't expose the
+        // background class, so a pure-SwiftUI `.overlay(stroke)` can
+        // only outline the inner content rectangle, leaving a visible
+        // break where the arrow joins the body.
+        .background(
+            CairnHelpPopoverPresenter(
+                isPresented: $showing,
+                fillColor: t.surface,
+                strokeColor: t.textMuted
+            ) {
+                helpPopoverContent
+                    .environment(\.cairnTokens, t)
             }
-            .scrollBounceBehavior(.basedOnSize)
-            .frame(idealWidth: 300, maxWidth: 340, minHeight: 80, idealHeight: 200, maxHeight: 420)
-            .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .strokeBorder(t.textMuted, lineWidth: 1)
-            )
-            .presentationCompactAdaptation(.popover)
-            .presentationBackground(t.surface)
+        )
+        #else
+        // Non-UIKit platforms (Catalyst-only builds, future macOS
+        // host) fall back to the SwiftUI popover with the
+        // content-rect-only outline. The bridge requires
+        // UIPopoverBackgroundView which is iOS-only.
+        .popover(isPresented: $showing, arrowEdge: .top) {
+            helpPopoverContent
+                .frame(idealWidth: 300, maxWidth: 340, minHeight: 80, idealHeight: 200, maxHeight: 420)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(t.textMuted, lineWidth: 1)
+                )
+                .presentationCompactAdaptation(.popover)
+                .presentationBackground(t.surface)
         }
+        #endif
+    }
+
+    /// Shared SwiftUI body for the popover content — pulled out so
+    /// both the UIKit-bridged path (iOS) and the SwiftUI fallback
+    /// render the same thing. Inner padding of 20 keeps text from
+    /// running flush to the chrome edges as it scrolls.
+    @ViewBuilder
+    private var helpPopoverContent: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 10) {
+                content
+            }
+            .font(.system(size: 14))
+            .foregroundStyle(t.textBody)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(20)
+        }
+        .scrollBounceBehavior(.basedOnSize)
+        .background(t.surface)
     }
 }
 
