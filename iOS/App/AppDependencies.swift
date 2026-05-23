@@ -2380,8 +2380,19 @@ final class AppDependencies {
                 }
 
                 guard let client = await self.immichClient else {
+                    // Dependency-not-ready: the common case isn't "user
+                    // needs to onboard" (the UI flow blocks Review & sync
+                    // before onboarding completes) — it's a launch /
+                    // foreground race where bootstrap hasn't finished
+                    // wiring up `immichClient` before some auto-trigger
+                    // (PhotoKit observer, BG slot, Shortcut) calls
+                    // requestSync. Surfacing a user-facing alert here
+                    // produced a "Not signed in" popup that transiently
+                    // appeared and then auto-dismissed once the next
+                    // sync ran with a wired client. Bail silently and
+                    // log instead.
+                    syncLog.notice("[cairn.sync] requestSync skipped: immichClient not yet available (trigger=\(resolvedTrigger.shortToken, privacy: .public))")
                     await MainActor.run {
-                        self.model.lastError = "Not signed in yet. Complete onboarding first."
                         self.model.isSyncing = false
                         self.model.transitionSyncPhase(to: .idle)
                     }
@@ -2390,8 +2401,12 @@ final class AppDependencies {
                 guard let observed = await self.observedStore,
                       let exclusions = await self.exclusionStore,
                       let confirmed = await self.confirmedDeletedStore else {
+                    // Same rationale as the `immichClient` guard above:
+                    // a missing per-server store at this point reflects
+                    // a transient bootstrap / partition-activation race,
+                    // not a real "user hasn't onboarded" state.
+                    syncLog.notice("[cairn.sync] requestSync skipped: per-server stores not yet activated (trigger=\(resolvedTrigger.shortToken, privacy: .public))")
                     await MainActor.run {
-                        self.model.lastError = "No server activated. Complete onboarding first."
                         self.model.isSyncing = false
                         self.model.transitionSyncPhase(to: .idle)
                     }
