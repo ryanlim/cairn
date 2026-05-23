@@ -575,6 +575,8 @@ public struct SettingsScreen: View {
             KeylineSection("Appearance", icon: "paintpalette", iconTint: t.accent)
             CairnCard {
                 AppearanceRow(appearance: $settings.appearance)
+                Divider().background(t.divider)
+                TimeFormatRow(format: $settings.timeDisplayFormat)
             }
         }
     }
@@ -1564,6 +1566,48 @@ private struct AppearanceRow: View {
         case .system: return "Follows iOS Settings → Display & Brightness."
         case .light:  return "Always light, regardless of the system setting."
         case .dark:   return "Always dark, regardless of the system setting."
+        }
+    }
+}
+
+// MARK: - Time format row
+
+/// Three-way segmented picker for how clock times render across
+/// the app — journal tail rows, per-run "time of day," any other
+/// surface that prints a clock time. Default is "System" which
+/// honors the device's 12/24-hour preference from
+/// iOS Settings → General → Date & Time.
+private struct TimeFormatRow: View {
+    @Binding var format: TimeDisplayFormat
+    @Environment(\.cairnTokens) private var t
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Time format")
+                .font(.system(size: 15))
+                .foregroundStyle(t.textBody)
+            CairnSegmentedPicker(
+                selection: $format,
+                options: [
+                    .init(value: TimeDisplayFormat.system, label: "System"),
+                    .init(value: TimeDisplayFormat.h12,    label: "12-hour"),
+                    .init(value: TimeDisplayFormat.h24,    label: "24-hour"),
+                ]
+            )
+            Text(explanation)
+                .font(.system(size: 12))
+                .foregroundStyle(t.textMuted)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 14)
+    }
+
+    private var explanation: String {
+        switch format {
+        case .system: return "Follows iOS Settings → General → Date & Time."
+        case .h12:    return "Always 12-hour with AM/PM (e.g. 5:57 PM)."
+        case .h24:    return "Always 24-hour (e.g. 17:57)."
         }
     }
 }

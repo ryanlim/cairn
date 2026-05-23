@@ -1011,6 +1011,14 @@ public struct CairnAppActions: Sendable {
     /// safe to call repeatedly.
     public var recomputeScopeTags: @Sendable () async -> Void
 
+    /// Re-render the cached journal tail from the persisted journal.
+    /// Wired to a SwiftUI `.onChange(of: settings.timeDisplayFormat)`
+    /// so toggling the clock-format picker flips already-cached rows
+    /// (which were pre-formatted with the prior setting) in place.
+    /// Other settings changes that affect derived state should ride
+    /// alongside this if they alter what `refreshJournalTail` emits.
+    public var refreshJournalTail: @Sendable () async -> Void
+
     /// Read the keychain-backed recent-servers list, sorted by
     /// `lastUsedAt` descending. Powers the URL-field autocomplete on
     /// onboarding (and the "switch account" UX once it lands).
@@ -1104,6 +1112,7 @@ public struct CairnAppActions: Sendable {
         forceDrainDeferred: @escaping @Sendable () async -> Void = {},
         replayOnboarding: @escaping @Sendable () async -> Void = {},
         recomputeScopeTags: @escaping @Sendable () async -> Void = {},
+        refreshJournalTail: @escaping @Sendable () async -> Void = {},
         recentServers: @escaping @Sendable () async -> [RecentServerEntry] = { [] },
         clearRecentServers: @escaping @Sendable () async -> Void = {},
         retryPendingTrashes: @escaping @Sendable () async -> Void = {},
@@ -1143,6 +1152,7 @@ public struct CairnAppActions: Sendable {
         self.forceDrainDeferred = forceDrainDeferred
         self.replayOnboarding = replayOnboarding
         self.recomputeScopeTags = recomputeScopeTags
+        self.refreshJournalTail = refreshJournalTail
         self.recentServers = recentServers
         self.clearRecentServers = clearRecentServers
         self.retryPendingTrashes = retryPendingTrashes

@@ -159,6 +159,16 @@ public struct CairnSettings: Sendable, Codable, Equatable {
     /// for users on flaky home networks. Default `5` is a balance.
     public static let maxRetryAttemptsRange: ClosedRange<Int> = 1...20
 
+    /// User-facing override for how clock times are rendered across
+    /// the app — journal rows, run times, sync detail timeline.
+    /// Default `.system` honors iOS Settings → General → Date & Time
+    /// → 24-Hour Time, which is what most users expect; `.h12` and
+    /// `.h24` are explicit overrides for users who want to pin a
+    /// specific format regardless of the device preference (e.g. a
+    /// 24-hour-preferring user temporarily on a US-locale loaner
+    /// device).
+    public var timeDisplayFormat: TimeDisplayFormat
+
     public init(
         maxDeletePercent: Double = 1.0,
         minDeleteFloor: Int = 5,
@@ -173,7 +183,8 @@ public struct CairnSettings: Sendable, Codable, Equatable {
         thumbnailCacheCapMB: Int = 100,
         thumbhashCapMB: Int = 5,
         indexingScope: IndexingScope = .fullLibrary,
-        maxRetryAttempts: Int = 5
+        maxRetryAttempts: Int = 5,
+        timeDisplayFormat: TimeDisplayFormat = .system
     ) {
         self.maxDeletePercent = maxDeletePercent
         self.minDeleteFloor = minDeleteFloor
@@ -189,6 +200,7 @@ public struct CairnSettings: Sendable, Codable, Equatable {
         self.thumbhashCapMB = thumbhashCapMB
         self.indexingScope = indexingScope
         self.maxRetryAttempts = maxRetryAttempts
+        self.timeDisplayFormat = timeDisplayFormat
     }
 
     /// The factory defaults. Kept as a single constant so tests and the
@@ -206,6 +218,7 @@ public struct CairnSettings: Sendable, Codable, Equatable {
         case thumbnailCacheCapMB, thumbhashCapMB
         case indexingScope
         case maxRetryAttempts
+        case timeDisplayFormat
     }
 
     public init(from decoder: Decoder) throws {
@@ -225,6 +238,75 @@ public struct CairnSettings: Sendable, Codable, Equatable {
         self.thumbhashCapMB = try c.decodeIfPresent(Int.self, forKey: .thumbhashCapMB) ?? d.thumbhashCapMB
         self.indexingScope = try c.decodeIfPresent(IndexingScope.self, forKey: .indexingScope) ?? d.indexingScope
         self.maxRetryAttempts = try c.decodeIfPresent(Int.self, forKey: .maxRetryAttempts) ?? d.maxRetryAttempts
+        self.timeDisplayFormat = try c.decodeIfPresent(TimeDisplayFormat.self, forKey: .timeDisplayFormat) ?? d.timeDisplayFormat
+    }
+}
+
+/// How clock times render across the cairn UI — journal tail rows,
+/// per-run "time of day," sync-timeline timestamps. Stored as a raw
+/// string so the JSON shape is stable and human-inspectable.
+///
+/// `.system` is the default: the renderer asks `Locale.current` for
+/// the right pattern via `setLocalizedDateFormatFromTemplate`, which
+/// honors iOS Settings → General → Date & Time → 24-Hour Time.
+///
+/// `.h12` and `.h24` override the locale and pin the format. Useful
+/// for a 24-hour-preferring user temporarily on a US-locale loaner,
+/// or for screenshots that need a consistent format across devices.
+public enum TimeDisplayFormat: String, Sendable, Codable, Equatable, CaseIterable {
+    case system
+    case h12
+    case h24
+
+    /// Human label for the picker row in Settings.
+    public var displayName: String {
+        switch self {
+        case .system: return "System"
+        case .h12: return "12-hour"
+        case .h24: return "24-hour"
+        }
+    }
+
+    /// Format `date` as a clock time only — no day or date component.
+    /// `.system` resolves the pattern via `Locale.current`'s `Hm`
+    /// template (which renders 12 or 24 hour based on the user's
+    /// iOS preference). `.h12` and `.h24` pin explicit patterns.
+    public func formatClockTime(_ date: Date) -> String {
+        let df = DateFormatter()
+        switch self {
+        case .system:
+            df.setLocalizedDateFormatFromTemplate("Hm")
+        case .h12:
+            df.dateFormat = "h:mm a"
+            df.locale = Locale(identifier: "en_US_POSIX")
+        case .h24:
+            df.dateFormat = "HH:mm"
+            df.locale = Locale(identifier: "en_US_POSIX")
+        }
+        return df.string(from: date)
+    }
+
+    /// Format `date` for the journal tail: a clock time when `date`
+    /// falls on the same calendar day as `now`, else `MMM d`-prefixed
+    /// so a stale row reads as "yesterday or earlier" at a glance.
+    /// The clock component honors `self` exactly as `formatClockTime`
+    /// does.
+    public func formatJournalTime(_ date: Date, now: Date = Date()) -> String {
+        if Calendar.current.isDate(date, inSameDayAs: now) {
+            return formatClockTime(date)
+        }
+        let df = DateFormatter()
+        switch self {
+        case .system:
+            df.setLocalizedDateFormatFromTemplate("MMMdHm")
+        case .h12:
+            df.dateFormat = "MMM d h:mm a"
+            df.locale = Locale(identifier: "en_US_POSIX")
+        case .h24:
+            df.dateFormat = "MMM d HH:mm"
+            df.locale = Locale(identifier: "en_US_POSIX")
+        }
+        return df.string(from: date)
     }
 }
 

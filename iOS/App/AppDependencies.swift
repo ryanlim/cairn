@@ -1493,7 +1493,12 @@ final class AppDependencies {
         // everything.
         let cutoff = currentKeyActivatedAt ?? .distantPast
         let filtered = recent.filter { $0.timestamp >= cutoff }
-        model.journalTail = Array(CairnFixtures.JournalTailEntry.from(entries: filtered).reversed())
+        let timeFormat = model.settings.timeDisplayFormat
+        model.journalTail = Array(
+            CairnFixtures.JournalTailEntry
+                .from(entries: filtered, timeFormat: timeFormat)
+                .reversed()
+        )
     }
 
     @MainActor
@@ -3689,6 +3694,10 @@ final class AppDependencies {
             recomputeScopeTags: { [weak self] in
                 guard let self else { return }
                 await self.recomputeScopeTagsImpl()
+            },
+            refreshJournalTail: { [weak self] in
+                guard let self else { return }
+                await self.refreshJournalTail()
             },
             recentServers: { [weak self] in
                 guard let self else { return [] }

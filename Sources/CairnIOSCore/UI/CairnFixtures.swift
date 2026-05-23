@@ -511,9 +511,10 @@ public enum CairnFixtures {
         /// scope; `from(entries:)` populates it for batch construction.
         public static func from(
             _ entry: JournalEntry,
-            previousSyncCounts: SyncCounts? = nil
+            previousSyncCounts: SyncCounts? = nil,
+            timeFormat: TimeDisplayFormat = .system
         ) -> JournalTailEntry {
-            let time = formatTime(entry.timestamp)
+            let time = formatTime(entry.timestamp, format: timeFormat)
             let eventName: String
             let message: String
             let glyph: String
@@ -698,12 +699,15 @@ public enum CairnFixtures {
         ///
         /// Caller is responsible for any final ordering (e.g. reversing
         /// for newest-first display); this preserves input order.
-        public static func from(entries: [JournalEntry]) -> [JournalTailEntry] {
+        public static func from(
+            entries: [JournalEntry],
+            timeFormat: TimeDisplayFormat = .system
+        ) -> [JournalTailEntry] {
             var out: [JournalTailEntry] = []
             out.reserveCapacity(entries.count)
             var prevSync: SyncCounts? = nil
             for entry in entries {
-                out.append(.from(entry, previousSyncCounts: prevSync))
+                out.append(.from(entry, previousSyncCounts: prevSync, timeFormat: timeFormat))
                 if case .syncCompleted(let i, let c, let p, _, _, _, _) = entry.event {
                     prevSync = SyncCounts(indexed: i, candidates: c, pending: p)
                 }
@@ -817,37 +821,20 @@ public enum CairnFixtures {
             return Double(s[start..<end])
         }
 
-        /// Compact, relative-aware time. Today → `HH:mm` (no seconds,
-        /// no millis). Different day → `MMM d HH:mm`. Replaces the
-        /// previous always-on `MM/dd · HH:mm:ss.SSS` format — the
-        /// dropped column width frees room for the runId suffix.
-        public static func formatTime(_ date: Date, now: Date = Date()) -> String {
-            let cal = Calendar.current
-            if cal.isDate(date, inSameDayAs: now) {
-                return Self.todayFormatter.string(from: date)
-            }
-            return Self.otherDayFormatter.string(from: date)
+        /// Compact, relative-aware time. Today → clock time only.
+        /// Different day → `MMM d`-prefixed clock time. The clock
+        /// component honors `format` — `.system` follows the device's
+        /// 12/24-hour preference; `.h12` and `.h24` pin explicit
+        /// patterns. Default is `.system` so existing tests and
+        /// fixtures that call `formatTime(_:)` without a format keep
+        /// matching whatever the test host's locale prefers.
+        public static func formatTime(
+            _ date: Date,
+            now: Date = Date(),
+            format: TimeDisplayFormat = .system
+        ) -> String {
+            format.formatJournalTime(date, now: now)
         }
-
-        /// `17:57` — same-day events. Dropped seconds + millis: a few
-        /// adjacent rows might share a clock minute, but the runId
-        /// suffix column already disambiguates, and the full-precision
-        /// timestamp is in the on-disk journal for forensic use.
-        private static let todayFormatter: DateFormatter = {
-            let df = DateFormatter()
-            df.dateFormat = "HH:mm"
-            df.locale = Locale(identifier: "en_US_POSIX")
-            return df
-        }()
-
-        /// `Apr 22 17:57` — past-day events. No middle-dot separator
-        /// and no seconds, so the column stays narrow.
-        private static let otherDayFormatter: DateFormatter = {
-            let df = DateFormatter()
-            df.dateFormat = "MMM d HH:mm"
-            df.locale = Locale(identifier: "en_US_POSIX")
-            return df
-        }()
     }
 
     /// Newest-first (matches how the runtime model populates

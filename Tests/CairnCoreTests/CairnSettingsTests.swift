@@ -113,6 +113,36 @@ struct CairnSettingsTests {
         #expect(CairnSettings.defaults.indexingScope.isRestricted == false)
     }
 
+    @Test("timeDisplayFormat defaults to .system")
+    func timeDisplayFormatDefaultsSystem() {
+        #expect(CairnSettings.defaults.timeDisplayFormat == .system)
+    }
+
+    @Test("legacy JSON without timeDisplayFormat decodes as .system")
+    func legacyJSONMissingTimeFormatUsesSystem() throws {
+        let legacyJSON = """
+        {
+            "maxDeletePercent": 1.0,
+            "minDeleteFloor": 5,
+            "notifyOnAbort": true,
+            "verboseLogging": false,
+            "deletionStrictness": "trusting"
+        }
+        """
+        let decoded = try JSONDecoder().decode(CairnSettings.self, from: Data(legacyJSON.utf8))
+        #expect(decoded.timeDisplayFormat == .system)
+    }
+
+    @Test("timeDisplayFormat round-trips through Codable for every case")
+    func timeDisplayFormatRoundTripsAllCases() throws {
+        for format in TimeDisplayFormat.allCases {
+            let settings = CairnSettings(timeDisplayFormat: format)
+            let data = try JSONEncoder().encode(settings)
+            let decoded = try JSONDecoder().decode(CairnSettings.self, from: data)
+            #expect(decoded.timeDisplayFormat == format)
+        }
+    }
+
     @Test("legacy JSON without indexingScope decodes as .fullLibrary")
     func legacyJSONMissingIndexingScopeUsesFullLibrary() throws {
         let legacyJSON = """

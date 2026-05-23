@@ -1,4 +1,5 @@
 import SwiftUI
+import CairnCore
 
 /// Layer 2 of the cairn color system: semantic tokens that views read.
 ///
@@ -181,6 +182,21 @@ extension EnvironmentValues {
         get { self[CairnTokensKey.self] }
         set { self[CairnTokensKey.self] = newValue }
     }
+
+    /// Active clock-time format for any view that renders a time —
+    /// journal rows, per-run "time of day," sync-detail timestamps.
+    /// `CairnAppRoot` injects this from `model.settings.timeDisplayFormat`
+    /// so the picker in Settings → Appearance flips every relevant
+    /// view at once. Default `.system` honors the device's
+    /// 12/24-hour preference.
+    public var cairnTimeFormat: TimeDisplayFormat {
+        get { self[CairnTimeFormatKey.self] }
+        set { self[CairnTimeFormatKey.self] = newValue }
+    }
+}
+
+private struct CairnTimeFormatKey: EnvironmentKey {
+    static let defaultValue: TimeDisplayFormat = .system
 }
 
 /// View modifier that resolves tokens from the current color scheme and a

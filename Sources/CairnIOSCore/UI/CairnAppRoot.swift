@@ -96,6 +96,17 @@ public struct CairnAppRoot: View {
             .onChange(of: model.settings.indexingScope) { _, _ in
                 Task { await model.actions.recomputeScopeTags() }
             }
+            // Journal-tail rows are pre-formatted strings cached on
+            // the model (built in `refreshJournalTail` from the active
+            // setting). Toggling the format picker doesn't change
+            // those existing strings until the next refresh — so
+            // trigger one explicitly here. RunsScreen reads its time
+            // from the environment at render time and doesn't need a
+            // refresh; same for sheet titles that recompute from
+            // entry timestamps.
+            .onChange(of: model.settings.timeDisplayFormat) { _, _ in
+                Task { await model.actions.refreshJournalTail() }
+            }
     }
 
     @ViewBuilder
@@ -127,6 +138,10 @@ public struct CairnAppRoot: View {
         // (follow system).
         .preferredColorScheme(appearanceOverrideScheme(model.settings.appearance))
         .cairnTheme(palette)
+        // Flow the user's clock-format pick into the environment so
+        // any view that renders a time (RunsScreen rows, journal tail
+        // — via refresh — etc.) reads from a single source.
+        .environment(\.cairnTimeFormat, model.settings.timeDisplayFormat)
         .animation(reduceMotion ? .none : .snappy(duration: 0.18), value: model.needsOnboarding)
         .animation(reduceMotion ? .none : .snappy(duration: 0.18), value: model.hasCompletedInitialScan)
         .animation(reduceMotion ? .none : .snappy(duration: 0.18), value: model.settingsRoute)

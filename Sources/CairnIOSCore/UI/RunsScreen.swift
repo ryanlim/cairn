@@ -1,4 +1,5 @@
 import SwiftUI
+import CairnCore
 
 /// The full history list. Mirrors the prototype's `screens/runs.jsx`.
 ///
@@ -382,10 +383,15 @@ private struct RunListRow: View {
         return t.verifiedInk
     }
 
+    @Environment(\.cairnTimeFormat) private var timeFormat
+
     private var timeOfDay: String {
-        let f = DateFormatter()
-        f.dateFormat = "h:mm a"
-        return f.string(from: run.startedAt)
+        // Was a hardcoded `h:mm a`. Now honors the user's
+        // Settings → Appearance → Time format pick (or the device's
+        // 12/24-hour preference when `.system`). Same rendering path
+        // the journal tail goes through, so the two surfaces stay
+        // visually in sync.
+        timeFormat.formatClockTime(run.startedAt)
     }
 }
 
