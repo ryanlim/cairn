@@ -268,14 +268,20 @@ public enum TimeDisplayFormat: String, Sendable, Codable, Equatable, CaseIterabl
     }
 
     /// Format `date` as a clock time only — no day or date component.
-    /// `.system` resolves the pattern via `Locale.current`'s `Hm`
-    /// template (which renders 12 or 24 hour based on the user's
-    /// iOS preference). `.h12` and `.h24` pin explicit patterns.
+    /// `.system` resolves the pattern via `Locale.current`'s `jm`
+    /// template. The `j` template character is special in CLDR/ICU:
+    /// it stands for "locale-determined hour cycle" — resolves to
+    /// `h` (12-hour with AM/PM) when iOS Settings → General → Date
+    /// & Time → 24-Hour Time is off, and to `H` (24-hour) when it's
+    /// on. `H` and `h` are explicit cycle pins and would IGNORE the
+    /// user preference, which was the build-52 bug — using `Hm`
+    /// produced 24-hour output regardless of the device setting.
+    /// `.h12` and `.h24` deliberately pin explicit patterns.
     public func formatClockTime(_ date: Date) -> String {
         let df = DateFormatter()
         switch self {
         case .system:
-            df.setLocalizedDateFormatFromTemplate("Hm")
+            df.setLocalizedDateFormatFromTemplate("jm")
         case .h12:
             df.dateFormat = "h:mm a"
             df.locale = Locale(identifier: "en_US_POSIX")
@@ -290,7 +296,8 @@ public enum TimeDisplayFormat: String, Sendable, Codable, Equatable, CaseIterabl
     /// falls on the same calendar day as `now`, else `MMM d`-prefixed
     /// so a stale row reads as "yesterday or earlier" at a glance.
     /// The clock component honors `self` exactly as `formatClockTime`
-    /// does.
+    /// does — `.system` uses the `j` skeleton (locale-resolved hour
+    /// cycle), `.h12`/`.h24` pin explicit patterns.
     public func formatJournalTime(_ date: Date, now: Date = Date()) -> String {
         if Calendar.current.isDate(date, inSameDayAs: now) {
             return formatClockTime(date)
@@ -298,7 +305,7 @@ public enum TimeDisplayFormat: String, Sendable, Codable, Equatable, CaseIterabl
         let df = DateFormatter()
         switch self {
         case .system:
-            df.setLocalizedDateFormatFromTemplate("MMMdHm")
+            df.setLocalizedDateFormatFromTemplate("MMMdjm")
         case .h12:
             df.dateFormat = "MMM d h:mm a"
             df.locale = Locale(identifier: "en_US_POSIX")
