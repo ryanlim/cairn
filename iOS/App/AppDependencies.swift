@@ -2358,7 +2358,18 @@ final class AppDependencies {
                 await MainActor.run {
                     self.model.lastSyncTrigger = resolvedTrigger
                     self.model.isSyncing = true
-                    self.model.lastError = nil
+                    // Don't clear `lastError` at sync start. Doing so
+                    // caused a "transient popup that auto-dismisses"
+                    // bug: a prior session's error would alert on
+                    // foreground entry, then PhotoKit's change-observer-
+                    // triggered foreground sync (via
+                    // `scheduleForegroundSync`'s 1.5s-delayed
+                    // requestSync) would clear `lastError` and dismiss
+                    // the alert before the user could read it. Now the
+                    // alert persists until either the user dismisses
+                    // it or a sync genuinely succeeds (see the
+                    // `lastError = nil` next to `degraded = .none` in
+                    // the success path below).
                     if let paused = self.model.pausedSyncElapsedSeconds {
                         self.model.syncStartedAt = Date().addingTimeInterval(-paused)
                         self.model.pausedSyncElapsedSeconds = nil
@@ -2426,6 +2437,7 @@ final class AppDependencies {
                         self.model.syncStartedAt = nil
                         self.model.pausedSyncElapsedSeconds = nil
                         self.model.degraded = .none
+                        self.model.lastError = nil
                         self.lastSyncEndedAt = Date()
                         // Reaching this point means we talked to Immich
                         // successfully — clear any disconnect banner
