@@ -842,6 +842,17 @@ public struct HelpPopover<Content: View>: View {
             // `presentationCompactAdaptation(.popover)` forces iPhone
             // to use an actual popover rather than the default sheet
             // adaptation — matches iPad behavior.
+            //
+            // Visual treatment:
+            //   - Inner padding of 20 keeps text from running flush to
+            //     the popover edge as it scrolls (previously 16 read
+            //     as cramped on iPhone-sized popovers).
+            //   - A 1pt `t.textMuted` rounded-rect stroke traces the
+            //     popover's content bounds so the help surface reads
+            //     as a defined card rather than blending into the
+            //     screen behind it. `textMuted` derives a darker
+            //     stroke in light mode and a lighter one in dark
+            //     mode automatically.
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
                     content
@@ -850,10 +861,14 @@ public struct HelpPopover<Content: View>: View {
                 .foregroundStyle(t.textBody)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(16)
+                .padding(20)
             }
             .scrollBounceBehavior(.basedOnSize)
             .frame(idealWidth: 300, maxWidth: 340, minHeight: 80, idealHeight: 200, maxHeight: 420)
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(t.textMuted, lineWidth: 1)
+            )
             .presentationCompactAdaptation(.popover)
             .presentationBackground(t.surface)
         }
