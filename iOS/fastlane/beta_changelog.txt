@@ -9,3 +9,5 @@ Local Network reliability: declared the Local Network usage description that iOS
 Background sync label: the long-budget iOS background slot used to show "trigger=overnight" in the journal. iOS actually fires those slots whenever the device is charging, idle, and on Wi-Fi — daytime included — so the label was asserting a time-of-day it couldn't verify. All background syncs now consistently show "trigger=background".
 
 Help popovers: the (?) helpers across Settings now have a thin contrasting outline traced around the full popover shape — body and arrow tip — plus more inner breathing room, so their scrollable text reads as a defined card rather than blending into the screen behind it.
+
+Time format: Settings → Appearance now has a System / 12-hour / 24-hour picker that flips clock times in the journal tail, the per-run "time of day," and any other surface that prints a clock. Default "System" follows iOS Settings → General → Date & Time; "12-hour" and "24-hour" pin explicit formats. Previously the journal forced 24-hour while Runs forced 12-hour, regardless of the device preference.
