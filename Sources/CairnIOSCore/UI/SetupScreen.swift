@@ -356,7 +356,9 @@ public struct SetupScreen: View {
             .padding(.bottom, 10)
 
             // Scopes hint — verbatim copy + monospace token list from
-            // `screens/setup.jsx` step 0.
+            // `screens/setup.jsx` step 0. sync.* scopes enable incremental
+            // server-side discovery; cairn falls back to paginated discovery
+            // when they're missing, so listing them keeps existing keys working.
             (Text("Scopes required: ")
                 + monoCode("asset.read") + Text(", ")
                 + monoCode("asset.view") + Text(", ")
@@ -364,7 +366,11 @@ public struct SetupScreen: View {
                 + monoCode("asset.delete") + Text(", ")
                 + monoCode("tag.create") + Text(", ")
                 + monoCode("tag.asset") + Text(", ")
-                + monoCode("tag.read") + Text("."))
+                + monoCode("tag.read") + Text(", ")
+                + monoCode("sync.stream") + Text(", ")
+                + monoCode("sync.checkpoint.read") + Text(", ")
+                + monoCode("sync.checkpoint.update") + Text(", ")
+                + monoCode("sync.checkpoint.delete") + Text("."))
                 .font(.system(size: 12))
                 .foregroundStyle(t.textMuted)
                 .lineSpacing(3)

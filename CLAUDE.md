@@ -170,7 +170,7 @@ LoC reality check (post-Wave 4): we're at ~7,000 LoC of iOS-bound code (impls + 
 
 Every trash run writes `cairn/v1/run/<run_id>` as a tag on Immich. One tag per run; every trashed asset (including Live Photo motion videos) attached. `<run_id>` = ISO-8601 timestamp + short device id. Schema-versioned at the path — bump to `v2` for breaking changes; old tools keep reading old tags.
 
-API key scopes: `asset.read`, `asset.view`, `asset.download`, `asset.delete`, `tag.create`, `tag.asset` for normal operation; `tag.read` additionally for `cairn history` and `--file-name-matches`. `asset.view` + `asset.download` are required for thumbnail fetching in the iOS app.
+API key scopes: `asset.read`, `asset.view`, `asset.download`, `asset.delete`, `tag.create`, `tag.asset` for normal operation; `tag.read` additionally for `cairn history` and `--file-name-matches`. `asset.view` + `asset.download` are required for thumbnail fetching in the iOS app. `sync.stream`, `sync.checkpoint.read`, `sync.checkpoint.update`, `sync.checkpoint.delete` enable incremental server-side discovery via `POST /api/sync/stream` (replaces ~N paginated `search/metadata` calls per sync with a single CDC stream). Cairn falls back to the paginated path when the `sync.*` scopes are missing, so existing API keys keep working — but a Status banner prompts the user to regenerate the key for faster syncs. See `notes/sync-stream-incremental-server-sync-plan.md` for the full design.
 
 ## Confirmed-deletion signal (Wave 4 → 4b)
 

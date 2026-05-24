@@ -60,7 +60,7 @@ PRIVACY
 
 REQUIREMENTS
 — An Immich server you run or control.
-— An Immich API key. cairn requests these scopes: asset.read, asset.view, asset.download, asset.delete, tag.create, tag.asset, tag.read. The Setup screen lists them when you paste your key.
+— An Immich API key. cairn requests these scopes: asset.read, asset.view, asset.download, asset.delete, tag.create, tag.asset, tag.read, sync.stream, sync.checkpoint.read, sync.checkpoint.update, sync.checkpoint.delete. The Setup screen lists them when you paste your key.
 
 cairn is not affiliated with the Immich project. It talks to Immich over its public API; compatibility only.
 
