@@ -641,6 +641,17 @@ public struct ImmichClient: Sendable {
                     req.httpBody = try JSONEncoder().encode(
                         SyncStreamRequest(types: types, reset: reset ? true : nil)
                     )
+                    // Streaming responses can take minutes when the
+                    // server is streaming a full bootstrap to a client
+                    // with an empty cache. The default 30s app-session
+                    // request timeout (`timeoutIntervalForRequest` in
+                    // `makeAppURLSession`) drops the connection mid-
+                    // stream on any pause longer than 30s between
+                    // emitted events. Override per-request with a
+                    // 10-minute ceiling — long enough for a 200k-asset
+                    // bootstrap, short enough that a genuinely dead
+                    // connection still fails in bounded time.
+                    req.timeoutInterval = 600
 
                     // `bytes(for:)` returns as soon as headers are
                     // available; the body streams lazily as we iterate.

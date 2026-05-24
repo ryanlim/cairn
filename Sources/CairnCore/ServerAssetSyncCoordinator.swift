@@ -1,4 +1,7 @@
 import Foundation
+import OSLog
+
+private let coordLog = Logger(subsystem: "app.cairn", category: "sync.stream")
 
 // MARK: - Coordinator
 
@@ -62,6 +65,7 @@ public actor ServerAssetSyncCoordinator {
         let priorSize = try await cache.size()
         let isBootstrap = priorSize == 0
         let mode: SyncRunSummary.Mode = isBootstrap ? .bootstrap : .incremental
+        coordLog.info("[cairn.sync.stream] starting mode=\(mode.rawValue, privacy: .public) priorCache=\(priorSize, privacy: .public)")
 
         var totalUpserted = 0
         var totalDeleted = 0
@@ -69,6 +73,7 @@ public actor ServerAssetSyncCoordinator {
         var batch: [SyncEvent] = []
         batch.reserveCapacity(batchSize)
         var highestAckByType: [SyncEntityType: String] = [:]
+        var batchesFlushed = 0
 
         // `reset: true` on bootstrap clears any server-side checkpoint
         // left over from a prior install. Without this, a wipe-and-
@@ -90,6 +95,9 @@ public actor ServerAssetSyncCoordinator {
                 totalUpserted += summary.upserted
                 totalDeleted += summary.deleted
                 totalIgnored += summary.ignored
+                batchesFlushed += 1
+                let elapsedMs = Int((clock().timeIntervalSince(start) * 1000).rounded())
+                coordLog.info("[cairn.sync.stream] batch \(batchesFlushed, privacy: .public) flushed: cache=+\(summary.upserted, privacy: .public)/-\(summary.deleted, privacy: .public) total=+\(totalUpserted, privacy: .public)/-\(totalDeleted, privacy: .public) elapsed=\(elapsedMs, privacy: .public)ms")
             }
         }
 
@@ -101,6 +109,7 @@ public actor ServerAssetSyncCoordinator {
         }
 
         let duration = Int((clock().timeIntervalSince(start) * 1000).rounded())
+        coordLog.info("[cairn.sync.stream] complete: upserted=\(totalUpserted, privacy: .public) deleted=\(totalDeleted, privacy: .public) ignored=\(totalIgnored, privacy: .public) durationMs=\(duration, privacy: .public)")
         return SyncRunSummary(
             mode: mode,
             upserted: totalUpserted,
