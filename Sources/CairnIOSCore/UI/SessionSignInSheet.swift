@@ -76,7 +76,7 @@ public struct SessionSignInSheet: View {
     }
 
     private var explainer: some View {
-        Text("Immich's sync/stream endpoint requires session auth, which API keys can't satisfy. Signing in with your Immich email and password gives cairn a session token (stored locally in Keychain) used only for the /sync/* endpoints — every other request still uses your API key. Sign out anytime to drop the token; the rest of cairn keeps working.")
+        Text("Incremental sync talks to an Immich endpoint that doesn't accept API keys. Signing in with your Immich email and password gives cairn a session token, stored locally in your iPhone's Keychain. Cairn uses it only for that one streaming path — every other request still uses your API key. Sign out anytime to drop the token; everything else keeps working.")
             .font(.system(size: 13))
             .foregroundStyle(t.textMuted)
             .lineSpacing(3)

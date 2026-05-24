@@ -757,21 +757,21 @@ public struct SettingsScreen: View {
                         RowDivider()
                         ToggleRow(
                             "Incremental server sync",
-                            sub: "Use Immich's sync/stream change-data-capture endpoint instead of paginating every sync. Faster on large libraries; falls back to the paginated path if the API key lacks the sync.* scopes or no session is signed in.",
+                            sub: "Stream only the changes since the last sync instead of refetching the whole server library each time. Much faster on large libraries. Falls back to the slower full-refetch path if you're not signed in to Immich or your account doesn't allow the streaming endpoint.",
                             value: $settings.useIncrementalServerSync
                         )
                         RowDivider()
                         if hasSessionToken {
                             KeyValRow(
-                                "Session signed in",
+                                "Signed in to Immich",
                                 value: { Text("Sign out").foregroundStyle(t.dangerInk) },
                                 chevron: false,
                                 onTap: onSignOutSession
                             )
                         } else {
                             KeyValRow(
-                                "Session sign-in",
-                                value: { Text("Required for /sync/*").foregroundStyle(t.textMuted) },
+                                "Sign in to Immich",
+                                value: { Text("Required for incremental sync").foregroundStyle(t.textMuted) },
                                 chevron: true,
                                 onTap: onOpenSessionSignIn
                             )

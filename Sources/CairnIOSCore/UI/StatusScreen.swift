@@ -551,7 +551,7 @@ public struct StatusScreen: View {
             case .authStale:      return ("auth expired", .danger)
             case .photosLimited:  return ("limited", .danger)
             case .tinyLibrary:    return ("small library", .info)
-            case .sessionExpired: return ("session expired", .pending)
+            case .sessionExpired: return ("signed out of immich", .pending)
             }
         }()
         return Chip(label: label, tone: tone)
@@ -641,8 +641,8 @@ public struct StatusScreen: View {
         case .sessionExpired:
             Callout(.pending, icon: "person.crop.circle.badge.xmark") {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Session expired").fontWeight(.semibold)
-                    Text("Your Immich session token was rejected, so incremental sync is on the paginated fallback. Sign in again to restore the streaming path; everything else keeps working in the meantime.")
+                    Text("Signed out of Immich").fontWeight(.semibold)
+                    Text("Your Immich session was ended — likely from another device or the Immich web settings. Incremental sync has fallen back to the slower path; sign in again to restore it. Everything else keeps working.")
                         .opacity(0.88).fixedSize(horizontal: false, vertical: true)
                     Button(action: onResumeSession) {
                         Text("Sign in again")
