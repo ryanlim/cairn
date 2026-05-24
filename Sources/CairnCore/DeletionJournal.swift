@@ -254,15 +254,40 @@ public struct JournalEntry: Codable, Sendable, Equatable {
         /// otherwise to keep journal volume modest. Read by display:
         /// `editsProtected` / `editsQuarantined` reveal whether edits
         /// in Photos.app are being handled correctly; `confirmedFrom*`
-        /// pair distinguishes Photos.app-deleted assets (the primary
-        /// signal) from back-channel deletions caught by the orphan
-        /// safety net (which would otherwise look identical in the log).
+        /// pair distinguishes platform-change-log-attributed deletions
+        /// (the primary signal — `PHPhotoLibrary.fetchPersistentChanges`
+        /// on iOS, `MediaStore` content-change observers on a future
+        /// Android port) from back-channel deletions caught by the
+        /// orphan safety net (which would otherwise look identical in
+        /// the log).
+        ///
+        /// `confirmedFromChangeLog` is named for the portable concept;
+        /// the wire-format JSON key stays `confirmedFromPhotoKit` (via
+        /// `SyncTransitionsCodingKeys` below) so existing journal files
+        /// continue to decode. Renaming the wire would gain nothing —
+        /// journals are device-local and never cross platforms — and
+        /// would break every pre-1.0 install's journal history.
         case syncTransitions(
             editsProtected: Int,
             editsQuarantined: Int,
-            confirmedFromPhotoKit: Int,
+            confirmedFromChangeLog: Int,
             confirmedFromOrphanSweep: Int
         )
+
+        /// Per-case Codable customization for `syncTransitions`. The
+        /// Swift identifier rename (`confirmedFromPhotoKit` →
+        /// `confirmedFromChangeLog`) keeps the layer's name portable;
+        /// pinning the JSON key here preserves journal-file wire
+        /// compatibility with all pre-rename installs. SE-0295 supports
+        /// the per-case-CodingKeys pattern: the synthesizer picks this
+        /// up automatically because of the `<CaseName>CodingKeys`
+        /// naming convention.
+        enum SyncTransitionsCodingKeys: String, CodingKey {
+            case editsProtected
+            case editsQuarantined
+            case confirmedFromChangeLog = "confirmedFromPhotoKit"
+            case confirmedFromOrphanSweep
+        }
     }
 
     /// One asset's worth of info captured at trash-plan time. Carried

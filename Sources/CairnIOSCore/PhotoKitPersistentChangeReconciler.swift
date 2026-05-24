@@ -138,9 +138,11 @@ public final class PhotoKitPersistentChangeReconciler {
         public let untrackedDiscovered: Int
 
         /// Count of `newlyConfirmedDeleted` checksums attributable to
-        /// the PhotoKit `deletedLocalIdentifiers` path (the primary
-        /// signal). Disjoint from `confirmedFromOrphanSweep`.
-        public let confirmedFromPhotoKit: Int
+        /// the platform change-log path (the primary signal — iOS
+        /// `PHPhotoLibrary.fetchPersistentChanges` here; a future
+        /// Android port would point at `MediaStore` change observers).
+        /// Disjoint from `confirmedFromOrphanSweep`.
+        public let confirmedFromChangeLog: Int
         /// Count of `newlyConfirmedDeleted` checksums attributable to
         /// the orphan-sweep safety net — local IDs that the persistent-
         /// change log missed (back-channel deletions, prior-token gaps).
@@ -176,7 +178,7 @@ public final class PhotoKitPersistentChangeReconciler {
             recentlyObservedChecksums: Set<Checksum> = [],
             sourceLocalIdentifierByChecksum: [Checksum: String] = [:],
             untrackedDiscovered: Int = 0,
-            confirmedFromPhotoKit: Int = 0,
+            confirmedFromChangeLog: Int = 0,
             confirmedFromOrphanSweep: Int = 0,
             editsProtected: Int = 0,
             editsQuarantined: Int = 0
@@ -196,7 +198,7 @@ public final class PhotoKitPersistentChangeReconciler {
             self.recentlyObservedChecksums = recentlyObservedChecksums
             self.sourceLocalIdentifierByChecksum = sourceLocalIdentifierByChecksum
             self.untrackedDiscovered = untrackedDiscovered
-            self.confirmedFromPhotoKit = confirmedFromPhotoKit
+            self.confirmedFromChangeLog = confirmedFromChangeLog
             self.confirmedFromOrphanSweep = confirmedFromOrphanSweep
             self.editsProtected = editsProtected
             self.editsQuarantined = editsQuarantined
@@ -790,12 +792,14 @@ public final class PhotoKitPersistentChangeReconciler {
         // sweep purge, and the insert/update writes above.
         let stillLocal = try await hashStore.allChecksums()
         let trulyAbsent = Self.confirmableDeletions(removed: removedChecksums, stillLocal: stillLocal)
-        // Per-source attribution within trulyAbsent. PhotoKit-confirmed
+        // Per-source attribution within trulyAbsent. Change-log-confirmed
         // are checksums already in `preOrphanRemoved` (came from the
-        // primary `deletedLocalIdentifiers` path); orphan-confirmed are
-        // the rest (only added via the orphan sweep loop above). The
-        // two sets are disjoint by construction.
-        let confirmedFromPhotoKitCount = trulyAbsent.intersection(preOrphanRemoved).count
+        // primary `deletedLocalIdentifiers` path — `PHPhotoLibrary
+        // .fetchPersistentChanges` here, a `MediaStore` change observer
+        // on a future Android port); orphan-confirmed are the rest
+        // (only added via the orphan sweep loop above). The two sets
+        // are disjoint by construction.
+        let confirmedFromChangeLogCount = trulyAbsent.intersection(preOrphanRemoved).count
         let confirmedFromOrphanSweepCount = trulyAbsent.subtracting(preOrphanRemoved).count
         // Limited Photo Access: only stamp checksums that arrived via a
         // PhotoKit `deletedLocalIdentifiers` event. Orphan-sweep finds in
@@ -817,7 +821,7 @@ public final class PhotoKitPersistentChangeReconciler {
         // logs without re-instrumenting a build. Counts only — no
         // checksum payloads (PII boundary).
         Self.reconLog.notice(
-            "[cairn.recon] stamp gate: removed=\(removedChecksums.count, privacy: .public) preOrphan=\(preOrphanRemoved.count, privacy: .public) trulyAbsent=\(trulyAbsent.count, privacy: .public) stillLocal=\(stillLocal.count, privacy: .public) stampable=\(stampable.count, privacy: .public) requireExplicit=\(self.requireExplicitDeletionEvent, privacy: .public) fromPhotoKit=\(confirmedFromPhotoKitCount, privacy: .public) fromOrphan=\(confirmedFromOrphanSweepCount, privacy: .public)"
+            "[cairn.recon] stamp gate: removed=\(removedChecksums.count, privacy: .public) preOrphan=\(preOrphanRemoved.count, privacy: .public) trulyAbsent=\(trulyAbsent.count, privacy: .public) stillLocal=\(stillLocal.count, privacy: .public) stampable=\(stampable.count, privacy: .public) requireExplicit=\(self.requireExplicitDeletionEvent, privacy: .public) fromChangeLog=\(confirmedFromChangeLogCount, privacy: .public) fromOrphan=\(confirmedFromOrphanSweepCount, privacy: .public)"
         )
         if !stampable.isEmpty {
             try await confirmedDeleted.union(stampable, at: now)
@@ -936,7 +940,7 @@ public final class PhotoKitPersistentChangeReconciler {
             recentlyObservedChecksums: allRecentlyObserved,
             sourceLocalIdentifierByChecksum: sourceLocalIdentifierByChecksum,
             untrackedDiscovered: untrackedIds.count,
-            confirmedFromPhotoKit: confirmedFromPhotoKitCount,
+            confirmedFromChangeLog: confirmedFromChangeLogCount,
             confirmedFromOrphanSweep: confirmedFromOrphanSweepCount,
             editsProtected: editsProtectedCount,
             editsQuarantined: editsQuarantinedCount

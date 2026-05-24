@@ -1515,7 +1515,7 @@ final class AppDependencies {
                 // groups them visually.
                 let totalTransitions = scan.editsProtected
                     + scan.editsQuarantined
-                    + scan.confirmedFromPhotoKit
+                    + scan.confirmedFromChangeLog
                     + scan.confirmedFromOrphanSweep
                 if totalTransitions > 0 {
                     try? await journal.append(.init(
@@ -1523,7 +1523,7 @@ final class AppDependencies {
                         event: .syncTransitions(
                             editsProtected: scan.editsProtected,
                             editsQuarantined: scan.editsQuarantined,
-                            confirmedFromPhotoKit: scan.confirmedFromPhotoKit,
+                            confirmedFromChangeLog: scan.confirmedFromChangeLog,
                             confirmedFromOrphanSweep: scan.confirmedFromOrphanSweep
                         )
                     ))

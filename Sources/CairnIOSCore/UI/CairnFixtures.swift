@@ -662,18 +662,18 @@ public enum CairnFixtures {
                 if timeout > 0 { parts.append("deferred-timeout=\(timeout)") }
                 parts.append("dur=\(String(format: "%.2fs", Double(elapsedMs) / 1000))")
                 message = parts.joined(separator: " · ")
-            case .syncTransitions(let editsProtected, let editsQuarantined, let confirmedPK, let confirmedOrphan):
+            case .syncTransitions(let editsProtected, let editsQuarantined, let confirmedCL, let confirmedOrphan):
                 eventName = "sync.trans"
                 glyph = "arrow.triangle.branch"
                 // Severity bumps to .warn when the orphan safety net
-                // catches anything — that means PhotoKit's primary
-                // deletion signal missed something, which is a worth-
-                // flagging event for forensics. Otherwise routine.
+                // catches anything — that means the primary change-log
+                // signal missed something, which is a worth-flagging
+                // event for forensics. Otherwise routine.
                 severity = confirmedOrphan > 0 ? .warn : .info
                 var parts: [String] = []
                 if editsProtected > 0  { parts.append("edit-prot=\(editsProtected)") }
                 if editsQuarantined > 0 { parts.append("edit-q=\(editsQuarantined)") }
-                if confirmedPK > 0     { parts.append("conf-pk=\(confirmedPK)") }
+                if confirmedCL > 0     { parts.append("conf-cl=\(confirmedCL)") }
                 if confirmedOrphan > 0 { parts.append("conf-orph=\(confirmedOrphan)") }
                 message = parts.isEmpty ? "no transitions" : parts.joined(separator: " · ")
             }

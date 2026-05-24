@@ -124,6 +124,52 @@ struct DeletionJournalTests {
         }
     }
 
+    @Test("syncTransitions wire format pins JSON key to confirmedFromPhotoKit despite Swift rename")
+    func syncTransitionsWireKeyPinned() throws {
+        // After renaming the Swift identifier `confirmedFromPhotoKit` →
+        // `confirmedFromChangeLog`, the JSON key on the wire must
+        // remain `confirmedFromPhotoKit` so existing journal files keep
+        // decoding. SE-0295 per-case nested CodingKeys
+        // (SyncTransitionsCodingKeys) carries this.
+        let entry = JournalEntry(
+            timestamp: Date(timeIntervalSince1970: 1_700_000_000),
+            runId: "R1",
+            event: .syncTransitions(
+                editsProtected: 1,
+                editsQuarantined: 2,
+                confirmedFromChangeLog: 3,
+                confirmedFromOrphanSweep: 4
+            )
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        let data = try encoder.encode(entry)
+        let raw = String(data: data, encoding: .utf8)!
+        #expect(raw.contains("\"confirmedFromPhotoKit\":3"))
+        #expect(!raw.contains("confirmedFromChangeLog"))
+    }
+
+    @Test("legacy syncTransitions JSON with confirmedFromPhotoKit decodes into confirmedFromChangeLog")
+    func syncTransitionsLegacyDecode() throws {
+        // Decoding a journal row written before the rename — wire format
+        // matches what the v1.0 install would have written.
+        let json = """
+        {"event":{"syncTransitions":{"confirmedFromOrphanSweep":4,"confirmedFromPhotoKit":3,"editsProtected":1,"editsQuarantined":2}},"runId":"R1","timestamp":"2023-11-14T22:13:20Z"}
+        """
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let entry = try decoder.decode(JournalEntry.self, from: Data(json.utf8))
+        guard case .syncTransitions(let ep, let eq, let ccl, let cos) = entry.event else {
+            Issue.record("expected .syncTransitions")
+            return
+        }
+        #expect(ep == 1)
+        #expect(eq == 2)
+        #expect(ccl == 3)
+        #expect(cos == 4)
+    }
+
     @Test("new-format rows round-trip durationMs and httpStatus")
     func newFieldsRoundTrip() async throws {
         let path = tempPath()

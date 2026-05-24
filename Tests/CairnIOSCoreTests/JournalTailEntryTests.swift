@@ -326,12 +326,12 @@ struct JournalTailEntryFromTests {
         let t = Tail.from(entry(.syncTransitions(
             editsProtected: 2,
             editsQuarantined: 0,
-            confirmedFromPhotoKit: 5,
+            confirmedFromChangeLog: 5,
             confirmedFromOrphanSweep: 0
         )))
         #expect(t.event == "sync.trans")
         #expect(t.message.contains("edit-prot=2"))
-        #expect(t.message.contains("conf-pk=5"))
+        #expect(t.message.contains("conf-cl=5"))
         #expect(!t.message.contains("edit-q="))
         #expect(!t.message.contains("conf-orph="))
     }
@@ -340,12 +340,12 @@ struct JournalTailEntryFromTests {
     func syncTransitionsOrphanSweepWarns() {
         let withOrphan = Tail.from(entry(.syncTransitions(
             editsProtected: 0, editsQuarantined: 0,
-            confirmedFromPhotoKit: 0, confirmedFromOrphanSweep: 3
+            confirmedFromChangeLog: 0, confirmedFromOrphanSweep: 3
         )))
         #expect(withOrphan.severity == .warn)
         let withoutOrphan = Tail.from(entry(.syncTransitions(
             editsProtected: 1, editsQuarantined: 1,
-            confirmedFromPhotoKit: 1, confirmedFromOrphanSweep: 0
+            confirmedFromChangeLog: 1, confirmedFromOrphanSweep: 0
         )))
         #expect(withoutOrphan.severity == .info)
     }
@@ -354,7 +354,7 @@ struct JournalTailEntryFromTests {
     func syncTransitionsAllZero() {
         let t = Tail.from(entry(.syncTransitions(
             editsProtected: 0, editsQuarantined: 0,
-            confirmedFromPhotoKit: 0, confirmedFromOrphanSweep: 0
+            confirmedFromChangeLog: 0, confirmedFromOrphanSweep: 0
         )))
         #expect(t.message == "no transitions")
     }
