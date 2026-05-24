@@ -1299,3 +1299,247 @@ struct SwiftDataPendingTrashIntentStoreTests {
         #expect(snap.count == 1)
     }
 }
+
+// MARK: - SwiftDataServerAssetCacheStore
+
+@Suite("SwiftDataServerAssetCacheStore")
+struct SwiftDataServerAssetCacheStoreTests {
+
+    /// Build a SyncAssetV1 with a unique id + checksum and sensible defaults
+    /// for the fields cairn cares about.
+    private func asset(
+        id: String,
+        ck: String,
+        livePhotoVideoId: String? = nil,
+        visibility: String = "timeline",
+        deletedAt: Date? = nil
+    ) -> SyncAssetV1 {
+        SyncAssetV1(
+            id: id,
+            ownerId: "u1",
+            originalFileName: "\(id).HEIC",
+            checksum: ck,
+            livePhotoVideoId: livePhotoVideoId,
+            deletedAt: deletedAt,
+            visibility: visibility,
+            isFavorite: false,
+            type: "image",
+            fileCreatedAt: nil,
+            fileModifiedAt: nil,
+            width: nil,
+            height: nil
+        )
+    }
+
+    @Test("empty cache snapshots as empty and size 0")
+    func emptyIsEmpty() async throws {
+        let store = SwiftDataServerAssetCacheStore(container: try makeContainer())
+        #expect(try await store.snapshot().isEmpty)
+        #expect(try await store.size() == 0)
+    }
+
+    @Test("applyEvents inserts new assets, snapshot returns them with correct fields")
+    func appliesNewAssets() async throws {
+        let store = SwiftDataServerAssetCacheStore(container: try makeContainer())
+        let events: [SyncEvent] = [
+            .asset(asset(id: "a1", ck: "AAAA"), ack: "ack1"),
+            .asset(asset(id: "a2", ck: "BBBB", livePhotoVideoId: "v9"), ack: "ack2"),
+        ]
+        let summary = try await store.applyEvents(events)
+        #expect(summary == ApplyEventsSummary(upserted: 2, deleted: 0, ignored: 0))
+
+        let snap = try await store.snapshot()
+        #expect(snap.count == 2)
+        let byId = Dictionary(uniqueKeysWithValues: snap.map { ($0.id, $0) })
+        #expect(byId["a1"]?.checksum.base64 == "AAAA")
+        #expect(byId["a2"]?.livePhotoVideoId == "v9")
+    }
+
+    @Test("applyEvents upserts existing assets — same id, overwriting fields")
+    func upsertsExisting() async throws {
+        let store = SwiftDataServerAssetCacheStore(container: try makeContainer())
+        _ = try await store.applyEvents([
+            .asset(asset(id: "a1", ck: "OLD"), ack: "ack-old"),
+        ])
+        let summary = try await store.applyEvents([
+            .asset(asset(id: "a1", ck: "NEW"), ack: "ack-new"),
+        ])
+        #expect(summary == ApplyEventsSummary(upserted: 1, deleted: 0, ignored: 0))
+
+        let snap = try await store.snapshot()
+        #expect(snap.count == 1)
+        #expect(snap.first?.checksum.base64 == "NEW")
+    }
+
+    @Test("applyEvents deletes by serverAssetId via AssetDeleteV1")
+    func deletesByAssetId() async throws {
+        let store = SwiftDataServerAssetCacheStore(container: try makeContainer())
+        _ = try await store.applyEvents([
+            .asset(asset(id: "a1", ck: "AAAA"), ack: "ack1"),
+            .asset(asset(id: "a2", ck: "BBBB"), ack: "ack2"),
+        ])
+        let summary = try await store.applyEvents([
+            .assetDeleted(SyncAssetDeleteV1(assetId: "a1"), ack: "del-ack"),
+        ])
+        #expect(summary == ApplyEventsSummary(upserted: 0, deleted: 1, ignored: 0))
+
+        let snap = try await store.snapshot()
+        #expect(snap.count == 1)
+        #expect(snap.first?.id == "a2")
+    }
+
+    @Test("delete tombstone for an unknown id is counted as ignored, not throws")
+    func deleteUnknownIsIgnored() async throws {
+        let store = SwiftDataServerAssetCacheStore(container: try makeContainer())
+        let summary = try await store.applyEvents([
+            .assetDeleted(SyncAssetDeleteV1(assetId: "never-cached"), ack: "ack"),
+        ])
+        #expect(summary == ApplyEventsSummary(upserted: 0, deleted: 0, ignored: 1))
+    }
+
+    @Test("complete + ignored events count as ignored")
+    func completeAndIgnoredAreIgnored() async throws {
+        let store = SwiftDataServerAssetCacheStore(container: try makeContainer())
+        let summary = try await store.applyEvents([
+            .complete(type: .syncCompleteV1, ack: "c"),
+            .ignored(type: "SyncFutureV2", ack: "i"),
+        ])
+        #expect(summary == ApplyEventsSummary(upserted: 0, deleted: 0, ignored: 2))
+    }
+
+    @Test("empty applyEvents returns .empty without persisting anything")
+    func emptyApplyIsNoOp() async throws {
+        let store = SwiftDataServerAssetCacheStore(container: try makeContainer())
+        let summary = try await store.applyEvents([])
+        #expect(summary == .empty)
+        #expect(try await store.size() == 0)
+    }
+
+    @Test("snapshot maps deletedAt to ServerAsset.isTrashed")
+    func deletedAtMapsToIsTrashed() async throws {
+        let store = SwiftDataServerAssetCacheStore(container: try makeContainer())
+        _ = try await store.applyEvents([
+            .asset(asset(id: "a1", ck: "AAAA", deletedAt: Date(timeIntervalSince1970: 1_700_000_000)), ack: "ack"),
+            .asset(asset(id: "a2", ck: "BBBB"), ack: "ack"),
+        ])
+        let snap = try await store.snapshot()
+        let byId = Dictionary(uniqueKeysWithValues: snap.map { ($0.id, $0) })
+        #expect(byId["a1"]?.isTrashed == true)
+        #expect(byId["a2"]?.isTrashed == false)
+    }
+
+    @Test("reset wipes every row")
+    func resetWipes() async throws {
+        let store = SwiftDataServerAssetCacheStore(container: try makeContainer())
+        _ = try await store.applyEvents([
+            .asset(asset(id: "a1", ck: "AAAA"), ack: "ack1"),
+            .asset(asset(id: "a2", ck: "BBBB"), ack: "ack2"),
+            .asset(asset(id: "a3", ck: "CCCC"), ack: "ack3"),
+        ])
+        #expect(try await store.size() == 3)
+        try await store.reset()
+        #expect(try await store.size() == 0)
+        #expect(try await store.snapshot().isEmpty)
+    }
+
+    @Test("applyEvents is idempotent — replaying the same batch is a no-op semantically")
+    func idempotentReplay() async throws {
+        let store = SwiftDataServerAssetCacheStore(container: try makeContainer())
+        let batch: [SyncEvent] = [
+            .asset(asset(id: "a1", ck: "AAAA"), ack: "ack1"),
+            .asset(asset(id: "a2", ck: "BBBB"), ack: "ack2"),
+        ]
+        _ = try await store.applyEvents(batch)
+        _ = try await store.applyEvents(batch)
+
+        // Same two assets in the snapshot — re-applying the same
+        // ack doesn't create duplicate rows. This is the property
+        // that lets the coordinator safely ack-after-apply.
+        #expect(try await store.size() == 2)
+    }
+
+    @Test("two stores sharing one container see each other's writes")
+    func twoStoresShareContainer() async throws {
+        let container = try makeContainer()
+        let writer = SwiftDataServerAssetCacheStore(container: container)
+        let reader = SwiftDataServerAssetCacheStore(container: container)
+
+        _ = try await writer.applyEvents([
+            .asset(asset(id: "a1", ck: "AAAA"), ack: "ack")
+        ])
+        #expect(try await reader.size() == 1)
+    }
+}
+
+// MARK: - SwiftDataSyncAckStore
+
+@Suite("SwiftDataSyncAckStore")
+struct SwiftDataSyncAckStoreTests {
+
+    @Test("empty store returns nil for any type and empty allAcks")
+    func emptyIsEmpty() async throws {
+        let store = SwiftDataSyncAckStore(container: try makeContainer())
+        #expect(try await store.ack(for: .assetV1) == nil)
+        #expect(try await store.allAcks().isEmpty)
+    }
+
+    @Test("setAck + ack round-trips per-type")
+    func setAndGet() async throws {
+        let store = SwiftDataSyncAckStore(container: try makeContainer())
+        try await store.setAck("a-cursor", for: .assetV1)
+        try await store.setAck("d-cursor", for: .assetDeleteV1)
+
+        #expect(try await store.ack(for: .assetV1) == "a-cursor")
+        #expect(try await store.ack(for: .assetDeleteV1) == "d-cursor")
+        #expect(try await store.ack(for: .syncCompleteV1) == nil)
+    }
+
+    @Test("setAck overwrites on second call for the same type")
+    func setAckOverwrites() async throws {
+        let store = SwiftDataSyncAckStore(container: try makeContainer())
+        try await store.setAck("first", for: .assetV1)
+        try await store.setAck("second", for: .assetV1)
+        #expect(try await store.ack(for: .assetV1) == "second")
+        #expect(try await store.allAcks().count == 1)
+    }
+
+    @Test("setAck with the same value is a no-op (no extra row, no failed save)")
+    func setAckSameValueIsNoOp() async throws {
+        let store = SwiftDataSyncAckStore(container: try makeContainer())
+        try await store.setAck("a", for: .assetV1)
+        try await store.setAck("a", for: .assetV1)
+        try await store.setAck("a", for: .assetV1)
+        #expect(try await store.allAcks().count == 1)
+    }
+
+    @Test("allAcks returns every persisted cursor")
+    func allAcksReturnsAll() async throws {
+        let store = SwiftDataSyncAckStore(container: try makeContainer())
+        try await store.setAck("a", for: .assetV1)
+        try await store.setAck("d", for: .assetDeleteV1)
+        let acks = try await store.allAcks()
+        #expect(Set(acks) == Set([
+            SyncAckRecord(type: .assetV1, ack: "a"),
+            SyncAckRecord(type: .assetDeleteV1, ack: "d"),
+        ]))
+    }
+
+    @Test("clearAll wipes every row")
+    func clearWipes() async throws {
+        let store = SwiftDataSyncAckStore(container: try makeContainer())
+        try await store.setAck("a", for: .assetV1)
+        try await store.setAck("d", for: .assetDeleteV1)
+        try await store.clearAll()
+        #expect(try await store.allAcks().isEmpty)
+    }
+
+    @Test("two stores sharing one container see each other's writes")
+    func twoStoresShareContainer() async throws {
+        let container = try makeContainer()
+        let writer = SwiftDataSyncAckStore(container: container)
+        let reader = SwiftDataSyncAckStore(container: container)
+
+        try await writer.setAck("a-cursor", for: .assetV1)
+        #expect(try await reader.ack(for: .assetV1) == "a-cursor")
+    }
+}

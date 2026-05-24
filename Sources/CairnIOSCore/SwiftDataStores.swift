@@ -294,6 +294,84 @@ final class StoredPendingTrashIntent {
     }
 }
 
+// MARK: - Server-side asset cache + sync ack rows
+
+/// Per-server-asset row. One per Immich-side asset visible to the API
+/// key. `serverAssetId` is the Immich UUID — unique per asset on the
+/// server — and chosen as the primary key because tombstones
+/// (`SyncAssetDeleteV1`) arrive keyed only by id, not by checksum. Two
+/// distinct server assets can in theory share a checksum (same bytes
+/// uploaded from two devices); the reconciler treats them as one
+/// logical content but the cache stores each row separately so the
+/// stream-side delete-by-id stays unambiguous.
+@Model
+final class StoredServerAsset {
+    @Attribute(.unique) var serverAssetId: String
+    var checksumBase64: String
+    var originalFileName: String
+    var livePhotoVideoId: String?
+    var deletedAt: Date?
+    var visibility: String
+    var isFavorite: Bool
+    var assetType: String
+    var fileCreatedAt: Date?
+    var fileModifiedAt: Date?
+    var width: Int?
+    var height: Int?
+    /// When cairn last wrote this row from a SyncEvent. Diagnostic
+    /// only; not used in reconciliation.
+    var lastUpdatedAt: Date
+
+    init(
+        serverAssetId: String,
+        checksumBase64: String,
+        originalFileName: String,
+        livePhotoVideoId: String?,
+        deletedAt: Date?,
+        visibility: String,
+        isFavorite: Bool,
+        assetType: String,
+        fileCreatedAt: Date?,
+        fileModifiedAt: Date?,
+        width: Int?,
+        height: Int?,
+        lastUpdatedAt: Date
+    ) {
+        self.serverAssetId = serverAssetId
+        self.checksumBase64 = checksumBase64
+        self.originalFileName = originalFileName
+        self.livePhotoVideoId = livePhotoVideoId
+        self.deletedAt = deletedAt
+        self.visibility = visibility
+        self.isFavorite = isFavorite
+        self.assetType = assetType
+        self.fileCreatedAt = fileCreatedAt
+        self.fileModifiedAt = fileModifiedAt
+        self.width = width
+        self.height = height
+        self.lastUpdatedAt = lastUpdatedAt
+    }
+}
+
+/// Per-entity-type ack cursor. Bounded — one row per SyncEntityType
+/// cairn requests events for (currently `.assetV1` and
+/// `.assetDeleteV1`, so ≤ 2 rows in practice). `entityType` stores the
+/// raw SyncEntityType.rawValue rather than the enum itself because
+/// SwiftData doesn't yet model RawRepresentable cleanly across
+/// platform versions; the actor's adapter maps between the two.
+@Model
+final class StoredSyncAck {
+    @Attribute(.unique) var entityType: String
+    var ack: String
+    var savedAt: Date
+
+    init(entityType: String, ack: String, savedAt: Date) {
+        self.entityType = entityType
+        self.ack = ack
+        self.savedAt = savedAt
+    }
+}
+
 // MARK: - Container helper
 
 /// Factory for the shared `ModelContainer` behind the iOS app's
@@ -315,7 +393,7 @@ public enum CairnSwiftDataContainer {
     /// Build a `ModelContainer` for per-server state (observed,
     /// exclusions, confirmed-deleted, persistent-change token,
     /// edit-retirement anchors, cosmetic status snapshot, pending
-    /// trash retry queue).
+    /// trash retry queue, server-asset cache, sync acks).
     public static func makePerServer(url: URL, inMemory: Bool = false) throws -> ModelContainer {
         let schema = Schema([
             StoredObservedChecksum.self,
@@ -327,6 +405,8 @@ public enum CairnSwiftDataContainer {
             StoredDeletionSourceEntry.self,
             StoredStatusSnapshot.self,
             StoredPendingTrashIntent.self,
+            StoredServerAsset.self,
+            StoredSyncAck.self,
         ])
         return try container(schema: schema, url: inMemory ? nil : url, inMemory: inMemory)
     }
@@ -347,6 +427,8 @@ public enum CairnSwiftDataContainer {
             StoredDeletionSourceEntry.self,
             StoredStatusSnapshot.self,
             StoredPendingTrashIntent.self,
+            StoredServerAsset.self,
+            StoredSyncAck.self,
         ])
         return try container(schema: schema, url: url, inMemory: inMemory)
     }
@@ -1536,5 +1618,210 @@ public actor SwiftDataPendingTrashIntentStore: PendingTrashIntentStore {
             attemptCount: row.attemptCount,
             lastError: row.lastError
         )
+    }
+}
+
+// MARK: - SwiftDataServerAssetCacheStore
+
+/// SwiftData-backed `ServerAssetCacheStore`. Per-server container only;
+/// the asset cache is partitioned by (URL, userId) the same way Observed
+/// and Exclusion stores are. Plain `actor` + private `ModelContext` —
+/// same pattern documented at `SwiftDataObservedStore`.
+///
+/// Idempotency contract: `applyEvents` upserts by `serverAssetId`, so
+/// replaying the same event batch produces the same cache state. This
+/// is what lets the coordinator ack-after-apply safely: a crash between
+/// apply-to-cache and POST-ack leaves an old cursor on the server; the
+/// next stream call replays the events; the second apply is a no-op.
+public actor SwiftDataServerAssetCacheStore: ServerAssetCacheStore {
+    private let context: ModelContext
+    private let clock: @Sendable () -> Date
+
+    public init(container: ModelContainer, clock: @escaping @Sendable () -> Date = { Date() }) {
+        self.context = ModelContext(container)
+        self.clock = clock
+    }
+
+    public func snapshot() async throws -> [ServerAsset] {
+        let rows = try context.fetch(FetchDescriptor<StoredServerAsset>())
+        return rows.map(Self.toServerAsset)
+    }
+
+    public func size() async throws -> Int {
+        try context.fetchCount(FetchDescriptor<StoredServerAsset>())
+    }
+
+    public func applyEvents(_ events: [SyncEvent]) async throws -> ApplyEventsSummary {
+        guard !events.isEmpty else { return .empty }
+
+        // One bulk fetch keyed by serverAssetId so upsert + delete
+        // can both look up rows without N round-trips. The cache is
+        // proportional to the server's asset count, but the typical
+        // event batch is small (≤ 100) so the index dict over the
+        // existing rows is dominated by I/O, not memory.
+        let allRows = try context.fetch(FetchDescriptor<StoredServerAsset>())
+        var byServerId: [String: StoredServerAsset] = [:]
+        byServerId.reserveCapacity(allRows.count)
+        for row in allRows { byServerId[row.serverAssetId] = row }
+
+        var upserted = 0
+        var deleted = 0
+        var ignored = 0
+        let now = clock()
+
+        for event in events {
+            switch event {
+            case .asset(let payload, _):
+                if let existing = byServerId[payload.id] {
+                    // Update in place — same SwiftData object, just
+                    // overwrite the mutable fields.
+                    Self.copyPayload(payload, into: existing, now: now)
+                } else {
+                    let row = Self.makeRow(from: payload, now: now)
+                    context.insert(row)
+                    byServerId[payload.id] = row
+                }
+                upserted += 1
+            case .assetDeleted(let payload, _):
+                if let existing = byServerId[payload.assetId] {
+                    context.delete(existing)
+                    byServerId.removeValue(forKey: payload.assetId)
+                    deleted += 1
+                } else {
+                    // Tombstone for an asset we never cached — fine.
+                    // Counts as ignored because no row state changed.
+                    ignored += 1
+                }
+            case .complete, .ignored:
+                ignored += 1
+            }
+        }
+
+        if upserted > 0 || deleted > 0 {
+            try context.save()
+        }
+        return ApplyEventsSummary(upserted: upserted, deleted: deleted, ignored: ignored)
+    }
+
+    public func reset() async throws {
+        var changed = false
+        for row in try context.fetch(FetchDescriptor<StoredServerAsset>()) {
+            context.delete(row)
+            changed = true
+        }
+        if changed { try context.save() }
+    }
+
+    // MARK: - Private
+
+    private static func toServerAsset(_ row: StoredServerAsset) -> ServerAsset {
+        // The cache preserves visibility / deletedAt as raw fields but
+        // the reconciliation engine only consumes ServerAsset (which
+        // has `isTrashed`). Map deletedAt → isTrashed as the
+        // closest-fitting representation: a non-nil deletedAt means
+        // the server is treating this asset as trashed.
+        let isTrashed = row.deletedAt != nil
+        return ServerAsset(
+            id: row.serverAssetId,
+            checksum: Checksum(base64: row.checksumBase64),
+            livePhotoVideoId: row.livePhotoVideoId,
+            isTrashed: isTrashed,
+            originalFileName: row.originalFileName,
+            fileCreatedAt: row.fileCreatedAt,
+            thumbhash: nil
+        )
+    }
+
+    private static func makeRow(from payload: SyncAssetV1, now: Date) -> StoredServerAsset {
+        StoredServerAsset(
+            serverAssetId: payload.id,
+            checksumBase64: payload.checksum,
+            originalFileName: payload.originalFileName,
+            livePhotoVideoId: payload.livePhotoVideoId,
+            deletedAt: payload.deletedAt,
+            visibility: payload.visibility,
+            isFavorite: payload.isFavorite,
+            assetType: payload.type,
+            fileCreatedAt: payload.fileCreatedAt,
+            fileModifiedAt: payload.fileModifiedAt,
+            width: payload.width,
+            height: payload.height,
+            lastUpdatedAt: now
+        )
+    }
+
+    private static func copyPayload(_ payload: SyncAssetV1, into row: StoredServerAsset, now: Date) {
+        row.checksumBase64 = payload.checksum
+        row.originalFileName = payload.originalFileName
+        row.livePhotoVideoId = payload.livePhotoVideoId
+        row.deletedAt = payload.deletedAt
+        row.visibility = payload.visibility
+        row.isFavorite = payload.isFavorite
+        row.assetType = payload.type
+        row.fileCreatedAt = payload.fileCreatedAt
+        row.fileModifiedAt = payload.fileModifiedAt
+        row.width = payload.width
+        row.height = payload.height
+        row.lastUpdatedAt = now
+    }
+}
+
+// MARK: - SwiftDataSyncAckStore
+
+/// SwiftData-backed `SyncAckStore`. Bounded (one row per entity type
+/// cairn requests; ≤ 2 rows in practice). Per-server container.
+public actor SwiftDataSyncAckStore: SyncAckStore {
+    private let context: ModelContext
+    private let clock: @Sendable () -> Date
+
+    public init(container: ModelContainer, clock: @escaping @Sendable () -> Date = { Date() }) {
+        self.context = ModelContext(container)
+        self.clock = clock
+    }
+
+    public func ack(for type: SyncEntityType) async throws -> String? {
+        let target = type.rawValue
+        let rows = try context.fetch(FetchDescriptor<StoredSyncAck>())
+        return rows.first(where: { $0.entityType == target })?.ack
+    }
+
+    public func setAck(_ ack: String, for type: SyncEntityType) async throws {
+        let target = type.rawValue
+        let now = clock()
+        let rows = try context.fetch(FetchDescriptor<StoredSyncAck>())
+        if let existing = rows.first(where: { $0.entityType == target }) {
+            guard existing.ack != ack else { return }
+            existing.ack = ack
+            existing.savedAt = now
+        } else {
+            context.insert(StoredSyncAck(entityType: target, ack: ack, savedAt: now))
+        }
+        try context.save()
+    }
+
+    public func allAcks() async throws -> [SyncAckRecord] {
+        let rows = try context.fetch(FetchDescriptor<StoredSyncAck>())
+        var out: [SyncAckRecord] = []
+        out.reserveCapacity(rows.count)
+        for row in rows {
+            guard let type = SyncEntityType(rawValue: row.entityType) else {
+                // A row whose entityType doesn't match any current
+                // case — could happen on a schema rollback. Skip
+                // silently; the next setAck will overwrite when it
+                // comes for the matching type.
+                continue
+            }
+            out.append(SyncAckRecord(type: type, ack: row.ack))
+        }
+        return out
+    }
+
+    public func clearAll() async throws {
+        var changed = false
+        for row in try context.fetch(FetchDescriptor<StoredSyncAck>()) {
+            context.delete(row)
+            changed = true
+        }
+        if changed { try context.save() }
     }
 }
