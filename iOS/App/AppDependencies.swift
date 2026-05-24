@@ -299,6 +299,14 @@ final class AppDependencies {
 
     private(set) var thumbnailLoader: ImmichThumbnailLoader?
 
+    /// Background network reachability probe. Owns an
+    /// `NWPathMonitor` so the current connection status is always
+    /// cheap to read, plus a canary-HEAD method for the
+    /// "satisfied path but broken upstream" case. The sync error
+    /// path uses its `classify()` result to pick a more actionable
+    /// error message than the generic URLError fallback.
+    let reachabilityProbe: ReachabilityProbe
+
     // MARK: - Model wired into the UI
 
     let model: CairnAppModel
@@ -328,6 +336,7 @@ final class AppDependencies {
         self.localHashStore = SwiftDataLocalHashStore(container: container)
         self.deferredHashStore = SwiftDataDeferredHashStore(container: container)
         self.localAssetMetadataStore = SwiftDataLocalAssetMetadataStore(container: container)
+        self.reachabilityProbe = ReachabilityProbe()
 
         let actions = AppDependencies.makePreviewActions()
         self.model = CairnAppModel(
@@ -2303,6 +2312,29 @@ final class AppDependencies {
         return "\(action) didn't fully complete — \(failures.count) items couldn't be cleared (\(labels)). Some data may persist on this device."
     }
 
+    /// Map a `NetworkDiagnosis` to a user-facing error message. The
+    /// `fallback` is the generic URLError-derived copy from
+    /// `describeSyncError` — used when the diagnosis adds nothing
+    /// novel (e.g. `.serverUnreachable` reuses the underlying
+    /// transport error since that already names the specific
+    /// failure mode: connection refused, DNS lookup failed, etc.).
+    /// `.noConnection` and `.internetDown` ship explicit copy
+    /// because they're the cases where the URLError text would
+    /// mislead the user about what's actually broken.
+    nonisolated fileprivate static func message(
+        for diagnosis: NetworkDiagnosis,
+        fallback: String
+    ) -> String {
+        switch diagnosis {
+        case .noConnection:
+            return "No network connection. Check Wi-Fi or cellular and try again."
+        case .internetDown:
+            return "Your device is connected, but the network can't reach the public internet right now. Check the Wi-Fi router or upstream connection."
+        case .serverUnreachable:
+            return fallback
+        }
+    }
+
     nonisolated fileprivate static func describeSyncError(_ error: Swift.Error) -> String {
         if let e = error as? ImmichClientError {
             switch e {
@@ -2524,9 +2556,24 @@ final class AppDependencies {
                     }
                 } catch {
                     let degraded = Self.degradedState(for: error)
-                    let desc = Self.describeSyncError(error)
+                    let baseDesc = Self.describeSyncError(error)
                     let isNetwork = Self.isNetworkLikeError(error)
-                    syncLog.info("[cairn.sync] requestSync failed: \(desc)")
+                    // On a network-class failure, run the reachability
+                    // probe to distinguish "no connection at all" from
+                    // "internet is down" from "internet works, only
+                    // Immich is unreachable." The diagnosis swaps in a
+                    // more actionable message than the generic URLError
+                    // copy. Adds ~200-500ms of latency on the error
+                    // path only — happy-path syncs never run the probe.
+                    let desc: String
+                    if isNetwork {
+                        let diagnosis = await self.reachabilityProbe.classify()
+                        desc = Self.message(for: diagnosis, fallback: baseDesc)
+                        syncLog.info("[cairn.sync] requestSync failed (network) — diagnosis=\(String(describing: diagnosis), privacy: .public)")
+                    } else {
+                        desc = baseDesc
+                        syncLog.info("[cairn.sync] requestSync failed: \(desc)")
+                    }
                     await MainActor.run {
                         self.model.recordSyncError(desc, isNetworkLike: isNetwork)
                         self.model.isSyncing = false
