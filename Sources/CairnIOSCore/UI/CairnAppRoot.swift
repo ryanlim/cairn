@@ -607,6 +607,11 @@ public struct CairnAppRoot: View {
                 onFireBackgroundRefresh: {
                     Task { await model.actions.simulateBackgroundRefresh() }
                 },
+                onOpenSessionSignIn: { model.presentedSheet = .sessionSignIn },
+                onSignOutSession: {
+                    Task { await model.actions.signOutSession() }
+                },
+                hasSessionToken: model.hasSessionToken,
                 scrollResetToken: scrollResetTokens["settings"] ?? 0,
                 photoAuthStatus: model.photoAuthStatus
             )
@@ -848,6 +853,22 @@ public struct CairnAppRoot: View {
                 onDismissOne: { _ in }
             )
             .cairnTheme(palette)
+        case .sessionSignIn:
+            SessionSignInSheet(
+                signIn: { email, password in
+                    await model.actions.signInForSession(email, password)
+                },
+                onDismiss: { model.presentedSheet = nil }
+            )
+            .cairnTheme(palette)
+            // Sheet auto-dismisses when the host flips
+            // hasSessionToken (signed in OR signed out from another
+            // surface). Keeps the form state from getting stale.
+            .onChange(of: model.hasSessionToken) { _, newValue in
+                if newValue {
+                    model.presentedSheet = nil
+                }
+            }
         }
     }
 

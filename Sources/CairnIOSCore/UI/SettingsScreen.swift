@@ -86,6 +86,18 @@ public struct SettingsScreen: View {
     /// the build is Debug. In Release the closure is no-op + the row
     /// is `#if DEBUG`-gated.
     public let onFireBackgroundRefresh: () -> Void
+    /// Opens the session sign-in sheet. Surfaced under Advanced when
+    /// the user wants to enable `/sync/*` (which Immich rejects for
+    /// API-key auth) — paired with `hasSessionToken` to choose
+    /// "Sign in" vs "Sign out".
+    public let onOpenSessionSignIn: () -> Void
+    /// Drops the persisted session token. Wired to the "Sign out"
+    /// row that appears when `hasSessionToken == true`.
+    public let onSignOutSession: () -> Void
+    /// `true` when a session-auth token is persisted in Keychain.
+    /// Switches the row label between "Sign in" and "Signed in ·
+    /// Sign out".
+    public let hasSessionToken: Bool
     /// Token incremented by the host when the user re-taps the active
     /// tab — see `CairnTabBar.onReselect`. Each increment scrolls the
     /// screen back to the top.
@@ -137,6 +149,9 @@ public struct SettingsScreen: View {
         onOpenAlbumPicker: @escaping () -> Void = {},
         onOpenMissedDeletions: @escaping () -> Void = {},
         onFireBackgroundRefresh: @escaping () -> Void = {},
+        onOpenSessionSignIn: @escaping () -> Void = {},
+        onSignOutSession: @escaping () -> Void = {},
+        hasSessionToken: Bool = false,
         scrollResetToken: Int = 0,
         photoAuthStatus: SetupScreen.PhotoAuthOutcome? = nil
     ) {
@@ -165,6 +180,9 @@ public struct SettingsScreen: View {
         self.onOpenAlbumPicker = onOpenAlbumPicker
         self.onOpenMissedDeletions = onOpenMissedDeletions
         self.onFireBackgroundRefresh = onFireBackgroundRefresh
+        self.onOpenSessionSignIn = onOpenSessionSignIn
+        self.onSignOutSession = onSignOutSession
+        self.hasSessionToken = hasSessionToken
         self.scrollResetToken = scrollResetToken
         self.photoAuthStatus = photoAuthStatus
     }
@@ -739,9 +757,25 @@ public struct SettingsScreen: View {
                         RowDivider()
                         ToggleRow(
                             "Incremental server sync",
-                            sub: "Use Immich's sync/stream change-data-capture endpoint instead of paginating every sync. Faster on large libraries; falls back to the paginated path if the API key lacks the sync.* scopes.",
+                            sub: "Use Immich's sync/stream change-data-capture endpoint instead of paginating every sync. Faster on large libraries; falls back to the paginated path if the API key lacks the sync.* scopes or no session is signed in.",
                             value: $settings.useIncrementalServerSync
                         )
+                        RowDivider()
+                        if hasSessionToken {
+                            KeyValRow(
+                                "Session signed in",
+                                value: { Text("Sign out").foregroundStyle(t.dangerInk) },
+                                chevron: false,
+                                onTap: onSignOutSession
+                            )
+                        } else {
+                            KeyValRow(
+                                "Session sign-in",
+                                value: { Text("Required for /sync/*").foregroundStyle(t.textMuted) },
+                                chevron: true,
+                                onTap: onOpenSessionSignIn
+                            )
+                        }
                         #if DEBUG
                         RowDivider()
                         KeyValRow(

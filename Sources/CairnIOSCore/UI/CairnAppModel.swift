@@ -52,6 +52,14 @@ public final class CairnAppModel {
     /// Masked form for default display (e.g. "••••••••••nH3k").
     public var apiKeyMasked: String
 
+    /// `true` when a session-auth access token is persisted in
+    /// Keychain (acquired via `signInForSession`). Drives the
+    /// Settings → Advanced "Session sign-in for incremental sync"
+    /// UI between signed-out and signed-in states. Updated by the
+    /// host on bootstrap (read from Keychain), sign-in success, and
+    /// sign-out.
+    public var hasSessionToken: Bool = false
+
     public var connectionStatus: SettingsScreen.ConnectionStatus
 
     // MARK: - State the screens read
@@ -714,6 +722,12 @@ public final class CairnAppModel {
         /// device. Manual flow (not auto-running) because the signal
         /// is filename-based, less precise than the SHA1 pipeline.
         case missedDeletions
+        /// Settings → Advanced → "Session sign-in for incremental
+        /// sync" — email/password form that calls
+        /// `signInForSession`, persists the access token, and rebuilds
+        /// the ImmichClient + coordinator so subsequent `/sync/*`
+        /// calls go via Bearer auth.
+        case sessionSignIn
 
         public var id: String {
             switch self {
@@ -724,6 +738,7 @@ public final class CairnAppModel {
             case .albumPicker: "album-picker"
             case .syncDetail: "sync-detail"
             case .pendingTrashes: "pending-trashes"
+            case .sessionSignIn: "session-sign-in"
             case .missedDeletions: "missed-deletions"
             }
         }
@@ -1069,6 +1084,36 @@ public struct CairnAppActions: Sendable {
     /// Advanced when DEBUG is set. No-op in Release builds.
     public var simulateBackgroundRefresh: @Sendable () async -> Void
 
+    /// Outcome of `signInForSession`. UI shows a result label based on
+    /// the case; specific cases drive copy ("Invalid email or
+    /// password" vs. "Couldn't reach server").
+    public enum SessionSignInResult: Sendable, Equatable {
+        case success
+        /// HTTP 401 from `/api/auth/login` — wrong email or password.
+        case invalidCredentials
+        /// HTTP 400 / 405 / 5xx — server reachable but rejected the
+        /// request shape. Message is the truncated server body.
+        case serverError(code: Int, message: String)
+        /// URLError / transport failure. Message is a human-readable
+        /// summary (already plain-language via `describeSyncError`).
+        case networkError(message: String)
+    }
+
+    /// Sign in via `POST /api/auth/login` to acquire a session token
+    /// for the `/sync/*` endpoint family (which Immich rejects on
+    /// API-key auth). Token is persisted in Keychain and the
+    /// in-memory `ImmichClient` is rebuilt so subsequent sync calls
+    /// authenticate via Bearer. Returns a result the UI inspects to
+    /// surface success / invalid-credentials / transport-failure.
+    public var signInForSession: @Sendable (_ email: String, _ password: String) async -> SessionSignInResult
+
+    /// Drop the persisted session token (Keychain row deleted) and
+    /// rebuild `ImmichClient` in API-key-only mode. After this, the
+    /// sync coordinator falls back to the paginated `searchAllAssets`
+    /// path (or, if `useIncrementalServerSync` is on, the missing-
+    /// scope warning surfaces — toggling it off avoids the noise).
+    public var signOutSession: @Sendable () async -> Void
+
     /// Settings → Recovery: scan Immich for assets that look like
     /// prior iPhone uploads cairn never observed, then filter against
     /// the currently-alive local library so we don't surface
@@ -1131,7 +1176,9 @@ public struct CairnAppActions: Sendable {
         discardPendingTrash: @escaping @Sendable (UUID) async -> Void = { _ in },
         findMissedDeletions: @escaping @Sendable (Date?, Date?, Bool) async throws -> [ServerAsset] = { _, _, _ in [] },
         trashMissedDeletions: @escaping @Sendable ([ServerAsset]) async throws -> Void = { _ in },
-        simulateBackgroundRefresh: @escaping @Sendable () async -> Void = {}
+        simulateBackgroundRefresh: @escaping @Sendable () async -> Void = {},
+        signInForSession: @escaping @Sendable (String, String) async -> SessionSignInResult = { _, _ in .success },
+        signOutSession: @escaping @Sendable () async -> Void = {}
     ) {
         self.requestSync = requestSync
         self.confirmTrash = confirmTrash
@@ -1172,6 +1219,8 @@ public struct CairnAppActions: Sendable {
         self.findMissedDeletions = findMissedDeletions
         self.trashMissedDeletions = trashMissedDeletions
         self.simulateBackgroundRefresh = simulateBackgroundRefresh
+        self.signInForSession = signInForSession
+        self.signOutSession = signOutSession
     }
 
     /// All-no-op closures with successful default returns. Use in previews

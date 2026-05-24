@@ -406,7 +406,18 @@ final class AppDependencies {
         let journalURL = Self.serverJournalURL(for: key)
         self.journal = DeletionJournal(path: journalURL)
 
-        let client = ImmichClient(baseURL: url, apiKey: apiKey, session: ImmichClient.makeAppURLSession())
+        // Pick up any cached session token so the coordinator's
+        // `/sync/*` requests authenticate via Bearer instead of x-api-key
+        // (which Immich rejects for those endpoints). Best-effort:
+        // Keychain hiccups degrade to API-key-only mode rather than
+        // failing activation.
+        let cachedSessionToken: String? = (try? secretStore.sessionToken())
+        let client = ImmichClient(
+            baseURL: url,
+            apiKey: apiKey,
+            sessionToken: cachedSessionToken,
+            session: ImmichClient.makeAppURLSession()
+        )
         self.immichClient = client
         self.thumbnailLoader = ImmichThumbnailLoader(
             baseURL: url,
@@ -611,6 +622,7 @@ final class AppDependencies {
         model.serverURL = url
         model.apiKey = apiKey
         model.apiKeyMasked = AppDependencies.mask(apiKey)
+        model.hasSessionToken = (try? secretStore.sessionToken()) != nil
         model.settings = (try? await settingsStore.load()) ?? .defaults
 
         if let client = immichClient {
@@ -3997,6 +4009,70 @@ final class AppDependencies {
                 } catch {
                     bgLog.error("[cairn.bgtask] manual fire failed: \(String(describing: error), privacy: .public)")
                 }
+            },
+            signInForSession: { [weak self] email, password in
+                guard let self else { return .networkError(message: "app not ready") }
+                guard let client = await self.immichClient else {
+                    return .networkError(message: "Sign in to your Immich server first.")
+                }
+                do {
+                    let resp = try await client.login(email: email, password: password)
+                    try await MainActor.run {
+                        // Persist the access token and rebuild the
+                        // ImmichClient + coordinator so subsequent
+                        // /sync/* calls authenticate via Bearer.
+                        try self.secretStore.setSessionToken(resp.accessToken)
+                        let updatedClient = client.withSessionToken(resp.accessToken)
+                        self.immichClient = updatedClient
+                        if let cache = self.serverAssetCacheStore,
+                           let acks = self.syncAckStore {
+                            self.serverAssetSyncCoordinator = ServerAssetSyncCoordinator(
+                                client: updatedClient,
+                                cache: cache,
+                                ackStore: acks
+                            )
+                        }
+                        self.model.hasSessionToken = true
+                    }
+                    syncLog.info("[cairn.session] signed in as \(resp.userEmail, privacy: .public)")
+                    return .success
+                } catch let err as ImmichClientError {
+                    if case .httpStatus(let code, let body) = err {
+                        if code == 401 {
+                            return .invalidCredentials
+                        }
+                        return .serverError(code: code, message: String(body.prefix(200)))
+                    }
+                    return .networkError(message: Self.describeSyncError(err))
+                } catch {
+                    return .networkError(message: Self.describeSyncError(error))
+                }
+            },
+            signOutSession: { [weak self] in
+                guard let self else { return }
+                let existingClient = await self.immichClient
+                // Best-effort server-side logout — failures are fine,
+                // the local-side cleanup happens regardless.
+                if let existingClient {
+                    try? await existingClient.logout()
+                }
+                await MainActor.run {
+                    try? self.secretStore.setSessionToken(nil)
+                    if let client = existingClient {
+                        let updatedClient = client.withSessionToken(nil)
+                        self.immichClient = updatedClient
+                        if let cache = self.serverAssetCacheStore,
+                           let acks = self.syncAckStore {
+                            self.serverAssetSyncCoordinator = ServerAssetSyncCoordinator(
+                                client: updatedClient,
+                                cache: cache,
+                                ackStore: acks
+                            )
+                        }
+                    }
+                    self.model.hasSessionToken = false
+                }
+                syncLog.info("[cairn.session] signed out")
             }
         )
 

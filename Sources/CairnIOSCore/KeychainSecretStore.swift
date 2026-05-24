@@ -23,6 +23,14 @@ public protocol MutableSecretStore: SecretStore {
     /// per-server partition key. Pass `nil` for either field to leave
     /// it unchanged; pass empty string to clear individually.
     func setUserIdentity(id: String?, email: String?) throws
+    /// Read the cached Immich session-auth access token (`POST /api/
+    /// auth/login` response). Used as the Bearer credential for the
+    /// `/sync/*` endpoint family, which rejects API-key auth. Nil if
+    /// the user hasn't signed in via the session flow.
+    func sessionToken() throws -> String?
+    /// Persist a session access token. Pass `nil` to clear (sign out
+    /// of session-auth without touching the API-key credentials).
+    func setSessionToken(_ token: String?) throws
     /// Read the per-key activation timestamp map. Each entry is
     /// `<apiKeyFingerprint>: <Date the key first verified>`. Filtering
     /// the runs/journal UI by `entries.where { $0.timestamp >= map[fp] }`
@@ -190,6 +198,11 @@ public struct KeychainSecretStore: MutableSecretStore, Sendable {
     /// Stored as a JSON array of `RecentServerEntry`. Wipeable
     /// independently of credentials via `clearRecentServers()`.
     public let recentServersAccount: String
+    /// `kSecAttrAccount` for the cached Immich session-auth access
+    /// token. Stored as a raw JWT string. Absent on installs that
+    /// haven't enabled the session flow; non-fatal — sync-coordinator
+    /// will silently fall back to the paginated path.
+    public let sessionTokenAccount: String
 
     public init(service: String = "app.cairn.immich",
                 urlAccount: String = "server-url",
@@ -197,7 +210,8 @@ public struct KeychainSecretStore: MutableSecretStore, Sendable {
                 userIdAccount: String = "user-id",
                 userEmailAccount: String = "user-email",
                 keyActivationsAccount: String = "key-activations",
-                recentServersAccount: String = "recent-servers") {
+                recentServersAccount: String = "recent-servers",
+                sessionTokenAccount: String = "session-token") {
         self.service = service
         self.urlAccount = urlAccount
         self.keyAccount = keyAccount
@@ -205,6 +219,7 @@ public struct KeychainSecretStore: MutableSecretStore, Sendable {
         self.userEmailAccount = userEmailAccount
         self.keyActivationsAccount = keyActivationsAccount
         self.recentServersAccount = recentServersAccount
+        self.sessionTokenAccount = sessionTokenAccount
     }
 
     // MARK: - SecretStore
@@ -249,6 +264,18 @@ public struct KeychainSecretStore: MutableSecretStore, Sendable {
             try writeString(email, account: userEmailAccount)
         } else if email?.isEmpty == true {
             try delete(account: userEmailAccount)
+        }
+    }
+
+    public func sessionToken() throws -> String? {
+        try readOptionalString(account: sessionTokenAccount)
+    }
+
+    public func setSessionToken(_ token: String?) throws {
+        if let token, !token.isEmpty {
+            try writeString(token, account: sessionTokenAccount)
+        } else {
+            try delete(account: sessionTokenAccount)
         }
     }
 
@@ -330,6 +357,7 @@ public struct KeychainSecretStore: MutableSecretStore, Sendable {
         try delete(account: userIdAccount)
         try delete(account: userEmailAccount)
         try delete(account: keyActivationsAccount)
+        try delete(account: sessionTokenAccount)
         // `recentServersAccount` is intentionally preserved here.
         // Sign-out brings the user back to the onboarding flow,
         // and the whole point of the autocomplete is to make
