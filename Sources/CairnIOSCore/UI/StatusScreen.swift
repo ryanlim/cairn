@@ -1122,13 +1122,15 @@ public struct StatusScreen: View {
                 if isSyncing, let progress = syncProgress, progress.total > 0 {
                     ProgressBar(
                         fraction: min(1.0, Double(progress.hashed) / Double(progress.total)),
-                        tone: .pending
+                        tone: .pending,
+                        accessibilityLabel: "Sync progress"
                     )
                     ProcessingBreakdown(indexed: indexed, deferredQueueCount: deferredQueue.count, processed: progress.hashed)
                 } else {
                     ProgressBar(
                         fraction: min(1.0, pct / max(0.001, maxDeletePercent)),
-                        tone: withinBudget ? .pending : .danger
+                        tone: withinBudget ? .pending : .danger,
+                        accessibilityLabel: withinBudget ? "Candidate volume within safety budget" : "Candidate volume over safety budget"
                     )
                 }
 
@@ -2455,8 +2457,20 @@ private struct Chip: View {
 struct ProgressBar: View {
     let fraction: Double
     let tone: ChipTone
+    /// Optional accessibility label. Without it, VoiceOver users get
+    /// no signal that a progress indicator exists. Callers in the
+    /// sync / initial-scan paths supply a context-specific label like
+    /// "Scan progress"; visual-only progress bars (run-detail rows)
+    /// can leave it nil and the bar stays accessibility-hidden.
+    let accessibilityLabel: String?
 
     @Environment(\.cairnTokens) private var t
+
+    init(fraction: Double, tone: ChipTone, accessibilityLabel: String? = nil) {
+        self.fraction = fraction
+        self.tone = tone
+        self.accessibilityLabel = accessibilityLabel
+    }
 
     var body: some View {
         GeometryReader { geo in
@@ -2466,6 +2480,10 @@ struct ProgressBar: View {
             }
         }
         .frame(height: 4)
+        .modifier(ProgressBarAccessibility(
+            fraction: fraction,
+            label: accessibilityLabel
+        ))
     }
 
     private var fillColor: Color {
@@ -2475,6 +2493,28 @@ struct ProgressBar: View {
         case .verified: t.verified
         case .info:    t.info
         case .neutral: t.textMuted
+        }
+    }
+}
+
+/// Conditional accessibility wiring for `ProgressBar`. When a caller
+/// supplies a label the bar becomes a discoverable progress element
+/// with a percent value (e.g. "Scan progress, 42%"); otherwise it's
+/// hidden from VoiceOver so decorative usages don't add noise to the
+/// rotor.
+private struct ProgressBarAccessibility: ViewModifier {
+    let fraction: Double
+    let label: String?
+
+    func body(content: Content) -> some View {
+        if let label {
+            content
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(label)
+                .accessibilityValue(Text("\(Int((max(0, min(1, fraction)) * 100).rounded()))%"))
+                .accessibilityAddTraits(.updatesFrequently)
+        } else {
+            content.accessibilityHidden(true)
         }
     }
 }

@@ -1767,18 +1767,24 @@ public struct ApiKeyRow: View {
                     Text(revealed ? "Hide" : "Reveal")
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(revealed ? t.dangerInk : t.infoInk)
-                        .padding(.horizontal, 2)
-                        .padding(.vertical, 2)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 8)
+                        .contentShape(Rectangle())
+                        .frame(minHeight: 44)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(revealed ? "Hide API key" : "Reveal API key")
                 Button(action: copyKey) {
                     Text(copied ? "Copied \u{2713}" : "Copy")
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(copied ? t.verifiedInk : t.textMuted)
-                        .padding(.horizontal, 2)
-                        .padding(.vertical, 2)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 8)
+                        .contentShape(Rectangle())
+                        .frame(minHeight: 44)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Copy API key")
             }
             Text(revealed ? rawKey : masked)
                 .font(.system(size: 13, design: .monospaced).monospacedDigit())

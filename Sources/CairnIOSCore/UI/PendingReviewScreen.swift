@@ -251,6 +251,8 @@ public struct PendingReviewScreen: View {
                                 zoomedAsset = nil
                             }
                         }
+                        .accessibilityLabel("Close zoomed thumbnail")
+                        .accessibilityAddTraits(.isButton)
                     VStack(spacing: 12) {
                         ImmichAssetThumb(
                             assetId: zoomed.id,
@@ -271,6 +273,12 @@ public struct PendingReviewScreen: View {
                     }
                 }
                 .transition(.opacity)
+                // VoiceOver: trap focus inside the zoom overlay so the
+                // user doesn't tab back to the row list while the
+                // overlay is visible. .isModal does the trapping;
+                // explicit dismiss button (background ZStack) carries
+                // the off-screen exit action.
+                .accessibilityAddTraits(.isModal)
             }
         }
         .confirmationDialog(
@@ -1434,6 +1442,12 @@ private struct RowIconButton: View {
                         .strokeBorder(t.divider, lineWidth: 0.5)
                 )
                 .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                // Expand hit region to Apple HIG's 44pt minimum without
+                // growing the visual chrome — the badge looks unchanged
+                // but the user (especially with motor impairments or
+                // large fingers) can tap anywhere in the 44pt slot.
+                .frame(minWidth: 44, minHeight: 44)
+                .contentShape(Rectangle())
         }
         .buttonStyle(CairnPressStyle())
         .accessibilityLabel(accessibilityLabel)

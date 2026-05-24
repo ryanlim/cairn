@@ -517,6 +517,17 @@ public final class CairnAppModel {
         if next != .idle {
             syncTimeline.append(PhaseEntry(phase: next, startedAt: now))
         }
+        // Announce phase changes to VoiceOver. Without this, a screen-
+        // reader user starts a sync and gets no audible feedback about
+        // its progress until the next interactive element is focused.
+        // Polite priority queues behind in-flight speech rather than
+        // interrupting, which matches "background activity" vibes
+        // better than .high for a multi-second background operation.
+        if next != .idle {
+            AccessibilityNotification.Announcement("Sync phase: \(next.displayName)").post()
+        } else if next == .idle && syncTimeline.last?.phase == .finalizing {
+            AccessibilityNotification.Announcement("Sync complete").post()
+        }
     }
 
     /// Hashing progress during a sync. `nil` outside sync. The

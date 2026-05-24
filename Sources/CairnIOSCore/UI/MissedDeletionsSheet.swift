@@ -405,6 +405,8 @@ public struct MissedDeletionsSheet: View {
                 Color.black.opacity(0.7)
                     .ignoresSafeArea()
                     .onTapGesture { zoomedAsset = nil }
+                    .accessibilityLabel("Close zoomed thumbnail")
+                    .accessibilityAddTraits(.isButton)
                 ImmichAssetThumb(
                     assetId: asset.id,
                     filename: asset.originalFileName ?? "",
@@ -414,6 +416,10 @@ public struct MissedDeletionsSheet: View {
                 .clipShape(RoundedRectangle(cornerRadius: 12))
             }
             .transition(.opacity)
+            // Trap VoiceOver focus inside the overlay; otherwise tab
+            // order leaks back into the row list while the zoom is
+            // visible. Matches PendingReviewScreen's identical overlay.
+            .accessibilityAddTraits(.isModal)
         }
     }
 

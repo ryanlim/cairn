@@ -503,7 +503,7 @@ public struct InitialScanScreen: View {
                         .font(.system(size: 13, design: .monospaced).monospacedDigit())
                         .foregroundStyle(t.textMuted)
                 }
-                ProgressBar(fraction: fraction, tone: .pending)
+                ProgressBar(fraction: fraction, tone: .pending, accessibilityLabel: "Initial scan progress")
                 if let prePhaseLabel {
                     HStack(spacing: 6) {
                         Image(systemName: "circle.dotted.circle")

@@ -649,12 +649,23 @@ public struct ToggleRow: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
+            // Hide the visual VStack from VoiceOver — its content is
+            // accessed via the merged row label instead so the toggle
+            // announces with both label and sub-description.
+            .accessibilityHidden(true)
             Spacer(minLength: 0)
             Toggle("", isOn: $value)
                 .labelsHidden()
+                .accessibilityLabel(label)
+                .accessibilityHint(sub ?? "")
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 14)
+        // Merge row + toggle into one accessibility element so VoiceOver
+        // users tap anywhere on the row to flip the switch. Without this
+        // the visible row text and the switch live in separate elements
+        // and the row label feels orphaned from its control.
+        .accessibilityElement(children: .combine)
     }
 }
 

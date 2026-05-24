@@ -136,8 +136,17 @@ public struct CairnTokens: Sendable {
             divider     = p.sand
             text        = p.ink
             textBody    = p.charcoal
-            textMuted   = p.slate
-            textHint    = p.pebble
+            // Audit a11y-H2 (light-mode WCAG AA): plain slate (#76716a)
+            // on paper measured 4.18:1 — under the 4.5:1 bar for normal
+            // text. Pebble (#a8a194) on paper was 2.22:1 — well under
+            // even the AA 3:1 large-text bar. Both roles get a shade
+            // pass that clears 4.5:1 while preserving the textMuted ⇒
+            // textHint visual hierarchy (Hint stays slightly lighter
+            // than Muted). Dark mode keeps its pebble / slate
+            // assignments untouched — light gray on near-black already
+            // passes AA comfortably.
+            textMuted   = p.slate.shaded(0.18)
+            textHint    = p.slate.shaded(0.06)
             primary     = p.destructive
             primaryInk  = p.bone
 
