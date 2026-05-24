@@ -285,6 +285,8 @@ public struct RunDetailSheet: View {
                     Image(systemName: "xmark")
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(t.textMuted)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Close")
@@ -483,6 +485,8 @@ public struct RunDetailSheet: View {
                         Image(systemName: "xmark")
                             .font(.system(size: 10, weight: .semibold))
                             .foregroundStyle(t.textHint)
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("Clear filter")
@@ -883,6 +887,21 @@ private struct AssetTile: View {
         }
         .buttonStyle(.plain)
         .disabled(isRestored)
+        // VoiceOver: collapse the visual stack into one announceable
+        // element that carries asset name + selection / restored /
+        // excluded state. Without this, the badge overlay and the
+        // filename caption read as separate elements with no
+        // connection to the selection.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(asset.name)
+        .accessibilityValue(stateLabel)
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+    }
+
+    private var stateLabel: String {
+        if isRestored { return "Restored, not selectable" }
+        if isExcluded { return isSelected ? "Excluded. Selected." : "Excluded" }
+        return isSelected ? "Selected" : "Not selected"
     }
 
     private var ringColor: Color {

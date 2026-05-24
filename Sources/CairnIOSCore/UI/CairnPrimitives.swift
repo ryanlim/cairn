@@ -1561,7 +1561,13 @@ public struct CairnSegmentedPicker<Value: Hashable>: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityValue(isSelected ? "Selected" : "")
+        // Use isSelected trait + label-from-option so VoiceOver
+        // announces "Settings, button" with the option label and the
+        // selected state, rather than the previous "selected /
+        // empty-string-value" pattern. The full picker behaves like a
+        // standard radio group on iOS.
+        .accessibilityLabel(option.label)
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }
 }
 
@@ -1651,7 +1657,13 @@ public struct CairnRadioList<Value: Hashable>: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityValue(isSelected ? "Selected" : "")
+        // Compose VoiceOver text from title + optional subtitle so the
+        // user hears the full meaning of each option, not just "title,
+        // Selected". The `.isSelected` trait announces selection state
+        // separately so the rotor + the row layout match expectations.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(option.subtitle.map { "\(option.title). \($0)" } ?? option.title)
+        .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : [.isButton])
     }
 
     @ViewBuilder

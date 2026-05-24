@@ -598,7 +598,7 @@ public struct ImmichClient: Sendable {
     // Streams change-data-capture events for the asset entity since the
     // last acknowledged cursor. Lets cairn skip the paginated
     // `search/metadata` rescan on every sync once the cache is seeded.
-    // See `notes/sync-stream-incremental-server-sync-plan.md` for the
+    // See `docs/active-design/sync-stream-incremental-server-sync-plan.md` for the
     // full design and the cache layer that consumes these events.
 
     /// API-key scopes the streaming endpoint requires. Surfaced on a

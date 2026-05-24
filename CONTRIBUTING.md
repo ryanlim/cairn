@@ -46,6 +46,19 @@ Beyond that:
 - **User-facing copy** follows the style captured in recent PRs (Stripe-docs-meets-Strunk-and-White — direct, specific, no marketing adjectives, no empowerment-speak). Match the surrounding tone.
 - The product name is `cairn` (all lowercase) in user-facing prose. Swift identifiers stay PascalCase (`CairnCore`, `struct Cairn`).
 
+## Active design work
+
+Open design documents — proposals that have either landed partially
+or are still under discussion — live in [`docs/active-design/`](docs/active-design/).
+They're a good source of starter issues: each describes a concrete,
+bounded piece of work with the design context already worked through.
+Pick one, read it, ask in an issue if anything is unclear, then
+propose an implementation plan in a PR.
+
+Completed or superseded designs are archived in
+[`docs/history/`](docs/history/). Useful for "why does it work this
+way?" archaeology; not for active work.
+
 ## Commit and PR conventions
 
 - Short, specific commit subjects. Prefer "Fix NPE in reconcileCacheAgainstLibrary when protectedIds is empty" over "Fix bug".

@@ -39,6 +39,7 @@ public struct RunsScreen: View {
     public let scrollResetToken: Int
 
     @Environment(\.cairnTokens) private var t
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// Default `now` matches the prototype's pinned clock in
     /// `parts.jsx::relTime` so the hand-off design and ported screen show
@@ -76,7 +77,7 @@ public struct RunsScreen: View {
             }
             .background(t.bg)
             .onChange(of: scrollResetToken) { _, _ in
-                withAnimation(.easeInOut(duration: 0.25)) {
+                withAnimation(reduceMotion ? .none : .easeInOut(duration: 0.25)) {
                     proxy.scrollTo(Self.scrollTopAnchor, anchor: .top)
                 }
             }

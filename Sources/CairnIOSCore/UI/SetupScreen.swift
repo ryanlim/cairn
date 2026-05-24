@@ -259,6 +259,12 @@ public struct SetupScreen: View {
             // hero art rather than the smaller theme-responsive mark
             // used in nav chrome.
             CairnWordmark(size: 40, variant: .hero)
+            // The pitch sentence below opens with `Text.cairnWord` —
+            // its own "cairn" announcement. Hiding the hero wordmark
+            // from VoiceOver avoids the duplicate read ("cairn,
+            // cairn cleans up your Immich server"). Sighted users
+            // still see the visual brand mark.
+            .accessibilityHidden(true)
             .padding(.bottom, 24)
 
             // Pitch — verbatim from the brief; this is the elevator

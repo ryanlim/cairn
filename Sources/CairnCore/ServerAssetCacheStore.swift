@@ -6,7 +6,7 @@ import Foundation
 // incrementally via `POST /api/sync/stream` events. Reconciliation
 // reads its server-side input from this cache instead of re-paginating
 // `search/metadata` on every sync — see
-// `notes/sync-stream-incremental-server-sync-plan.md`.
+// `docs/active-design/sync-stream-incremental-server-sync-plan.md`.
 //
 // The protocol lives in CairnCore so the engine can stay
 // platform-neutral and a Kotlin/Android port can drop in its own

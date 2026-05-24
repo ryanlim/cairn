@@ -8,9 +8,10 @@ import Foundation
 /// Semantics:
 /// - Reads return a full snapshot. Small libraries → small sets; a user
 ///   with 50k photos has ~2 MB of base64 SHA1 strings in memory. Fine.
-/// - Writes are idempotent-union; inserting a checksum that's already
-///   present is a no-op, not an error.
-/// - The store is append-only in normal operation. No public delete.
+/// - Writes are idempotent on the *set* dimension; inserting a checksum
+///   that's already present is never an error.
+/// - The store is append-only in normal operation. `remove` exists for
+///   Reset Index but isn't called on the steady-state path.
 ///
 /// **Album tags (scope-aware indexing).** Each entry can carry a
 /// `Set<String>` of `PHAssetCollection.localIdentifier` values — the
@@ -19,10 +20,25 @@ import Foundation
 /// reconciler filters Observed entries by `tags ∩ scope ≠ ∅`. Legacy
 /// entries written before scope-aware indexing existed have empty
 /// tags; under restricted scope they're treated as out-of-scope until
-/// re-observed. The plain `snapshot` / `union` API ignores tags
-/// (preserved for full-library callers and CLI use). New callers use
-/// `snapshotWithTags` / `recordObserved` / `setTags` to read and
-/// write the tag dimension.
+/// re-observed.
+///
+/// ## Write-API decision guide
+///
+/// Three writers exist because they have different semantics on the
+/// tag dimension. A port author should pick deliberately — using the
+/// wrong one yields silent correctness bugs under restricted scope.
+///
+/// | Method | On existing entry | On new entry | When to call |
+/// |---|---|---|---|
+/// | `union(_:)` | tags **preserved** | inserted with empty tags | full-library mode, CLI, anywhere tags are out of scope |
+/// | `recordObserved(_:)` | tags **replaced** with caller's set | inserted with caller's set | scope-aware enumeration; moving an asset between albums |
+/// | `setTags(for:tags:)` | tags **replaced** with one common set; missing entries no-op | not inserted | bulk scope-change rebuild |
+///
+/// The replace-vs-preserve asymmetry between `union` and `recordObserved`
+/// is the load-bearing rule: `recordObserved` is the only path that
+/// reflects a change in what scope an asset belongs to. Calling `union`
+/// from a scope-aware code path silently strips the new tags off
+/// existing entries.
 public protocol ObservedStore: Sendable {
     /// Every checksum currently in the store.
     func snapshot() async throws -> Set<Checksum>

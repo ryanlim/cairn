@@ -322,7 +322,7 @@ public struct SettingsScreen: View {
             AboutSheet(onClose: { showAbout = false })
         }
         .onChange(of: scrollResetToken) { _, _ in
-            withAnimation(.easeInOut(duration: 0.25)) {
+            withAnimation(reduceMotion ? .none : .easeInOut(duration: 0.25)) {
                 proxy.scrollTo(Self.scrollTopAnchor, anchor: .top)
             }
         }

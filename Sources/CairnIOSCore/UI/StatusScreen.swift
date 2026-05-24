@@ -453,7 +453,7 @@ public struct StatusScreen: View {
                 // engine never touches it.
             }
             .onChange(of: scrollResetToken) { _, _ in
-                withAnimation(.easeInOut(duration: 0.25)) {
+                withAnimation(reduceMotion ? .none : .easeInOut(duration: 0.25)) {
                     proxy.scrollTo(Self.scrollTopAnchor, anchor: .top)
                 }
             }

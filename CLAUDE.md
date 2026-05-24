@@ -48,7 +48,7 @@ In rough priority order:
    feature ships off-by-default because Immich rejects `/sync/*`
    from API key auth. Adding email/password login → JWT session
    cookie would let the feature run end-to-end. See
-   `notes/sync-stream-incremental-server-sync-plan.md` for the
+   `docs/active-design/sync-stream-incremental-server-sync-plan.md` for the
    pre-discovery design (the auth assumption was wrong; the
    coordinator + cache infrastructure are correct).
 3. **Snapshot tests for SwiftUI screens.** None yet. Good candidate

@@ -271,6 +271,12 @@ public struct DryRunSheet: View {
                             }
                         }
                         .buttonStyle(.plain)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel(
+                            c.isLivePair
+                                ? "\(c.name), Live Photo. Candidate for trashing on Immich. Tap to zoom."
+                                : "\(c.name). Candidate for trashing on Immich. Tap to zoom."
+                        )
                     }
                 }
                 .padding(10)

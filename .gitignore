@@ -10,8 +10,10 @@ DerivedData/
 
 # Local persistence for the CLI
 ever-seen.json
+observed.json
 deletion-journal.jsonl
 exclusions.json
+confirmed-deleted.json
 cairn-settings.json
 
 # Per-machine Claude Code permissions (the "local" suffix is the convention)

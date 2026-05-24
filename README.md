@@ -108,7 +108,7 @@ Full privacy policy: [`PRIVACY.md`](PRIVACY.md).
 
 ## Development
 
-- `swift test` runs the full SPM test suite (reconciliation logic, safety rails, SHA1 hashing, journal, orchestrators, Immich client, tag schema, iOS-side store implementations).
+- `swift test` runs the full SPM test suite (reconciliation logic, safety rails, SHA1 hashing, journal, orchestrators, Immich client, tag schema, iOS-side store implementations). [`Tests/README.md`](Tests/README.md) is a guided tour of the highest-signal-to-noise tests — useful as a living spec for understanding cairn's behavior without reading every line of source.
 - `make test` (from `iOS/`) runs the same tests.
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) captures project conventions and accumulated design context — worth reading before touching anything substantial. [`CLAUDE.md`](CLAUDE.md) is the smaller working-session companion (current state, in-flight workstreams).
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) covers prerequisites, style, and the PR flow.

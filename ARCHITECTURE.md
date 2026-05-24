@@ -221,7 +221,9 @@ All auth via `x-api-key` header.
   via API key auth** — Immich rejects session-less requests at the
   service layer (`sync.service.ts:78`). The feature flag
   `useIncrementalServerSync` is wired but the path requires session
-  auth to be added before it can run end-to-end. See `notes/sync-stream-incremental-server-sync-plan.md`.
+  auth was the missing piece and is now wired (see Settings →
+  Advanced → Sign in to Immich). The original design doc lives at
+  `docs/active-design/sync-stream-incremental-server-sync-plan.md`.
 
 ## Portability contract (Option C — Swift now, Kotlin if/when)
 

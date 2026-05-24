@@ -153,7 +153,7 @@ public struct PendingTrashesSheet: View {
                 Image(systemName: "trash")
                     .font(.system(size: 14))
                     .foregroundStyle(t.textMuted)
-                    .frame(width: 32, height: 32)
+                    .frame(width: 44, height: 44)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
