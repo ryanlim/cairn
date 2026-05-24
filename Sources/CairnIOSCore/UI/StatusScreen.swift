@@ -390,19 +390,19 @@ public struct StatusScreen: View {
                             .fill(hero.severity == .error ? t.dangerInk : t.verifiedInk)
                             .frame(width: 6, height: 6)
                         Text(hero.event)
-                            .font(.system(size: 12.5, weight: .semibold, design: .monospaced))
+                            .font(.cairnScaled(size: 12.5, weight: .semibold, design: .monospaced))
                             .foregroundStyle(eventColor(hero.event))
                         Text("·")
-                            .font(.system(size: 12.5))
+                            .font(.cairnScaled(size: 12.5))
                             .foregroundStyle(t.textHint)
                         Text(hero.message)
-                            .font(.system(size: 12.5))
+                            .font(.cairnScaled(size: 12.5))
                             .foregroundStyle(t.textBody)
                             .lineLimit(1)
                             .truncationMode(.tail)
                         Spacer(minLength: 8)
                         Text(hero.time)
-                            .font(.system(size: 11.5, design: .monospaced))
+                            .font(.cairnScaled(size: 11.5, design: .monospaced))
                             .foregroundStyle(t.textHint)
                     }
                     .padding(.horizontal, 16)
@@ -518,7 +518,7 @@ public struct StatusScreen: View {
                 statusChip
             }
             Text(reconcilingSubhead)
-                .font(.system(size: 13))
+                .font(.cairnScaled(size: 13))
                 .foregroundStyle(t.textMuted)
         }
         .padding(.horizontal, 20)
@@ -588,14 +588,14 @@ public struct StatusScreen: View {
             Callout(.danger, icon: "server.rack") {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Immich server unreachable").fontWeight(.semibold)
-                    (Text("Tried ") + Text(serverHost).font(.system(size: 12, design: .monospaced)) + Text(" three times over 2m. Check VPN or server health, then retry."))
+                    (Text("Tried ") + Text(serverHost).font(.cairnScaled(size: 12, design: .monospaced)) + Text(" three times over 2m. Check VPN or server health, then retry."))
                         .opacity(0.88).fixedSize(horizontal: false, vertical: true)
                     Button(action: onRetryConnection) {
                         HStack(spacing: 6) {
                             Image(systemName: "arrow.clockwise")
-                                .font(.system(size: 12, weight: .semibold))
+                                .font(.cairnScaled(size: 12, weight: .semibold))
                             Text("Retry connection")
-                                .font(.system(size: 13, weight: .semibold))
+                                .font(.cairnScaled(size: 13, weight: .semibold))
                         }
                         .foregroundStyle(t.dangerInk)
                         .padding(.horizontal, 12)
@@ -646,7 +646,7 @@ public struct StatusScreen: View {
                         .opacity(0.88).fixedSize(horizontal: false, vertical: true)
                     Button(action: onResumeSession) {
                         Text("Sign in again")
-                            .font(.system(size: 13, weight: .semibold))
+                            .font(.cairnScaled(size: 13, weight: .semibold))
                             .foregroundStyle(t.primaryInk)
                             .padding(.horizontal, 14)
                             .padding(.vertical, 8)
@@ -1005,11 +1005,11 @@ public struct StatusScreen: View {
                     // continuously, with no transient UI disappearing.
                     VStack(alignment: .leading, spacing: 6) {
                         Text("READY TO TRASH")
-                            .font(.system(size: 11, weight: .semibold)).tracking(0.9)
+                            .font(.cairnScaled(size: 11, weight: .semibold)).tracking(0.9)
                             .foregroundStyle(t.textMuted)
                         Button(action: { if library.candidates > 0 { onOpenDeleteQueue() } }) {
                             Text("\(library.candidates)")
-                                .font(.system(size: 44, weight: .semibold).monospacedDigit())
+                                .font(.cairnScaled(size: 44, weight: .semibold).monospacedDigit())
                                 .tracking(-1.5)
                                 .foregroundStyle(readyToTrashColor)
                                 .lineLimit(1)
@@ -1019,7 +1019,7 @@ public struct StatusScreen: View {
                         .accessibilityLabel("\(library.candidates) ready to trash. Tap to view.")
                         if let checked = lastCheckedAt {
                             Text("Last checked \(Self.relativeTime(checked))")
-                                .font(.system(size: 11))
+                                .font(.cairnScaled(size: 11))
                                 // Ambient timestamp — quiet blue-gray
                                 // reads as "background / when this last
                                 // happened" without competing with the
@@ -1074,7 +1074,7 @@ public struct StatusScreen: View {
                              tone: withinBudget ? .verified : .pending)
                         HStack(spacing: 0) {
                             Text(String(format: "stops above %.1f%% past %d items", maxDeletePercent, minDeleteFloor))
-                                .font(.system(size: 11))
+                                .font(.cairnScaled(size: 11))
                                 .foregroundStyle(t.textMuted)
                             HelpPopover {
                                 Text("**Two safety rails on every run.** Both must be true for cairn to actually move assets to Immich's Trash.")
@@ -1123,9 +1123,9 @@ public struct StatusScreen: View {
                     Button(action: onOpenSyncDetail) {
                         HStack(spacing: 4) {
                             Text("Show details")
-                                .font(.system(size: 12, weight: .medium))
+                                .font(.cairnScaled(size: 12, weight: .medium))
                             Image(systemName: "chevron.right")
-                                .font(.system(size: 9, weight: .semibold))
+                                .font(.cairnScaled(size: 9, weight: .semibold))
                         }
                         .foregroundStyle(t.accentInk)
                         .padding(.vertical, 2)
@@ -1196,7 +1196,7 @@ public struct StatusScreen: View {
                                     .tint(t.textMuted)
                             }
                             Text(cancelRequested ? "Cancelling…" : "Cancel")
-                                .font(.system(size: 13, weight: .semibold))
+                                .font(.cairnScaled(size: 13, weight: .semibold))
                                 .tracking(0.66)
                                 .foregroundStyle(cancelRequested ? t.textMuted : t.dangerInk)
                         }
@@ -1216,7 +1216,7 @@ public struct StatusScreen: View {
                 // muted line under the progress bar.
                 if syncBlocked && !isSyncing {
                     Text(syncCtaLabel)
-                        .font(.system(size: 12, weight: .medium))
+                        .font(.cairnScaled(size: 12, weight: .medium))
                         .foregroundStyle(t.textMuted)
                         .frame(maxWidth: .infinity, alignment: .center)
                 }
@@ -1248,28 +1248,28 @@ public struct StatusScreen: View {
             HStack(spacing: 12) {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Image(systemName: iconName)
-                        .font(.system(size: 14, weight: .semibold))
+                        .font(.cairnScaled(size: 14, weight: .semibold))
                         .foregroundStyle(t.pendingInk)
                     Text("\(pendingReviewCount)")
-                        .font(.system(size: 28, weight: .semibold).monospacedDigit())
+                        .font(.cairnScaled(size: 28, weight: .semibold).monospacedDigit())
                         .foregroundStyle(t.pendingInk)
                     Text(bigLabel)
-                        .font(.system(size: 14, weight: .medium))
+                        .font(.cairnScaled(size: 14, weight: .medium))
                         .foregroundStyle(t.pendingInk)
                 }
                 Spacer()
                 VStack(alignment: .trailing, spacing: 2) {
                     if allHeld, let earliest = earliestQuarantineEligible {
                         Text("next in \(Self.relativeDay(earliest))")
-                            .font(.system(size: 11, weight: .medium))
+                            .font(.cairnScaled(size: 11, weight: .medium))
                             .foregroundStyle(t.textMuted)
                     } else if quarantineCount > 0 && quarantineCount < pendingReviewCount {
                         Text("\(quarantineCount) in quarantine")
-                            .font(.system(size: 11, weight: .medium))
+                            .font(.cairnScaled(size: 11, weight: .medium))
                             .foregroundStyle(t.textMuted)
                     }
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 10, weight: .semibold))
+                        .font(.cairnScaled(size: 10, weight: .semibold))
                         .foregroundStyle(t.textMuted)
                 }
             }
@@ -1295,26 +1295,26 @@ public struct StatusScreen: View {
             Button(action: onOpenDeferredQueue) {
                 HStack(spacing: 8) {
                     Image(systemName: "tray.and.arrow.down")
-                        .font(.system(size: 12, weight: .semibold))
+                        .font(.cairnScaled(size: 12, weight: .semibold))
                         .foregroundStyle(t.infoInk)
                     if deferredQueue.count > 0 {
                         Text("\(deferredQueue.count.formatted(.number)) not yet indexed")
-                            .font(.system(size: 13, weight: .medium))
+                            .font(.cairnScaled(size: 13, weight: .medium))
                             .foregroundStyle(t.textMuted)
                     }
                     if deferredQueue.aboveCeiling > 0 {
                         if deferredQueue.count > 0 {
-                            Text("·").font(.system(size: 13)).foregroundStyle(t.textHint)
+                            Text("·").font(.cairnScaled(size: 13)).foregroundStyle(t.textHint)
                         }
                         Text("\(deferredQueue.aboveCeiling.formatted(.number)) above cap")
-                            .font(.system(size: 13, weight: .medium))
+                            .font(.cairnScaled(size: 13, weight: .medium))
                             .foregroundStyle(t.textHint)
                     }
                     Spacer()
                     if deferredQueue.count > 0 {
                         Button(action: onForceDrainDeferred) {
                             Text("Hash now")
-                                .font(.system(size: 12, weight: .semibold))
+                                .font(.cairnScaled(size: 12, weight: .semibold))
                                 .foregroundStyle(t.primaryInk)
                                 .padding(.horizontal, 10)
                                 .padding(.vertical, 5)
@@ -1324,7 +1324,7 @@ public struct StatusScreen: View {
                         .buttonStyle(CairnPressStyle())
                     } else {
                         Image(systemName: "chevron.right")
-                            .font(.system(size: 10, weight: .semibold))
+                            .font(.cairnScaled(size: 10, weight: .semibold))
                             .foregroundStyle(t.textMuted)
                     }
                 }
@@ -1420,9 +1420,9 @@ public struct StatusScreen: View {
                 Button(action: onSeeAllRuns) {
                     HStack(spacing: 6) {
                         Text("See all runs")
-                            .font(.system(size: 13, weight: .medium))
+                            .font(.cairnScaled(size: 13, weight: .medium))
                         Image(systemName: "chevron.right")
-                            .font(.system(size: 10, weight: .semibold))
+                            .font(.cairnScaled(size: 10, weight: .semibold))
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 12)
@@ -1470,7 +1470,7 @@ public struct StatusScreen: View {
                 journalFilterChip
                 if filtered.isEmpty {
                     Text(journalEmptyMessage(hidden: hiddenCount))
-                        .font(.system(size: 12))
+                        .font(.cairnScaled(size: 12))
                         .foregroundStyle(t.textMuted)
                         .padding(.vertical, 6)
                         // Without this, the empty-state Text collapses to
@@ -1623,11 +1623,11 @@ public struct StatusScreen: View {
                         } label: {
                             HStack(spacing: 6) {
                                 Image(systemName: journalExpanded ? "chevron.up" : "chevron.down")
-                                    .font(.system(size: 11, weight: .semibold))
+                                    .font(.cairnScaled(size: 11, weight: .semibold))
                                 Text(journalExpanded
                                      ? "Show fewer"
                                      : "Show \(filtered.count - Self.collapsedJournalTailLimit) more")
-                                    .font(.system(size: 12, weight: .medium))
+                                    .font(.cairnScaled(size: 12, weight: .medium))
                             }
                             .foregroundStyle(t.textMuted)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -1638,7 +1638,7 @@ public struct StatusScreen: View {
 
                     if hideRoutineSyncs && hiddenCount > 0 {
                         Text("\(hiddenCount) routine sync\(hiddenCount == 1 ? "" : "s") hidden")
-                            .font(.system(size: 11))
+                            .font(.cairnScaled(size: 11))
                             .foregroundStyle(t.textHint)
                             .padding(.top, 2)
                     }
@@ -1663,9 +1663,9 @@ public struct StatusScreen: View {
                 Image(systemName: hideRoutineSyncs
                                   ? "line.3.horizontal.decrease.circle.fill"
                                   : "line.3.horizontal.decrease.circle")
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.cairnScaled(size: 11, weight: .semibold))
                 Text(hideRoutineSyncs ? "Hiding routine syncs" : "Showing all events")
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.cairnScaled(size: 11, weight: .semibold))
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
@@ -2032,7 +2032,7 @@ private struct PlayfulSyncIcon: View {
                 }
             }()
             Image(systemName: "arrow.triangle.2.circlepath")
-                .font(.system(size: size, weight: .semibold))
+                .font(.cairnScaled(size: size, weight: .semibold))
                 .foregroundStyle(color)
                 .rotationEffect(.degrees(rotation))
         }
@@ -2080,7 +2080,7 @@ private struct JournalRawJSONSheet: View {
         NavigationStack {
             ScrollView {
                 Text(entry.rawJSON ?? "(no raw payload — fixture row)")
-                    .font(.system(size: 12, design: .monospaced))
+                    .font(.cairnScaled(size: 12, design: .monospaced))
                     .foregroundStyle(t.textBody)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .textSelection(.enabled)
@@ -2168,14 +2168,14 @@ private struct SyncBundleHeader: View {
         Button(action: onToggle) {
             HStack(spacing: 8) {
                 Image(systemName: expanded ? "chevron.down" : "chevron.right")
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.cairnScaled(size: 11, weight: .semibold))
                     .foregroundStyle(t.textMuted)
                     .frame(width: 12, alignment: .leading)
                 Text(timeRange)
-                    .font(.system(size: 11, design: .monospaced))
+                    .font(.cairnScaled(size: 11, design: .monospaced))
                     .foregroundStyle(t.textHint)
                 Text(summary)
-                    .font(.system(size: 12, weight: .medium))
+                    .font(.cairnScaled(size: 12, weight: .medium))
                     .foregroundStyle(t.textBody)
                 Spacer(minLength: 0)
             }
@@ -2207,21 +2207,21 @@ private struct JournalRunSeparator: View {
         Button(action: onTap) {
             HStack(spacing: 6) {
                 Text(timeLabel)
-                    .font(.system(size: 10.5, weight: .medium, design: .monospaced))
+                    .font(.cairnScaled(size: 10.5, weight: .medium, design: .monospaced))
                     .foregroundStyle(t.textHint)
                 Text("·")
-                    .font(.system(size: 10.5))
+                    .font(.cairnScaled(size: 10.5))
                     .foregroundStyle(t.textHint)
                 if let summary = runSummaryLabel {
                     Text(summary)
-                        .font(.system(size: 10.5, weight: .medium))
+                        .font(.cairnScaled(size: 10.5, weight: .medium))
                         .foregroundStyle(summaryColor)
                     Text("·")
-                        .font(.system(size: 10.5))
+                        .font(.cairnScaled(size: 10.5))
                         .foregroundStyle(t.textHint)
                 }
                 Text("run \(runId.suffix(8))")
-                    .font(.system(size: 10.5, design: .monospaced))
+                    .font(.cairnScaled(size: 10.5, design: .monospaced))
                     .foregroundStyle(t.textHint)
             }
             .padding(.horizontal, 8)
@@ -2360,7 +2360,7 @@ private struct JournalTailRow: View {
                 // semantics carry through whether the user reads the
                 // glyph or the event word.
                 Image(systemName: entry.glyph)
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.cairnScaled(size: 11, weight: .semibold))
                     .foregroundStyle(eventInk)
                     .frame(width: 14, alignment: .center)
                 // Time is fixed-width so rows scan cleanly by time
@@ -2368,7 +2368,7 @@ private struct JournalTailRow: View {
                 // (`HH:mm` today, `MMM d HH:mm` past) is
                 // ~80pt — half the previous column's width.
                 Text(entry.time)
-                    .font(.system(size: 11.5, design: .monospaced))
+                    .font(.cairnScaled(size: 11.5, design: .monospaced))
                     .foregroundStyle(t.textHint)
                     .frame(width: 80, alignment: .leading)
                 // Event hugs its content (no fixed column) — a short
@@ -2378,11 +2378,11 @@ private struct JournalTailRow: View {
                 // bit busier, but the cost of fixed-width dead space
                 // was worse.
                 Text(entry.event)
-                    .font(.system(size: 11.5, weight: .medium, design: .monospaced))
+                    .font(.cairnScaled(size: 11.5, weight: .medium, design: .monospaced))
                     .foregroundStyle(eventInk)
                     .fixedSize()
                 Text(entry.message)
-                    .font(.system(size: 11.5, design: .monospaced))
+                    .font(.cairnScaled(size: 11.5, design: .monospaced))
                     .foregroundStyle(t.textMuted)
                     .lineLimit(1)
                     .fixedSize()
@@ -2393,7 +2393,7 @@ private struct JournalTailRow: View {
                 // bounces elastically with nothing to reveal.
                 if !entry.runIdSuffix.isEmpty {
                     Text(entry.runIdSuffix)
-                        .font(.system(size: 11, design: .monospaced))
+                        .font(.cairnScaled(size: 11, design: .monospaced))
                         .foregroundStyle(runIdSuffixColor)
                         .padding(.leading, 12)
                         .fixedSize()
@@ -2457,7 +2457,7 @@ private struct Chip: View {
                 .fill(dotColor)
                 .frame(width: 6, height: 6)
             Text(label)
-                .font(.system(size: 11, weight: .semibold))
+                .font(.cairnScaled(size: 11, weight: .semibold))
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
@@ -2578,13 +2578,13 @@ private struct RunRow: View {
                             .fill(iconBg)
                             .frame(width: 30, height: 30)
                         Image(systemName: iconName)
-                            .font(.system(size: 13, weight: .semibold))
+                            .font(.cairnScaled(size: 13, weight: .semibold))
                             .foregroundStyle(iconInk)
                     }
                     VStack(alignment: .leading, spacing: 2) {
                         HStack(spacing: 8) {
                             Text(verb)
-                                .font(.system(size: 14, weight: .medium))
+                                .font(.cairnScaled(size: 14, weight: .medium))
                                 .foregroundStyle(t.text)
                             if run.restored > 0 {
                                 Chip(label: "\(run.restored) restored", tone: .neutral)
@@ -2592,19 +2592,19 @@ private struct RunRow: View {
                         }
                         HStack(spacing: 4) {
                             Text(CairnTimeHelpers.relativeTime(run.startedAt, now: Date()))
-                                .font(.system(size: 11.5))
+                                .font(.cairnScaled(size: 11.5))
                                 .foregroundStyle(t.textHint)
                             Text("·")
-                                .font(.system(size: 11.5))
+                                .font(.cairnScaled(size: 11.5))
                                 .foregroundStyle(t.textHint)
                             Text(String(run.id.suffix(8)))
-                                .font(.system(size: 10.5, design: .monospaced))
+                                .font(.cairnScaled(size: 10.5, design: .monospaced))
                                 .foregroundStyle(t.textHint)
                         }
                     }
                     Spacer()
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 12, weight: .semibold))
+                        .font(.cairnScaled(size: 12, weight: .semibold))
                         .foregroundStyle(t.textHint)
                 }
                 .padding(.horizontal, 14)

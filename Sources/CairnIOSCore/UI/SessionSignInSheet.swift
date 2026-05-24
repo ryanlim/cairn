@@ -43,7 +43,7 @@ public struct SessionSignInSheet: View {
                 signInButton
                 if let inlineError {
                     Text(inlineError)
-                        .font(.system(size: 13))
+                        .font(.cairnScaled(size: 13))
                         .foregroundStyle(t.dangerInk)
                         .padding(.top, 4)
                         .accessibilityAddTraits(.isStaticText)
@@ -59,13 +59,13 @@ public struct SessionSignInSheet: View {
     private var header: some View {
         HStack {
             Text("Sign in for incremental sync")
-                .font(.system(size: 22, weight: .semibold))
+                .font(.cairnScaled(size: 22, weight: .semibold))
                 .tracking(-0.45)
                 .foregroundStyle(t.text)
             Spacer()
             Button(action: onDismiss) {
                 Image(systemName: "xmark")
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(.cairnScaled(size: 14, weight: .semibold))
                     .foregroundStyle(t.textMuted)
                     .frame(width: 44, height: 44)
                     .contentShape(Rectangle())
@@ -77,7 +77,7 @@ public struct SessionSignInSheet: View {
 
     private var explainer: some View {
         Text("Incremental sync talks to an Immich endpoint that doesn't accept API keys. Signing in with your Immich email and password gives cairn a session token, stored locally in your iPhone's Keychain. Cairn uses it only for that one streaming path — every other request still uses your API key. Sign out anytime to drop the token; everything else keeps working.")
-            .font(.system(size: 13))
+            .font(.cairnScaled(size: 13))
             .foregroundStyle(t.textMuted)
             .lineSpacing(3)
             .fixedSize(horizontal: false, vertical: true)
@@ -86,7 +86,7 @@ public struct SessionSignInSheet: View {
     private var emailField: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Email")
-                .font(.system(size: 13, weight: .medium))
+                .font(.cairnScaled(size: 13, weight: .medium))
                 .foregroundStyle(t.textBody)
             TextField("you@example.com", text: $email)
                 .autocorrectionDisabled(true)
@@ -111,7 +111,7 @@ public struct SessionSignInSheet: View {
     private var passwordField: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Password")
-                .font(.system(size: 13, weight: .medium))
+                .font(.cairnScaled(size: 13, weight: .medium))
                 .foregroundStyle(t.textBody)
             SecureField("", text: $password)
                 #if os(iOS)
@@ -141,7 +141,7 @@ public struct SessionSignInSheet: View {
                         .tint(t.primaryInk)
                 }
                 Text(isSubmitting ? "Signing in…" : "Sign in")
-                    .font(.system(size: 15, weight: .semibold))
+                    .font(.cairnScaled(size: 15, weight: .semibold))
                     .foregroundStyle(t.primaryInk)
             }
             .frame(maxWidth: .infinity, minHeight: 48)

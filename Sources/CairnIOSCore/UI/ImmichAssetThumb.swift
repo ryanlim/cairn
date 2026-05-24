@@ -75,7 +75,7 @@ public struct ImmichAssetThumb: View {
                 .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
             if isLivePair {
                 Image(systemName: "livephoto")
-                    .font(.system(size: max(10, size * 0.18), weight: .semibold))
+                    .font(.cairnScaled(size: max(10, size * 0.18), weight: .semibold))
                     .foregroundStyle(.white)
                     .padding(4)
                     .background(.black.opacity(0.45), in: Circle())

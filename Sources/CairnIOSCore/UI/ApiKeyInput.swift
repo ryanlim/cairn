@@ -46,14 +46,14 @@ public struct ApiKeyInput: View {
     public var body: some View {
         HStack(spacing: 0) {
             Image(systemName: "key")
-                .font(.system(size: 14))
+                .font(.cairnScaled(size: 14))
                 .foregroundStyle(t.textMuted)
                 .padding(.leading, 14)
 
             ZStack(alignment: .leading) {
                 TextField(placeholder, text: $text)
                     .textFieldStyle(.plain)
-                    .font(.system(size: 14, design: .monospaced))
+                    .font(.cairnScaled(size: 14, design: .monospaced))
                     .accessibilityLabel("API key")
                     // Single-line + horizontal scroll. Without this, a
                     // long pasted key wraps to a second line, which
@@ -90,7 +90,7 @@ public struct ApiKeyInput: View {
                     // cushion that masks the paste-animation flash
                     // without swallowing the caret region.
                     Text(maskedDisplay)
-                        .font(.system(size: 14, design: .monospaced))
+                        .font(.cairnScaled(size: 14, design: .monospaced))
                         .foregroundStyle(t.textBody)
                         .lineLimit(1)
                         .truncationMode(.head)
@@ -110,7 +110,7 @@ public struct ApiKeyInput: View {
                 revealed.toggle()
             } label: {
                 Image(systemName: revealed ? "eye.slash" : "eye")
-                    .font(.system(size: 15, weight: .regular))
+                    .font(.cairnScaled(size: 15, weight: .regular))
                     .foregroundStyle(t.textMuted)
                     .frame(width: 44, height: 44)
                     .contentShape(Rectangle())

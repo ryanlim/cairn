@@ -463,7 +463,7 @@ public struct InitialScanScreen: View {
 
     private var headline: some View {
         Text("Indexing your library")
-            .font(.system(size: 26, weight: .semibold))
+            .font(.cairnScaled(size: 26, weight: .semibold))
             .tracking(-0.5)
             .foregroundStyle(t.text)
             .padding(.bottom, 8)
@@ -479,7 +479,7 @@ public struct InitialScanScreen: View {
                 (Text.cairnWord + Text(" hashes every photo once so it can tell a deletion apart from a sync hiccup. This only happens on first run."))
             }
         }
-        .font(.system(size: 14))
+        .font(.cairnScaled(size: 14))
         .foregroundStyle(t.textMuted)
         .multilineTextAlignment(.center)
         .lineSpacing(3)
@@ -493,24 +493,24 @@ public struct InitialScanScreen: View {
             VStack(alignment: .leading, spacing: 14) {
                 HStack(alignment: .firstTextBaseline) {
                     Text("\(hashed.formatted(.number)) / \(total.formatted(.number))")
-                        .font(.system(size: 28, weight: .semibold).monospacedDigit())
+                        .font(.cairnScaled(size: 28, weight: .semibold).monospacedDigit())
                         .foregroundStyle(t.text)
                     Text("processed")
-                        .font(.system(size: 14))
+                        .font(.cairnScaled(size: 14))
                         .foregroundStyle(t.textMuted)
                     Spacer()
                     Text(String(format: "%.0f%%", fraction * 100))
-                        .font(.system(size: 13, design: .monospaced).monospacedDigit())
+                        .font(.cairnScaled(size: 13, design: .monospaced).monospacedDigit())
                         .foregroundStyle(t.textMuted)
                 }
                 ProgressBar(fraction: fraction, tone: .pending, accessibilityLabel: "Initial scan progress")
                 if let prePhaseLabel {
                     HStack(spacing: 6) {
                         Image(systemName: "circle.dotted.circle")
-                            .font(.system(size: 10))
+                            .font(.cairnScaled(size: 10))
                             .foregroundStyle(t.pendingInk)
                         Text(prePhaseLabel)
-                            .font(.system(size: 12, weight: .medium))
+                            .font(.cairnScaled(size: 12, weight: .medium))
                             .foregroundStyle(t.textBody)
                     }
                 } else {
@@ -544,16 +544,16 @@ public struct InitialScanScreen: View {
         HStack(spacing: 24) {
             VStack(alignment: .leading, spacing: 2) {
                 Text("ELAPSED")
-                    .font(.system(size: 10, weight: .semibold))
+                    .font(.cairnScaled(size: 10, weight: .semibold))
                     .tracking(0.9)
                     .foregroundStyle(t.textHint)
                 Text(elapsed.map(Self.formatDuration) ?? "—")
-                    .font(.system(size: 14, weight: .semibold).monospacedDigit())
+                    .font(.cairnScaled(size: 14, weight: .semibold).monospacedDigit())
                     .foregroundStyle(t.textBody)
             }
             VStack(alignment: .leading, spacing: 2) {
                 Text("REMAINING")
-                    .font(.system(size: 10, weight: .semibold))
+                    .font(.cairnScaled(size: 10, weight: .semibold))
                     .tracking(0.9)
                     .foregroundStyle(t.textHint)
                 TimelineView(.periodic(from: Date(), by: 1.0)) { context in
@@ -563,7 +563,7 @@ public struct InitialScanScreen: View {
                     // during a long iCloud wait and the displayed value
                     // would silently go stale.
                     Text(remainingDisplay)
-                        .font(.system(size: 14, weight: .semibold).monospacedDigit())
+                        .font(.cairnScaled(size: 14, weight: .semibold).monospacedDigit())
                         .foregroundStyle(remainingColor)
                         .onChange(of: context.date) { _, now in
                             reconsiderPublishedEta(now: now)
@@ -604,14 +604,14 @@ public struct InitialScanScreen: View {
                 } label: {
                     HStack(spacing: 8) {
                         Image(systemName: "slider.horizontal.3")
-                            .font(.system(size: 13, weight: .medium))
+                            .font(.cairnScaled(size: 13, weight: .medium))
                             .foregroundStyle(t.textMuted)
                         Text("Scan options")
-                            .font(.system(size: 14, weight: .medium))
+                            .font(.cairnScaled(size: 14, weight: .medium))
                             .foregroundStyle(t.textBody)
                         Spacer(minLength: 12)
                         Image(systemName: optionsExpanded ? "chevron.up" : "chevron.down")
-                            .font(.system(size: 11, weight: .semibold))
+                            .font(.cairnScaled(size: 11, weight: .semibold))
                             .foregroundStyle(t.textHint)
                     }
                     .padding(.horizontal, 14)
@@ -674,9 +674,9 @@ public struct InitialScanScreen: View {
         Button(action: onStart) {
             HStack(spacing: 8) {
                 Image(systemName: "play.fill")
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(.cairnScaled(size: 14, weight: .semibold))
                 Text(hashed > 0 ? "Resume indexing" : "Start indexing")
-                    .font(.system(size: 16, weight: .semibold))
+                    .font(.cairnScaled(size: 16, weight: .semibold))
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 14)
@@ -699,7 +699,7 @@ public struct InitialScanScreen: View {
                         .tint(t.textMuted)
                 }
                 Text(cancelRequested ? "Stopping…" : "Stop indexing")
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(.cairnScaled(size: 14, weight: .semibold))
                     .tracking(0.66)
                     .foregroundStyle(cancelRequested ? t.textMuted : t.dangerInk)
             }
@@ -731,9 +731,9 @@ public struct InitialScanScreen: View {
         Button(action: onStartOver) {
             HStack(spacing: 6) {
                 Image(systemName: "arrow.counterclockwise")
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(.cairnScaled(size: 12, weight: .semibold))
                 Text("Start over")
-                    .font(.system(size: 14, weight: .medium))
+                    .font(.cairnScaled(size: 14, weight: .medium))
             }
             .foregroundStyle(t.textMuted)
             .frame(maxWidth: .infinity)
@@ -764,7 +764,7 @@ public struct InitialScanScreen: View {
         let label = (isActive || isPaused) ? "Continue in app" : "Skip for now"
         Button(action: onDismiss) {
             Text(label)
-                .font(.system(size: 13))
+                .font(.cairnScaled(size: 13))
                 .foregroundStyle(t.textHint)
                 .padding(.vertical, 8)
                 .frame(maxWidth: .infinity)
@@ -817,7 +817,7 @@ private struct InitialScanHardCeilingRow: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline) {
                 Text("Never-touch ceiling")
-                    .font(.system(size: 14))
+                    .font(.cairnScaled(size: 14))
                     .foregroundStyle(t.textBody)
                 Spacer()
                 Toggle("", isOn: isEnabled)
@@ -833,7 +833,7 @@ private struct InitialScanHardCeilingRow: View {
                 .tint(t.text)
                 HStack {
                     Text("Assets above this stay out of scope — ideal for multi-GB archived video.")
-                        .font(.system(size: 11))
+                        .font(.cairnScaled(size: 11))
                         .foregroundStyle(t.textMuted)
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer()
@@ -848,7 +848,7 @@ private struct InitialScanHardCeilingRow: View {
                 }
             } else {
                 Text("Off. Every asset is eligible, however large.")
-                    .font(.system(size: 11))
+                    .font(.cairnScaled(size: 11))
                     .foregroundStyle(t.textMuted)
             }
         }

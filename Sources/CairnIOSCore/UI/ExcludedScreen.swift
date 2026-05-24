@@ -104,9 +104,9 @@ public struct ExcludedScreen: View {
                 Button(action: onBack) {
                     HStack(spacing: 4) {
                         Image(systemName: "chevron.left")
-                            .font(.system(size: 13, weight: .semibold))
+                            .font(.cairnScaled(size: 13, weight: .semibold))
                         Text("Settings")
-                            .font(.system(size: 15))
+                            .font(.cairnScaled(size: 15))
                     }
                     .foregroundStyle(t.textBody)
                     .padding(.vertical, 4)
@@ -126,21 +126,21 @@ public struct ExcludedScreen: View {
                     .fill(t.infoSoft)
                     .frame(width: 56, height: 56)
                 Image(systemName: "shield")
-                    .font(.system(size: 24, weight: .semibold))
+                    .font(.cairnScaled(size: 24, weight: .semibold))
                     .foregroundStyle(t.infoInk)
             }
             .padding(.bottom, 14)
 
             // Copy verbatim from screens/excluded.jsx::EmptyState.
             Text("No assets excluded")
-                .font(.system(size: 17, weight: .semibold))
+                .font(.cairnScaled(size: 17, weight: .semibold))
                 .foregroundStyle(t.text)
                 .padding(.bottom, 6)
 
             (Text("Open any run, select the assets you want to keep in scope, and tap ")
                 + Text("Exclude").foregroundColor(t.textBody).bold()
                 + Text(". They'll show up here."))
-                .font(.system(size: 13))
+                .font(.cairnScaled(size: 13))
                 .foregroundStyle(t.textMuted)
                 .multilineTextAlignment(.center)
                 .lineSpacing(2)
@@ -171,7 +171,7 @@ public struct ExcludedScreen: View {
                 pendingClearAll = true
             } label: {
                 Text("Clear all")
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.cairnScaled(size: 11, weight: .semibold))
                     .tracking(0.99)
                     .foregroundStyle(t.textMuted)
             }
@@ -214,7 +214,7 @@ private struct ExcludedRow: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(entry.filename)
-                    .font(.system(size: 13, design: .monospaced))
+                    .font(.cairnScaled(size: 13, design: .monospaced))
                     .tracking(-0.065) // -0.005em at 13pt
                     .foregroundStyle(t.text)
                     .lineLimit(1)
@@ -234,10 +234,10 @@ private struct ExcludedRow: View {
                     if let runSuffix = runSuffix {
                         Text("·")
                         (Text("from run ")
-                            + Text(runSuffix).font(.system(size: 11.5, design: .monospaced)))
+                            + Text(runSuffix).font(.cairnScaled(size: 11.5, design: .monospaced)))
                     }
                 }
-                .font(.system(size: 11.5))
+                .font(.cairnScaled(size: 11.5))
                 .foregroundStyle(t.textMuted)
                 .lineLimit(1)
             }

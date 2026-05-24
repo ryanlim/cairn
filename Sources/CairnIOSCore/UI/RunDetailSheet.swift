@@ -277,13 +277,13 @@ public struct RunDetailSheet: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
                 Text(runKind.uppercased())
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.cairnScaled(size: 11, weight: .semibold))
                     .tracking(0.9)
                     .foregroundStyle(t.textMuted)
                 Spacer()
                 Button(action: onClose) {
                     Image(systemName: "xmark")
-                        .font(.system(size: 14, weight: .semibold))
+                        .font(.cairnScaled(size: 14, weight: .semibold))
                         .foregroundStyle(t.textMuted)
                         .frame(width: 44, height: 44)
                         .contentShape(Rectangle())
@@ -294,13 +294,13 @@ public struct RunDetailSheet: View {
             .padding(.bottom, 4)
 
             Text(headerTitle)
-                .font(.system(size: 22, weight: .semibold))
+                .font(.cairnScaled(size: 22, weight: .semibold))
                 .tracking(-0.45)
                 .foregroundStyle(t.text)
                 .fixedSize(horizontal: false, vertical: true)
 
             Text(headerSubtitle)
-                .font(.system(size: 13))
+                .font(.cairnScaled(size: 13))
                 .foregroundStyle(t.textMuted)
                 .padding(.top, 4)
         }
@@ -465,16 +465,16 @@ public struct RunDetailSheet: View {
         HStack(spacing: 8) {
             HStack(spacing: 7) {
                 Image(systemName: "magnifyingglass")
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.cairnScaled(size: 11, weight: .semibold))
                     .foregroundStyle(t.textHint)
                     .accessibilityHidden(true)
                 TextField("", text: $filter, prompt:
                     Text("Filter by filename…")
-                        .font(.system(size: 12, design: .monospaced))
+                        .font(.cairnScaled(size: 12, design: .monospaced))
                         .foregroundColor(t.textHint)
                 )
                 .textFieldStyle(.plain)
-                .font(.system(size: 12, design: .monospaced))
+                .font(.cairnScaled(size: 12, design: .monospaced))
                 .foregroundStyle(t.text)
                 .autocorrectionDisabled()
                 #if canImport(UIKit)
@@ -483,7 +483,7 @@ public struct RunDetailSheet: View {
                 if !filter.isEmpty {
                     Button { filter = "" } label: {
                         Image(systemName: "xmark")
-                            .font(.system(size: 10, weight: .semibold))
+                            .font(.cairnScaled(size: 10, weight: .semibold))
                             .foregroundStyle(t.textHint)
                             .frame(width: 44, height: 44)
                             .contentShape(Rectangle())
@@ -504,7 +504,7 @@ public struct RunDetailSheet: View {
             if !selectableAssets.isEmpty {
                 Button(action: toggleSelectAllVisible) {
                     Text(allVisibleSelected ? "Deselect" : "Select all")
-                        .font(.system(size: 11, weight: .semibold))
+                        .font(.cairnScaled(size: 11, weight: .semibold))
                         .foregroundStyle(t.textBody)
                         .padding(.horizontal, 10)
                         .frame(height: 32)
@@ -523,7 +523,7 @@ public struct RunDetailSheet: View {
     private var selectionCountRow: some View {
         HStack {
             Text(selectionCountLabel.uppercased())
-                .font(.system(size: 11, weight: .semibold))
+                .font(.cairnScaled(size: 11, weight: .semibold))
                 .tracking(0.9)
                 .foregroundStyle(t.textMuted)
             Spacer()
@@ -533,7 +533,7 @@ public struct RunDetailSheet: View {
                         .fill(t.textMuted)
                         .frame(width: 5, height: 5)
                     Text("IN TRASH")
-                        .font(.system(size: 11, weight: .semibold))
+                        .font(.cairnScaled(size: 11, weight: .semibold))
                         .tracking(0.9)
                         .foregroundStyle(t.textMuted)
                 }
@@ -579,7 +579,7 @@ public struct RunDetailSheet: View {
             Group {
                 if filtered.isEmpty {
                     Text("No filename matches \"\(filter)\".")
-                        .font(.system(size: 13))
+                        .font(.cairnScaled(size: 13))
                         .foregroundStyle(t.textMuted)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 22)
@@ -604,7 +604,7 @@ public struct RunDetailSheet: View {
 
     private func sectionLabel(_ s: String) -> some View {
         Text(s.uppercased())
-            .font(.system(size: 11, weight: .semibold))
+            .font(.cairnScaled(size: 11, weight: .semibold))
             .tracking(0.9)
             .foregroundStyle(t.textMuted)
             .padding(.horizontal, 20)
@@ -639,13 +639,13 @@ public struct RunDetailSheet: View {
         CairnCard {
             VStack(alignment: .leading, spacing: 6) {
                 Text(run.tag ?? "none — this run did not tag the server")
-                    .font(.system(size: 12, design: .monospaced))
+                    .font(.cairnScaled(size: 12, design: .monospaced))
                     .foregroundStyle(t.textBody)
                     .lineSpacing(2)
                     .fixedSize(horizontal: false, vertical: true)
                 // from screens/run-detail.jsx — keep verbatim
                 Text("Find these in Immich's Tags view. Assets stay in Trash for 30 days.")
-                    .font(.system(size: 12))
+                    .font(.cairnScaled(size: 12))
                     .foregroundStyle(t.textMuted)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -685,7 +685,7 @@ public struct RunDetailSheet: View {
             HStack(spacing: 10) {
                 Button(action: onClose) {
                     Text("Close")
-                        .font(.system(size: 16, weight: .semibold))
+                        .font(.cairnScaled(size: 16, weight: .semibold))
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 12)
                         .foregroundStyle(t.textBody)
@@ -696,7 +696,7 @@ public struct RunDetailSheet: View {
                 .frame(maxWidth: .infinity)
 
                 Text("Select assets to act on them")
-                    .font(.system(size: 13))
+                    .font(.cairnScaled(size: 13))
                     .foregroundStyle(t.textMuted)
                     .frame(maxWidth: .infinity, minHeight: 44)
             }
@@ -707,7 +707,7 @@ public struct RunDetailSheet: View {
         } else {
             Button(action: onClose) {
                 Text("Close")
-                    .font(.system(size: 16, weight: .semibold))
+                    .font(.cairnScaled(size: 16, weight: .semibold))
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 12)
                     .foregroundStyle(t.textBody)
@@ -848,7 +848,7 @@ private struct AssetTile: View {
                         ZStack {
                             Circle().fill(t.primary).frame(width: 18, height: 18)
                             Image(systemName: "checkmark")
-                                .font(.system(size: 10, weight: .bold))
+                                .font(.cairnScaled(size: 10, weight: .bold))
                                 .foregroundStyle(t.primaryInk)
                         }
                         .padding(4)
@@ -856,7 +856,7 @@ private struct AssetTile: View {
                         ZStack {
                             Circle().fill(t.verifiedSoft).frame(width: 18, height: 18)
                             Image(systemName: "arrow.uturn.backward")
-                                .font(.system(size: 9, weight: .bold))
+                                .font(.cairnScaled(size: 9, weight: .bold))
                                 .foregroundStyle(t.verifiedInk)
                         }
                         .padding(4)
@@ -868,7 +868,7 @@ private struct AssetTile: View {
                         ZStack {
                             Circle().fill(t.infoSoft).frame(width: 18, height: 18)
                             Image(systemName: "shield.fill")
-                                .font(.system(size: 9, weight: .bold))
+                                .font(.cairnScaled(size: 9, weight: .bold))
                                 .foregroundStyle(t.infoInk)
                         }
                         .padding(4)
@@ -876,7 +876,7 @@ private struct AssetTile: View {
                     }
                 }
                 Text(stripExtension(asset.name))
-                    .font(.system(size: 9.5, design: .monospaced))
+                    .font(.cairnScaled(size: 9.5, design: .monospaced))
                     .foregroundStyle(captionColor)
                     .tracking(0.1)
                     .lineLimit(1)
@@ -966,7 +966,7 @@ private struct SelectionActionBar: View {
         HStack(spacing: 8) {
             // Selection count pill
             Text("\(selectedCount) selected")
-                .font(.system(size: 12, weight: .semibold))
+                .font(.cairnScaled(size: 12, weight: .semibold))
                 .foregroundStyle(t.primaryInk)
                 .padding(.horizontal, 9)
                 .padding(.vertical, 3)
@@ -979,7 +979,7 @@ private struct SelectionActionBar: View {
                 HStack(spacing: 5) {
                     Circle().fill(t.infoInk).frame(width: 5, height: 5)
                     Text("+\(pairedCount) paired video\(pairedCount == 1 ? "" : "s") = \(expandedCount)")
-                        .font(.system(size: 11, weight: .medium))
+                        .font(.cairnScaled(size: 11, weight: .medium))
                 }
                 .foregroundStyle(t.infoInk)
                 .padding(.horizontal, 8)
@@ -989,7 +989,7 @@ private struct SelectionActionBar: View {
             }
 
             Button("Clear", action: onClear)
-                .font(.system(size: 12))
+                .font(.cairnScaled(size: 12))
                 .foregroundStyle(t.textMuted)
                 .buttonStyle(.plain)
 
@@ -1036,9 +1036,9 @@ private struct ActionButton: View {
         Button(action: action) {
             VStack(spacing: 4) {
                 Image(systemName: icon)
-                    .font(.system(size: 18, weight: .semibold))
+                    .font(.cairnScaled(size: 18, weight: .semibold))
                 Text(label)
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.cairnScaled(size: 11, weight: .semibold))
                     .tracking(0.2)
             }
             .frame(maxWidth: .infinity)
@@ -1074,10 +1074,10 @@ private struct MetaChip: View {
         HStack(spacing: 4) {
             if let icon {
                 Image(systemName: icon)
-                    .font(.system(size: 10, weight: .semibold))
+                    .font(.cairnScaled(size: 10, weight: .semibold))
             }
             Text(label)
-                .font(.system(size: 11, weight: .semibold, design: mono ? .monospaced : .default))
+                .font(.cairnScaled(size: 11, weight: .semibold, design: mono ? .monospaced : .default))
         }
         .foregroundStyle(ink)
         .padding(.horizontal, 8)

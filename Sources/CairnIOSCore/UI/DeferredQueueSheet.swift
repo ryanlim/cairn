@@ -39,9 +39,9 @@ public struct DeferredQueueSheet: View {
                     Button(action: onClose) {
                         HStack(spacing: 4) {
                             Image(systemName: "chevron.left")
-                                .font(.system(size: 13, weight: .semibold))
+                                .font(.cairnScaled(size: 13, weight: .semibold))
                             Text("Status")
-                                .font(.system(size: 15))
+                                .font(.cairnScaled(size: 15))
                         }
                         .foregroundStyle(t.textBody)
                         .padding(.vertical, 4)
@@ -61,7 +61,7 @@ public struct DeferredQueueSheet: View {
                     if !queued.isEmpty {
                         KeylineSection("Queued") {
                             Text("\(queued.count)")
-                                .font(.system(size: 11, weight: .semibold))
+                                .font(.cairnScaled(size: 11, weight: .semibold))
                                 .tracking(0.99)
                                 .foregroundStyle(t.textMuted)
                                 .monospacedDigit()
@@ -80,7 +80,7 @@ public struct DeferredQueueSheet: View {
                     if !aboveCap.isEmpty {
                         KeylineSection("Above size cap") {
                             Text("\(aboveCap.count)")
-                                .font(.system(size: 11, weight: .semibold))
+                                .font(.cairnScaled(size: 11, weight: .semibold))
                                 .tracking(0.99)
                                 .foregroundStyle(t.textMuted)
                                 .monospacedDigit()
@@ -102,11 +102,11 @@ public struct DeferredQueueSheet: View {
                         ZStack {
                             Circle().fill(t.verifiedSoft).frame(width: 56, height: 56)
                             Image(systemName: "checkmark")
-                                .font(.system(size: 24, weight: .semibold))
+                                .font(.cairnScaled(size: 24, weight: .semibold))
                                 .foregroundStyle(t.verifiedInk)
                         }
                         Text("Queue is empty")
-                            .font(.system(size: 17, weight: .semibold))
+                            .font(.cairnScaled(size: 17, weight: .semibold))
                             .foregroundStyle(t.text)
                     }
                     .frame(maxWidth: .infinity)
@@ -129,7 +129,7 @@ public struct DeferredQueueSheet: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(entry.filename)
-                    .font(.system(size: 13, design: .monospaced))
+                    .font(.cairnScaled(size: 13, design: .monospaced))
                     .tracking(-0.065)
                     .foregroundStyle(t.text)
                     .lineLimit(1)
@@ -142,7 +142,7 @@ public struct DeferredQueueSheet: View {
                         Text(formatBytes(size))
                     }
                 }
-                .font(.system(size: 11.5))
+                .font(.cairnScaled(size: 11.5))
                 .foregroundStyle(t.textMuted)
                 .lineLimit(1)
             }

@@ -435,10 +435,10 @@ public struct SettingsScreen: View {
     private var excludedValue: some View {
         HStack(spacing: 6) {
             Text(excludedCount > 0 ? "\(excludedCount) protected" : "None")
-                .font(.system(size: 15))
+                .font(.cairnScaled(size: 15))
                 .foregroundStyle(excludedCount > 0 ? t.infoInk : t.textMuted)
             Image(systemName: "chevron.right")
-                .font(.system(size: 12, weight: .semibold))
+                .font(.cairnScaled(size: 12, weight: .semibold))
                 .foregroundStyle(t.textHint)
         }
     }
@@ -471,10 +471,10 @@ public struct SettingsScreen: View {
             Text(count == 0
                  ? "Pick at least one"
                  : "\(count) album\(count == 1 ? "" : "s")")
-                .font(.system(size: 15))
+                .font(.cairnScaled(size: 15))
                 .foregroundStyle(count > 0 ? t.infoInk : t.pendingInk)
             Image(systemName: "chevron.right")
-                .font(.system(size: 12, weight: .semibold))
+                .font(.cairnScaled(size: 12, weight: .semibold))
                 .foregroundStyle(t.textHint)
         }
     }
@@ -623,13 +623,13 @@ public struct SettingsScreen: View {
                             Text(howItWorksExpanded
                                  ? "Hide server-side details"
                                  : "What cairn does on your Immich server")
-                                .font(.system(size: 15))
+                                .font(.cairnScaled(size: 15))
                                 .foregroundStyle(t.textBody)
                                 .multilineTextAlignment(.leading)
                                 .fixedSize(horizontal: false, vertical: true)
                             Spacer(minLength: 12)
                             Image(systemName: howItWorksExpanded ? "chevron.up" : "chevron.down")
-                                .font(.system(size: 12, weight: .semibold))
+                                .font(.cairnScaled(size: 12, weight: .semibold))
                                 .foregroundStyle(t.textHint)
                         }
                         .padding(.horizontal, 14)
@@ -674,18 +674,18 @@ public struct SettingsScreen: View {
             howItWorksParagraph(
                 title: "Trash flow",
                 body: Text("When you confirm a sync, ") + .cairnWord + Text(" does the following on your Immich server, in order:\n\n1. Upserts a tag named ")
-                    + Text("cairn/v1/run/<run-id>").font(.system(size: 12, design: .monospaced)).foregroundStyle(t.text)
+                    + Text("cairn/v1/run/<run-id>").font(.cairnScaled(size: 12, design: .monospaced)).foregroundStyle(t.text)
                     + Text(" where ")
-                    + Text("<run-id>").font(.system(size: 12, design: .monospaced)).foregroundStyle(t.text)
+                    + Text("<run-id>").font(.cairnScaled(size: 12, design: .monospaced)).foregroundStyle(t.text)
                     + Text(" is an ISO-8601 timestamp plus a short device id.\n2. Applies that tag to every affected asset (stills + paired Live Photo motion videos).\n3. Calls ")
-                    + Text("DELETE /api/assets {force: false}").font(.system(size: 12, design: .monospaced)).foregroundStyle(t.text)
+                    + Text("DELETE /api/assets {force: false}").font(.cairnScaled(size: 12, design: .monospaced)).foregroundStyle(t.text)
                     + Text(" — the asset moves to Immich's Trash folder, which retains it for 30 days.")
             )
             howItWorksParagraph(
                 title: "Undoing a cairn run",
                 body: Text("After a sync has run, the Runs tab can restore any past run via ")
-                    + Text("POST /api/trash/restore/assets").font(.system(size: 12, design: .monospaced)).foregroundStyle(t.text)
-                    + Text(". The ") + Text("cairn/v1/run/…").font(.system(size: 12, design: .monospaced)).foregroundStyle(t.text) + Text(" tag stays on the asset — it's a breadcrumb, not a state flag — so you can always find what a given run touched via Immich's Tags view.")
+                    + Text("POST /api/trash/restore/assets").font(.cairnScaled(size: 12, design: .monospaced)).foregroundStyle(t.text)
+                    + Text(". The ") + Text("cairn/v1/run/…").font(.cairnScaled(size: 12, design: .monospaced)).foregroundStyle(t.text) + Text(" tag stays on the asset — it's a breadcrumb, not a state flag — so you can always find what a given run touched via Immich's Tags view.")
             )
             howItWorksParagraph(
                 title: "Nothing is permanent",
@@ -694,12 +694,12 @@ public struct SettingsScreen: View {
             howItWorksParagraph(
                 title: "Local journal",
                 body: Text("Every step is also written to an append-only ")
-                    + Text("deletion-journal.jsonl").font(.system(size: 12, design: .monospaced)).foregroundStyle(t.text)
+                    + Text("deletion-journal.jsonl").font(.cairnScaled(size: 12, design: .monospaced)).foregroundStyle(t.text)
                     + Text(" on this device. The Runs tab renders that file; Settings → Danger zone → Clear journal deletes it.")
             )
             howItWorksParagraph(
                 title: "Where to inspect on Immich",
-                body: Text("Open the Immich web UI → Tags. Every ") + Text("cairn/v1/run/…").font(.system(size: 12, design: .monospaced)).foregroundStyle(t.text) + Text(" tag shows its assets. The Trash view shows everything still recoverable.")
+                body: Text("Open the Immich web UI → Tags. Every ") + Text("cairn/v1/run/…").font(.cairnScaled(size: 12, design: .monospaced)).foregroundStyle(t.text) + Text(" tag shows its assets. The Trash view shows everything still recoverable.")
             )
         }
         .padding(.horizontal, 14)
@@ -709,12 +709,12 @@ public struct SettingsScreen: View {
     private func howItWorksParagraph(title: String, body: Text) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title)
-                .font(.system(size: 12, weight: .semibold))
+                .font(.cairnScaled(size: 12, weight: .semibold))
                 .tracking(0.4)
                 .foregroundStyle(t.textMuted)
                 .textCase(.uppercase)
             body
-                .font(.system(size: 13))
+                .font(.cairnScaled(size: 13))
                 .foregroundStyle(t.textBody)
                 .lineSpacing(3)
                 .fixedSize(horizontal: false, vertical: true)
@@ -733,11 +733,11 @@ public struct SettingsScreen: View {
                     } label: {
                         HStack(spacing: 8) {
                             Text(advancedExpanded ? "Hide advanced settings" : "Show advanced settings")
-                                .font(.system(size: 15))
+                                .font(.cairnScaled(size: 15))
                                 .foregroundStyle(t.textBody)
                             Spacer(minLength: 12)
                             Image(systemName: advancedExpanded ? "chevron.up" : "chevron.down")
-                                .font(.system(size: 12, weight: .semibold))
+                                .font(.cairnScaled(size: 12, weight: .semibold))
                                 .foregroundStyle(t.textHint)
                         }
                         .padding(.horizontal, 14)
@@ -918,7 +918,7 @@ public struct SettingsScreen: View {
             Text.cairnWord + Text(" \(AboutInfo.versionLabel) · not affiliated with Immich")
             Text("MIT · open source · privacy")
         }
-        .font(.system(size: 11))
+        .font(.cairnScaled(size: 11))
         .foregroundStyle(t.textHint)
         .frame(maxWidth: .infinity)
         .padding(.horizontal, 28)
@@ -962,9 +962,9 @@ struct AboutSheet: View {
                         CairnMark(size: 64)
                         VStack(spacing: 4) {
                             Text.cairnWord
-                                .font(.system(size: 28, weight: .semibold))
+                                .font(.cairnScaled(size: 28, weight: .semibold))
                             Text(AboutInfo.versionLabel)
-                                .font(.system(size: 14, design: .monospaced))
+                                .font(.cairnScaled(size: 14, design: .monospaced))
                                 .foregroundStyle(t.textHint)
                         }
                     }
@@ -982,11 +982,11 @@ struct AboutSheet: View {
 
                     VStack(alignment: .leading, spacing: 8) {
                         Text("cairn propagates iPhone Photos deletions to a self-hosted Immich server. Not affiliated with Immich.")
-                            .font(.system(size: 13))
+                            .font(.cairnScaled(size: 13))
                             .foregroundStyle(t.textBody)
                             .fixedSize(horizontal: false, vertical: true)
                         Text("MIT-licensed · open source.")
-                            .font(.system(size: 12))
+                            .font(.cairnScaled(size: 12))
                             .foregroundStyle(t.textHint)
                     }
                     .padding(.horizontal, 16)
@@ -1020,7 +1020,7 @@ private struct ConnectionPill: View {
         HStack(spacing: 6) {
             Circle().fill(dotColor).frame(width: 6, height: 6)
             Text(label)
-                .font(.system(size: 13))
+                .font(.cairnScaled(size: 13))
                 .foregroundStyle(inkColor)
         }
     }
@@ -1088,7 +1088,7 @@ private struct IndexingScopeRow: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text("Indexing scope")
-                    .font(.system(size: 15))
+                    .font(.cairnScaled(size: 15))
                     .foregroundStyle(t.textBody)
                 HelpPopover {
                     Text("**Full library** — cairn watches every visible photo on this iPhone. The default.")
@@ -1105,7 +1105,7 @@ private struct IndexingScopeRow: View {
                 ]
             )
             Text(explanation)
-                .font(.system(size: 12))
+                .font(.cairnScaled(size: 12))
                 .foregroundStyle(t.textMuted)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -1134,7 +1134,7 @@ private struct StrictnessRow: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text("Deletion strictness")
-                    .font(.system(size: 15))
+                    .font(.cairnScaled(size: 15))
                     .foregroundStyle(t.textBody)
                 HelpPopover {
                     Text("**Strict** requires a positive deletion signal before trashing. Ambiguous candidates go to Pending Review.")
@@ -1152,7 +1152,7 @@ private struct StrictnessRow: View {
                 ]
             )
             Text(explanation)
-                .font(.system(size: 12))
+                .font(.cairnScaled(size: 12))
                 .foregroundStyle(strictness == .autonomous ? t.dangerInk : t.textMuted)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -1478,7 +1478,7 @@ private struct HardCeilingRow: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline) {
                 Text("Never-touch ceiling")
-                    .font(.system(size: 15))
+                    .font(.cairnScaled(size: 15))
                     .foregroundStyle(t.textBody)
                 HelpPopover {
                     Text("**Hard skip threshold.** Assets with an iCloud download above this are ignored entirely — never hashed, even in background slots.")
@@ -1492,7 +1492,7 @@ private struct HardCeilingRow: View {
             }
             if mb != nil {
                 Text("Assets whose iCloud fetch would exceed this are out-of-scope — never indexed, never proposed for deletion.")
-                    .font(.system(size: 12))
+                    .font(.cairnScaled(size: 12))
                     .foregroundStyle(t.textMuted)
                     .fixedSize(horizontal: false, vertical: true)
                 Slider(
@@ -1514,7 +1514,7 @@ private struct HardCeilingRow: View {
                 }
             } else {
                 Text("Off. Every asset is eligible to hash, however large.")
-                    .font(.system(size: 12))
+                    .font(.cairnScaled(size: 12))
                     .foregroundStyle(t.textMuted)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -1582,7 +1582,7 @@ private struct AppearanceRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Color scheme")
-                .font(.system(size: 15))
+                .font(.cairnScaled(size: 15))
                 .foregroundStyle(t.textBody)
             CairnSegmentedPicker(
                 selection: $appearance,
@@ -1593,7 +1593,7 @@ private struct AppearanceRow: View {
                 ]
             )
             Text(explanation)
-                .font(.system(size: 12))
+                .font(.cairnScaled(size: 12))
                 .foregroundStyle(t.textMuted)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -1624,7 +1624,7 @@ private struct TimeFormatRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Time format")
-                .font(.system(size: 15))
+                .font(.cairnScaled(size: 15))
                 .foregroundStyle(t.textBody)
             CairnSegmentedPicker(
                 selection: $format,
@@ -1635,7 +1635,7 @@ private struct TimeFormatRow: View {
                 ]
             )
             Text(explanation)
-                .font(.system(size: 12))
+                .font(.cairnScaled(size: 12))
                 .foregroundStyle(t.textMuted)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -1669,7 +1669,7 @@ private struct DeferredQueueRow: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline) {
                 Text("Deferred hashing")
-                    .font(.system(size: 15))
+                    .font(.cairnScaled(size: 15))
                     .foregroundStyle(t.textBody)
                 HelpPopover {
                     Text("Assets skipped by the foreground iCloud-download limit wait here until they can be hashed without blocking you.")
@@ -1696,11 +1696,11 @@ private struct DeferredQueueRow: View {
                 HStack(alignment: .center) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("\(summary.count) \(summary.count == 1 ? "asset" : "assets") queued")
-                            .font(.system(size: 14).monospacedDigit())
+                            .font(.cairnScaled(size: 14).monospacedDigit())
                             .foregroundStyle(t.textBody)
                         if summary.totalKnownBytes > 0 {
                             Text("\(formatBytes(summary.totalKnownBytes)) to fetch")
-                                .font(.system(size: 12))
+                                .font(.cairnScaled(size: 12))
                                 .foregroundStyle(t.textMuted)
                         }
                     }
@@ -1709,7 +1709,7 @@ private struct DeferredQueueRow: View {
                 }
             } else {
                 Text("Everything indexed. No assets queued for background hashing.")
-                    .font(.system(size: 12))
+                    .font(.cairnScaled(size: 12))
                     .foregroundStyle(t.textMuted)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -1733,10 +1733,10 @@ private struct DeferredQueueRow: View {
                         .controlSize(.small)
                         .tint(t.primaryInk)
                     Text(syncLabel)
-                        .font(.system(size: 13, weight: .semibold).monospacedDigit())
+                        .font(.cairnScaled(size: 13, weight: .semibold).monospacedDigit())
                 } else {
                     Text("Hash now")
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.cairnScaled(size: 13, weight: .semibold))
                 }
             }
             .foregroundStyle(t.primaryInk)
@@ -1794,12 +1794,12 @@ public struct ApiKeyRow: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text("API key")
-                    .font(.system(size: 15))
+                    .font(.cairnScaled(size: 15))
                     .foregroundStyle(t.textBody)
                 Spacer()
                 Button(action: toggleReveal) {
                     Text(revealed ? "Hide" : "Reveal")
-                        .font(.system(size: 12, weight: .medium))
+                        .font(.cairnScaled(size: 12, weight: .medium))
                         .foregroundStyle(revealed ? t.dangerInk : t.infoInk)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 8)
@@ -1810,7 +1810,7 @@ public struct ApiKeyRow: View {
                 .accessibilityLabel(revealed ? "Hide API key" : "Reveal API key")
                 Button(action: copyKey) {
                     Text(copied ? "Copied \u{2713}" : "Copy")
-                        .font(.system(size: 12, weight: .medium))
+                        .font(.cairnScaled(size: 12, weight: .medium))
                         .foregroundStyle(copied ? t.verifiedInk : t.textMuted)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 8)
@@ -1821,7 +1821,7 @@ public struct ApiKeyRow: View {
                 .accessibilityLabel("Copy API key")
             }
             Text(revealed ? rawKey : masked)
-                .font(.system(size: 13, design: .monospaced).monospacedDigit())
+                .font(.cairnScaled(size: 13, design: .monospaced).monospacedDigit())
                 .tracking(revealed ? 0 : 0.5)
                 .foregroundStyle(revealed ? t.text : t.textMuted)
                 .lineLimit(nil)
@@ -1838,9 +1838,9 @@ public struct ApiKeyRow: View {
                 .animation(reduceMotion ? .none : .easeInOut(duration: 0.16), value: revealed)
             if revealed {
                 HStack(spacing: 5) {
-                    Text("\u{26A0}").font(.system(size: 10))
+                    Text("\u{26A0}").font(.cairnScaled(size: 10))
                     Text("Hiding automatically in a few seconds. Keep it secret. Keep it safe.")
-                        .font(.system(size: 11))
+                        .font(.cairnScaled(size: 11))
                 }
                 .foregroundStyle(t.dangerInk)
             }

@@ -262,12 +262,12 @@ public struct PendingReviewScreen: View {
                         )
                         if let name = zoomed.originalFileName {
                             Text(name)
-                                .font(.system(size: 14, design: .monospaced))
+                                .font(.cairnScaled(size: 14, design: .monospaced))
                                 .foregroundStyle(.white)
                         }
                         if let createdAt = zoomed.fileCreatedAt {
                             Text(createdAt, format: .dateTime)
-                                .font(.system(size: 12))
+                                .font(.cairnScaled(size: 12))
                                 .foregroundStyle(.white.opacity(0.6))
                         }
                     }
@@ -307,7 +307,7 @@ public struct PendingReviewScreen: View {
                 if selectionMode {
                     Button(action: exitSelectionMode) {
                         Text("Cancel")
-                            .font(.system(size: 15))
+                            .font(.cairnScaled(size: 15))
                             .foregroundStyle(t.textBody)
                             .padding(.vertical, 4)
                             .contentShape(Rectangle())
@@ -317,9 +317,9 @@ public struct PendingReviewScreen: View {
                     Button(action: onBack) {
                         HStack(spacing: 4) {
                             Image(systemName: "chevron.left")
-                                .font(.system(size: 13, weight: .semibold))
+                                .font(.cairnScaled(size: 13, weight: .semibold))
                             Text("Status")
-                                .font(.system(size: 15))
+                                .font(.cairnScaled(size: 15))
                         }
                         .foregroundStyle(t.textBody)
                         .padding(.vertical, 4)
@@ -333,7 +333,7 @@ public struct PendingReviewScreen: View {
                     if selectionMode {
                         Button(action: toggleSelectAll) {
                             Text(allSelected ? "None" : "All")
-                                .font(.system(size: 13, weight: .semibold))
+                                .font(.cairnScaled(size: 13, weight: .semibold))
                                 .tracking(0.66)
                                 .foregroundStyle(t.textBody)
                         }
@@ -341,7 +341,7 @@ public struct PendingReviewScreen: View {
                     } else {
                         Button(action: enterSelectionMode) {
                             Text("Select")
-                                .font(.system(size: 13, weight: .semibold))
+                                .font(.cairnScaled(size: 13, weight: .semibold))
                                 .tracking(0.66)
                                 .foregroundStyle(t.textBody)
                         }
@@ -465,7 +465,7 @@ public struct PendingReviewScreen: View {
     private func bulkChip(label: String, foreground: Color, disabled: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(label)
-                .font(.system(size: 14, weight: .semibold))
+                .font(.cairnScaled(size: 14, weight: .semibold))
                 .foregroundStyle(disabled ? t.textHint : foreground)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 12)
@@ -497,9 +497,9 @@ public struct PendingReviewScreen: View {
         Button(action: { pendingAction = .trashAll(count: totalVersionCount) }) {
             HStack(spacing: 8) {
                 Image(systemName: "trash")
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(.cairnScaled(size: 14, weight: .semibold))
                 Text("Trash all \(totalVersionCount) now")
-                    .font(.system(size: 15, weight: .semibold))
+                    .font(.cairnScaled(size: 15, weight: .semibold))
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 12)
@@ -521,18 +521,18 @@ public struct PendingReviewScreen: View {
                     .fill(t.verifiedSoft)
                     .frame(width: 56, height: 56)
                 Image(systemName: "checkmark")
-                    .font(.system(size: 24, weight: .semibold))
+                    .font(.cairnScaled(size: 24, weight: .semibold))
                     .foregroundStyle(t.verifiedInk)
             }
             .padding(.bottom, 14)
 
             Text("Nothing to review")
-                .font(.system(size: 17, weight: .semibold))
+                .font(.cairnScaled(size: 17, weight: .semibold))
                 .foregroundStyle(t.text)
                 .padding(.bottom, 6)
 
             Text("Recent deletions are either ready to move to Immich's Trash or still inside the quarantine window. Anything that needs your input will show up here.")
-                .font(.system(size: 13))
+                .font(.cairnScaled(size: 13))
                 .foregroundStyle(t.textMuted)
                 .multilineTextAlignment(.center)
                 .lineSpacing(2)
@@ -621,7 +621,7 @@ public struct PendingReviewScreen: View {
             let isSelected = isSectionFullySelected(groups)
             Button(action: { toggleSectionSelection(groups) }) {
                 Text(isSelected ? "Deselect all" : "Select all")
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.cairnScaled(size: 11, weight: .semibold))
                     .tracking(0.4)
                     .foregroundStyle(t.accent)
             }
@@ -635,7 +635,7 @@ public struct PendingReviewScreen: View {
                 HStack(spacing: 12) {
                     sectionSelectAllButton(for: heldGroups)
                     Text("\(heldGroups.count)")
-                        .font(.system(size: 11, weight: .semibold))
+                        .font(.cairnScaled(size: 11, weight: .semibold))
                         .tracking(0.99)
                         .foregroundStyle(t.textMuted)
                         .monospacedDigit()
@@ -661,7 +661,7 @@ public struct PendingReviewScreen: View {
                 HStack(spacing: 12) {
                     sectionSelectAllButton(for: unconfirmedGroups)
                     Text("\(unconfirmedGroups.count)")
-                        .font(.system(size: 11, weight: .semibold))
+                        .font(.cairnScaled(size: 11, weight: .semibold))
                         .tracking(0.99)
                         .foregroundStyle(t.textMuted)
                         .monospacedDigit()
@@ -1145,7 +1145,7 @@ private struct PendingReviewGroupRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(displayName)
-                        .font(.system(size: 13, design: .monospaced))
+                        .font(.cairnScaled(size: 13, design: .monospaced))
                         .tracking(-0.065)
                         .foregroundStyle(t.text)
                         .lineLimit(1)
@@ -1162,7 +1162,7 @@ private struct PendingReviewGroupRow: View {
                         Text(countdown)
                     }
                 }
-                .font(.system(size: 11.5))
+                .font(.cairnScaled(size: 11.5))
                 .foregroundStyle(t.textMuted)
                 .lineLimit(1)
             }
@@ -1190,7 +1190,7 @@ private struct PendingReviewGroupRow: View {
                             action: onExclude
                         )
                         Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                            .font(.system(size: 12, weight: .semibold))
+                            .font(.cairnScaled(size: 12, weight: .semibold))
                             .foregroundStyle(t.textMuted)
                             .frame(width: 32, height: 28)
                     }
@@ -1236,7 +1236,7 @@ private struct PendingReviewGroupRow: View {
 
     private var versionsPill: some View {
         Text("\(group.versions.count) versions")
-            .font(.system(size: 10, weight: .semibold))
+            .font(.cairnScaled(size: 10, weight: .semibold))
             .tracking(0.55)
             .foregroundStyle(t.textBody)
             .padding(.horizontal, 6)
@@ -1257,7 +1257,7 @@ private struct PendingReviewGroupRow: View {
                 .frame(width: 22, height: 22)
             if isSelected {
                 Image(systemName: "checkmark")
-                    .font(.system(size: 11, weight: .bold))
+                    .font(.cairnScaled(size: 11, weight: .bold))
                     .foregroundStyle(.white)
             }
         }
@@ -1314,7 +1314,7 @@ private struct PendingReviewVersionRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(checksumPrefix)
-                        .font(.system(size: 11, design: .monospaced))
+                        .font(.cairnScaled(size: 11, design: .monospaced))
                         .foregroundStyle(t.textMuted)
                     if let label {
                         labelPill(label)
@@ -1322,7 +1322,7 @@ private struct PendingReviewVersionRow: View {
                 }
                 if let countdown {
                     Text(countdown)
-                        .font(.system(size: 11))
+                        .font(.cairnScaled(size: 11))
                         .foregroundStyle(t.textMuted)
                         .lineLimit(1)
                 }
@@ -1383,7 +1383,7 @@ private struct PendingReviewVersionRow: View {
             }
         }()
         Text(label.text)
-            .font(.system(size: 10, weight: .semibold))
+            .font(.cairnScaled(size: 10, weight: .semibold))
             .tracking(0.55)
             .foregroundStyle(tone)
             .padding(.horizontal, 6)
@@ -1404,7 +1404,7 @@ private struct PendingReviewVersionRow: View {
                 .frame(width: 18, height: 18)
             if isSelected {
                 Image(systemName: "checkmark")
-                    .font(.system(size: 9, weight: .bold))
+                    .font(.cairnScaled(size: 9, weight: .bold))
                     .foregroundStyle(.white)
             }
         }
@@ -1433,7 +1433,7 @@ private struct RowIconButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: systemName)
-                .font(.system(size: 13, weight: .semibold))
+                .font(.cairnScaled(size: 13, weight: .semibold))
                 .foregroundStyle(foreground)
                 .frame(width: 32, height: 28)
                 .background(t.bg)

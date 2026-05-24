@@ -123,11 +123,11 @@ public struct DryRunSheet: View {
                     VStack(spacing: 12) {
                         ImmichAssetThumb(assetId: zoomed.assetId, filename: zoomed.name, size: 280, isLivePair: zoomed.isLivePair)
                         Text(zoomed.name)
-                            .font(.system(size: 14, design: .monospaced))
+                            .font(.cairnScaled(size: 14, design: .monospaced))
                             .foregroundStyle(.white)
                         if !zoomed.date.isEmpty {
                             Text(zoomed.date)
-                                .font(.system(size: 12))
+                                .font(.cairnScaled(size: 12))
                                 .foregroundStyle(.white.opacity(0.6))
                         }
                     }
@@ -160,7 +160,7 @@ public struct DryRunSheet: View {
                 Spacer()
                 Button(action: onClose) {
                     Image(systemName: "xmark")
-                        .font(.system(size: 14, weight: .semibold))
+                        .font(.cairnScaled(size: 14, weight: .semibold))
                         .foregroundStyle(t.textMuted)
                         .frame(width: 44, height: 44)
                         .contentShape(Rectangle())
@@ -169,12 +169,12 @@ public struct DryRunSheet: View {
                 .accessibilityLabel("Close")
             }
             Text(headerTitle)
-                .font(.system(size: 22, weight: .semibold))
+                .font(.cairnScaled(size: 22, weight: .semibold))
                 .tracking(-0.45)
                 .foregroundStyle(t.text)
                 .fixedSize(horizontal: false, vertical: true)
             Text(headerSubtitle)
-                .font(.system(size: 13))
+                .font(.cairnScaled(size: 13))
                 .foregroundStyle(t.textMuted)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -234,7 +234,7 @@ public struct DryRunSheet: View {
     private var sortStrip: some View {
         HStack {
             Text("\(candidates.count) PHOTOS · TAP TO ZOOM")
-                .font(.system(size: 11, weight: .semibold))
+                .font(.cairnScaled(size: 11, weight: .semibold))
                 .tracking(0.9)
                 .foregroundStyle(t.textHint)
             Spacer()
@@ -263,7 +263,7 @@ public struct DryRunSheet: View {
                             VStack(spacing: 4) {
                                 ImmichAssetThumb(assetId: c.assetId, filename: c.name, size: 76, isLivePair: c.isLivePair)
                                 Text(c.name.replacingOccurrences(of: ".HEIC", with: "").replacingOccurrences(of: ".MP4", with: ""))
-                                    .font(.system(size: 9.5, design: .monospaced))
+                                    .font(.cairnScaled(size: 9.5, design: .monospaced))
                                     .foregroundStyle(t.textMuted)
                                     .lineLimit(1)
                                     .truncationMode(.tail)
@@ -289,7 +289,7 @@ public struct DryRunSheet: View {
     private var safetyChecks: some View {
         VStack(alignment: .leading, spacing: 0) {
             Text("SAFETY CHECKS")
-                .font(.system(size: 11, weight: .semibold)).tracking(0.9)
+                .font(.cairnScaled(size: 11, weight: .semibold)).tracking(0.9)
                 .foregroundStyle(t.textHint)
                 .padding(.horizontal, 20)
                 .padding(.bottom, 8)
@@ -364,7 +364,7 @@ public struct DryRunSheet: View {
             Callout(.danger, icon: "exclamationmark.triangle") {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Confirm once more").fontWeight(.semibold)
-                    (Text.cairnWord + Text(" will tag ") + Text("cairn/v1/run/…").font(.system(size: 11.5, design: .monospaced))
+                    (Text.cairnWord + Text(" will tag ") + Text("cairn/v1/run/…").font(.cairnScaled(size: 11.5, design: .monospaced))
                         + Text(" then move \(candidates.count) asset\(candidates.count == 1 ? "" : "s") to Immich's Trash."))
                         .opacity(0.9).fixedSize(horizontal: false, vertical: true)
                 }
@@ -406,11 +406,11 @@ public struct DryRunSheet: View {
                 ProgressView().tint(t.textBody)
             }
             Text("Tagging and moving to Trash")
-                .font(.system(size: 20, weight: .semibold))
+                .font(.cairnScaled(size: 20, weight: .semibold))
                 .tracking(-0.3)
                 .foregroundStyle(t.text)
             Text("Writing breadcrumb · \(candidates.count) assets")
-                .font(.system(size: 13))
+                .font(.cairnScaled(size: 13))
                 .foregroundStyle(t.textMuted)
         }
     }
@@ -421,15 +421,15 @@ public struct DryRunSheet: View {
                 Circle().fill(t.verifiedSoft)
                     .frame(width: 48, height: 48)
                 Image(systemName: "checkmark")
-                    .font(.system(size: 22, weight: .semibold))
+                    .font(.cairnScaled(size: 22, weight: .semibold))
                     .foregroundStyle(t.verifiedInk)
             }
             Text("\(candidates.count) moved to Trash")
-                .font(.system(size: 20, weight: .semibold))
+                .font(.cairnScaled(size: 20, weight: .semibold))
                 .tracking(-0.3)
                 .foregroundStyle(t.text)
-            (Text("Tagged ") + Text("cairn/v1/run/…").font(.system(size: 11.5, design: .monospaced)) + Text(". Recoverable in Immich's Trash for 30 days."))
-                .font(.system(size: 13))
+            (Text("Tagged ") + Text("cairn/v1/run/…").font(.cairnScaled(size: 11.5, design: .monospaced)) + Text(". Recoverable in Immich's Trash for 30 days."))
+                .font(.cairnScaled(size: 13))
                 .foregroundStyle(t.textMuted)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 280)
@@ -463,7 +463,7 @@ private struct ModeChip: View {
             return ("Live · moves to Trash", t.dangerSoft.mix(with: t.danger, amount: 0.30), t.dangerInk)
         }()
         return Text(label.uppercased())
-            .font(.system(size: 10, weight: .semibold))
+            .font(.cairnScaled(size: 10, weight: .semibold))
             .tracking(0.9)
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
@@ -486,15 +486,15 @@ private struct MiniStat: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(label.uppercased())
-                .font(.system(size: 10, weight: .semibold))
+                .font(.cairnScaled(size: 10, weight: .semibold))
                 .tracking(0.9)
                 .foregroundStyle(t.textHint)
             Text(value)
-                .font(.system(size: 18, weight: .semibold).monospacedDigit())
+                .font(.cairnScaled(size: 18, weight: .semibold).monospacedDigit())
                 .foregroundStyle(tone == .danger ? t.dangerInk : t.text)
             if let sub {
                 Text(sub)
-                    .font(.system(size: 11))
+                    .font(.cairnScaled(size: 11))
                     .foregroundStyle(t.textMuted)
             }
         }
@@ -512,7 +512,7 @@ private struct SegBtn: View {
     var body: some View {
         Button(action: action) {
             Text(label)
-                .font(.system(size: 12, weight: .medium))
+                .font(.cairnScaled(size: 12, weight: .medium))
                 .padding(.horizontal, 10)
                 .padding(.vertical, 5)
                 .foregroundStyle(active ? t.text : t.textMuted)
@@ -533,9 +533,9 @@ private struct CheckRow: View {
         HStack(spacing: 12) {
             Image(systemName: pass ? "checkmark.circle.fill" : "xmark.octagon.fill")
                 .foregroundStyle(pass ? t.verifiedInk : t.dangerInk)
-                .font(.system(size: 14))
+                .font(.cairnScaled(size: 14))
             Text(label)
-                .font(.system(size: 14))
+                .font(.cairnScaled(size: 14))
                 .foregroundStyle(t.textBody)
             Spacer()
         }
@@ -559,10 +559,10 @@ private struct ActionButton: View {
             HStack(spacing: 8) {
                 if let icon {
                     Image(systemName: icon)
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.cairnScaled(size: 13, weight: .semibold))
                 }
                 Text(label)
-                    .font(.system(size: 15, weight: .semibold))
+                    .font(.cairnScaled(size: 15, weight: .semibold))
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 12)

@@ -62,7 +62,7 @@ public struct SyncDetailSheet: View {
                     if isSyncing {
                         Button(action: onCancel) {
                             Text("Cancel sync")
-                                .font(.system(size: 14, weight: .medium))
+                                .font(.cairnScaled(size: 14, weight: .medium))
                                 .frame(maxWidth: .infinity)
                                 .padding(.vertical, 14)
                                 .foregroundStyle(t.dangerInk)
@@ -89,16 +89,16 @@ public struct SyncDetailSheet: View {
             Spacer()
             VStack(spacing: 1) {
                 Text("Sync detail")
-                    .font(.system(size: 15, weight: .semibold))
+                    .font(.cairnScaled(size: 15, weight: .semibold))
                     .foregroundStyle(t.text)
                 Text(headerSubtitle)
-                    .font(.system(size: 11))
+                    .font(.cairnScaled(size: 11))
                     .foregroundStyle(t.textMuted)
                     .monospacedDigit()
             }
             Spacer()
             Button("Close", action: onClose)
-                .font(.system(size: 15))
+                .font(.cairnScaled(size: 15))
                 .foregroundStyle(t.textBody)
                 .frame(width: 60, alignment: .trailing)
         }
@@ -129,17 +129,17 @@ public struct SyncDetailSheet: View {
                             .fill(isSyncing ? t.pendingInk : t.textHint)
                             .frame(width: 8, height: 8)
                         Text(phase.displayName)
-                            .font(.system(size: 16, weight: .semibold))
+                            .font(.cairnScaled(size: 16, weight: .semibold))
                             .foregroundStyle(t.text)
                         Spacer(minLength: 8)
                         Text(elapsedLabel(at: context.date))
-                            .font(.system(size: 13, design: .monospaced))
+                            .font(.cairnScaled(size: 13, design: .monospaced))
                             .foregroundStyle(t.textMuted)
                     }
                     if let progress, progress.total > 0, isSyncing && phase == .hashing {
                         progressBar(fraction: min(1.0, Double(progress.hashed) / Double(progress.total)))
                         Text("\(progress.hashed.formatted(.number)) / \(progress.total.formatted(.number)) hashed")
-                            .font(.system(size: 12, design: .monospaced))
+                            .font(.cairnScaled(size: 12, design: .monospaced))
                             .foregroundStyle(t.textMuted)
                     }
                 }
@@ -216,11 +216,11 @@ public struct SyncDetailSheet: View {
             timelineGlyph(for: row)
                 .frame(width: 22)
             Text(row.phase.displayName)
-                .font(.system(size: 13))
+                .font(.cairnScaled(size: 13))
                 .foregroundStyle(rowTextColor(for: row))
             Spacer(minLength: 8)
             Text(rowDurationLabel(for: row))
-                .font(.system(size: 12, design: .monospaced))
+                .font(.cairnScaled(size: 12, design: .monospaced))
                 .foregroundStyle(rowDurationColor(for: row))
         }
         .padding(.horizontal, 16)
@@ -231,15 +231,15 @@ public struct SyncDetailSheet: View {
     private func timelineGlyph(for row: TimelineRow) -> some View {
         if row.isLive {
             Image(systemName: "circle.dotted.circle")
-                .font(.system(size: 14))
+                .font(.cairnScaled(size: 14))
                 .foregroundStyle(t.pendingInk)
         } else if row.durationMs != nil {
             Image(systemName: "checkmark.circle.fill")
-                .font(.system(size: 14))
+                .font(.cairnScaled(size: 14))
                 .foregroundStyle(t.verifiedInk)
         } else {
             Image(systemName: "circle")
-                .font(.system(size: 14))
+                .font(.cairnScaled(size: 14))
                 .foregroundStyle(t.textHint)
         }
     }
@@ -278,7 +278,7 @@ public struct SyncDetailSheet: View {
             VStack(spacing: 0) {
                 if activity.isEmpty {
                     Text(isSyncing ? "Waiting for activity…" : "No recent activity.")
-                        .font(.system(size: 12))
+                        .font(.cairnScaled(size: 12))
                         .foregroundStyle(t.textMuted)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(16)
@@ -300,14 +300,14 @@ public struct SyncDetailSheet: View {
     private func activityRow(_ entry: CairnAppModel.SyncActivity) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
             Text(Self.formatTimestamp(entry.timestamp))
-                .font(.system(size: 11, design: .monospaced))
+                .font(.cairnScaled(size: 11, design: .monospaced))
                 .foregroundStyle(t.textHint)
             Text(activityKindLabel(entry.kind))
-                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                .font(.cairnScaled(size: 11, weight: .medium, design: .monospaced))
                 .foregroundStyle(activityKindColor(entry.kind))
                 .frame(width: 56, alignment: .leading)
             Text(entry.detail)
-                .font(.system(size: 12))
+                .font(.cairnScaled(size: 12))
                 .foregroundStyle(t.textBody)
                 .lineLimit(2)
                 .truncationMode(.tail)

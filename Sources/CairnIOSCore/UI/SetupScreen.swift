@@ -270,7 +270,7 @@ public struct SetupScreen: View {
             // Pitch — verbatim from the brief; this is the elevator
             // sentence used elsewhere in product surfaces too.
             (Text.cairnWord + Text(" cleans up your Immich server when you delete photos on your iPhone."))
-                .font(.system(size: 22, weight: .semibold))
+                .font(.cairnScaled(size: 22, weight: .semibold))
                 .tracking(-0.4)
                 .foregroundStyle(t.text)
                 .lineSpacing(2)
@@ -279,7 +279,7 @@ public struct SetupScreen: View {
             // Privacy reassurance — verbatim from `screens/setup.jsx`
             // step 0 and HANDOFF.md "Keep these copies verbatim".
             Text("Photos never leave your iPhone or your Immich server.")
-                .font(.system(size: 14))
+                .font(.cairnScaled(size: 14))
                 .foregroundStyle(t.textMuted)
                 .lineSpacing(3)
         }
@@ -311,12 +311,12 @@ public struct SetupScreen: View {
             CairnCard {
                 HStack(spacing: 0) {
                     Image(systemName: "server.rack")
-                        .font(.system(size: 14))
+                        .font(.cairnScaled(size: 14))
                         .foregroundStyle(t.textMuted)
                         .padding(.leading, 14)
                     TextField("immich.home.arpa", text: $serverUrl)
                         .textFieldStyle(.plain)
-                        .font(.system(size: 14, design: .monospaced))
+                        .font(.cairnScaled(size: 14, design: .monospaced))
                         .foregroundStyle(t.textBody)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 14)
@@ -377,7 +377,7 @@ public struct SetupScreen: View {
                 + monoCode("sync.checkpoint.read") + Text(", ")
                 + monoCode("sync.checkpoint.update") + Text(", ")
                 + monoCode("sync.checkpoint.delete") + Text("."))
-                .font(.system(size: 12))
+                .font(.cairnScaled(size: 12))
                 .foregroundStyle(t.textMuted)
                 .lineSpacing(3)
                 .padding(.bottom, 18)
@@ -403,7 +403,7 @@ public struct SetupScreen: View {
     }
 
     private func monoCode(_ s: String) -> Text {
-        Text(s).font(.system(size: 11.5, design: .monospaced))
+        Text(s).font(.cairnScaled(size: 11.5, design: .monospaced))
     }
 
     @ViewBuilder
@@ -499,16 +499,16 @@ public struct SetupScreen: View {
                         Button(action: { applySuggestion(entry) }) {
                             HStack(spacing: 10) {
                                 Image(systemName: "clock.arrow.circlepath")
-                                    .font(.system(size: 12))
+                                    .font(.cairnScaled(size: 12))
                                     .foregroundStyle(t.textHint)
                                 Text(entry.url)
-                                    .font(.system(size: 13, design: .monospaced))
+                                    .font(.cairnScaled(size: 13, design: .monospaced))
                                     .foregroundStyle(t.textBody)
                                     .lineLimit(1)
                                     .truncationMode(.middle)
                                 Spacer()
                                 Image(systemName: "arrow.up.left")
-                                    .font(.system(size: 11))
+                                    .font(.cairnScaled(size: 11))
                                     .foregroundStyle(t.textHint)
                             }
                             .padding(.horizontal, 14)
@@ -542,15 +542,15 @@ public struct SetupScreen: View {
             CairnCard {
                 HStack(alignment: .top, spacing: 12) {
                     Image(systemName: "photo.on.rectangle.angled")
-                        .font(.system(size: 18))
+                        .font(.cairnScaled(size: 18))
                         .foregroundStyle(t.textBody)
                         .padding(.top, 1)
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Full or limited access")
-                            .font(.system(size: 14, weight: .medium))
+                            .font(.cairnScaled(size: 14, weight: .medium))
                             .foregroundStyle(t.textBody)
                         (Text.cairnWord + Text(" works with either. Full access lets it manage your whole library; with limited access it manages only the photos you select in the system picker."))
-                            .font(.system(size: 12.5))
+                            .font(.cairnScaled(size: 12.5))
                             .foregroundStyle(t.textMuted)
                             .lineSpacing(2)
                             .fixedSize(horizontal: false, vertical: true)
@@ -582,7 +582,7 @@ public struct SetupScreen: View {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("Heads up about limited access.").fontWeight(.semibold)
                             (Text.cairnWord + Text(" only manages the photos you've shared. To keep you safe from accidental deletions, only photos you actively trash in Photos.app will propagate to Immich — changing your Selected Photos selection won't. You can switch to full access anytime in iOS Settings."))
-                                .font(.system(size: 12.5))
+                                .font(.cairnScaled(size: 12.5))
                                 .lineSpacing(2)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
@@ -606,7 +606,7 @@ public struct SetupScreen: View {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("Access not granted.").fontWeight(.semibold)
                             (Text.cairnWord + Text(" needs at least limited Photos access to find deleted photos. Tap above to open iOS Settings and grant access — this screen will update when you return."))
-                                .font(.system(size: 12.5))
+                                .font(.cairnScaled(size: 12.5))
                                 .lineSpacing(2)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
@@ -663,15 +663,15 @@ public struct SetupScreen: View {
             CairnCard {
                 HStack(alignment: .top, spacing: 12) {
                     Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 18))
+                        .font(.cairnScaled(size: 18))
                         .foregroundStyle(t.textBody)
                         .padding(.top, 1)
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Background App Refresh")
-                            .font(.system(size: 14, weight: .medium))
+                            .font(.cairnScaled(size: 14, weight: .medium))
                             .foregroundStyle(t.textBody)
                         (Text("iOS decides exactly when. ") + .cairnWord + Text(" never moves anything to Trash automatically — every scheduled run is preview-only."))
-                            .font(.system(size: 12.5))
+                            .font(.cairnScaled(size: 12.5))
                             .foregroundStyle(t.textMuted)
                             .lineSpacing(2)
                             .fixedSize(horizontal: false, vertical: true)
@@ -786,7 +786,7 @@ public struct SetupScreen: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline) {
                 Text(label.uppercased())
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.cairnScaled(size: 11, weight: .semibold))
                     .tracking(0.9)
                     .foregroundStyle(t.textMuted)
                 Spacer()
@@ -802,7 +802,7 @@ public struct SetupScreen: View {
             Slider(value: value, in: range, step: step)
                 .tint(t.primary)
             Text(sub)
-                .font(.system(size: 12))
+                .font(.cairnScaled(size: 12))
                 .foregroundStyle(t.textMuted)
         }
         .padding(.horizontal, 14)
@@ -853,7 +853,7 @@ public struct SetupScreen: View {
             .padding(.bottom, 12)
 
             Text("You can change this any time in Settings.")
-                .font(.system(size: 12))
+                .font(.cairnScaled(size: 12))
                 .foregroundStyle(t.textMuted)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -878,12 +878,12 @@ public struct SetupScreen: View {
                 VStack(spacing: 0) {
                     HStack {
                         Text("WHAT HAPPENS NEXT")
-                            .font(.system(size: 11, weight: .semibold))
+                            .font(.cairnScaled(size: 11, weight: .semibold))
                             .tracking(0.9)
                             .foregroundStyle(t.textMuted)
                         Spacer()
                         Text("~40s")
-                            .font(.system(size: 11, design: .monospaced))
+                            .font(.cairnScaled(size: 11, design: .monospaced))
                             .foregroundStyle(t.textHint)
                     }
                     .padding(.horizontal, 14)
@@ -900,11 +900,11 @@ public struct SetupScreen: View {
                             ZStack {
                                 Circle().fill(t.surfaceAlt).frame(width: 20, height: 20)
                                 Text("\(idx + 1)")
-                                    .font(.system(size: 11, weight: .medium))
+                                    .font(.cairnScaled(size: 11, weight: .medium))
                                     .foregroundStyle(t.textBody)
                             }
                             Text(line)
-                                .font(.system(size: 13))
+                                .font(.cairnScaled(size: 13))
                                 .foregroundStyle(t.textBody)
                                 .padding(.top, 2)
                             Spacer(minLength: 0)
@@ -1048,7 +1048,7 @@ public struct SetupScreen: View {
 
     private func stepHeadline(_ text: Text) -> some View {
         text
-            .font(.system(size: 26, weight: .semibold))
+            .font(.cairnScaled(size: 26, weight: .semibold))
             .tracking(-0.5)
             .foregroundStyle(t.text)
             .lineSpacing(2)
@@ -1058,7 +1058,7 @@ public struct SetupScreen: View {
 
     private func stepBlurb(_ text: Text) -> some View {
         text
-            .font(.system(size: 14))
+            .font(.cairnScaled(size: 14))
             .foregroundStyle(t.textMuted)
             .lineSpacing(3)
             .padding(.bottom, 22)
@@ -1067,7 +1067,7 @@ public struct SetupScreen: View {
 
     private func fieldLabel(_ text: String) -> some View {
         Text(text.uppercased())
-            .font(.system(size: 11, weight: .semibold))
+            .font(.cairnScaled(size: 11, weight: .semibold))
             .tracking(0.9)
             .foregroundStyle(t.textMuted)
             .padding(.bottom, 6)
@@ -1085,7 +1085,7 @@ public struct SetupScreen: View {
     ) -> some View {
         Button(action: { if !disabled { action() } }) {
             Text(title)
-                .font(.system(size: 16, weight: .semibold))
+                .font(.cairnScaled(size: 16, weight: .semibold))
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 14)
                 .foregroundStyle(foreground(for: tone, disabled: disabled))
@@ -1099,7 +1099,7 @@ public struct SetupScreen: View {
     private func quietButton(title: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(title)
-                .font(.system(size: 14, weight: .medium))
+                .font(.cairnScaled(size: 14, weight: .medium))
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 12)
                 .foregroundStyle(t.textBody)

@@ -73,7 +73,7 @@ extension Text {
     ///
     /// **Do NOT use when:** "cairn" is the standalone hero wordmark /
     /// page title — those instances have their own display-size treatment
-    /// (`Text("cairn").font(.system(size: 28, weight: .semibold))` + the
+    /// (`Text("cairn").font(.cairnScaled(size: 28, weight: .semibold))` + the
     /// `CairnMark` image alongside) and should remain distinct from the
     /// inline treatment to read as a brand element.
     public static var cairnWord: Text {
@@ -143,7 +143,7 @@ public struct CairnChip: View {
     public var body: some View {
         Button(action: action) {
             Text(label)
-                .font(.system(size: 11, weight: .semibold))
+                .font(.cairnScaled(size: 11, weight: .semibold))
                 .tracking(0.66)
                 .foregroundStyle(foreground)
                 .padding(.horizontal, 10)
@@ -453,12 +453,12 @@ public struct AppHeader<Leading: View, Trailing: View>: View {
                     leading
                 }
                 Text(title)
-                    .font(.system(size: 28, weight: .semibold, design: .default))
+                    .font(.cairnScaled(size: 28, weight: .semibold, design: .default))
                     .tracking(-0.6)
                     .foregroundStyle(t.text)
                 if let subtitle {
                     Text(subtitle)
-                        .font(.system(size: 13))
+                        .font(.cairnScaled(size: 13))
                         .foregroundStyle(t.textMuted)
                 }
             }
@@ -516,11 +516,11 @@ public struct KeylineSection: View {
         HStack(spacing: 7) {
             if let icon, let iconTint {
                 Image(systemName: icon)
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.cairnScaled(size: 11, weight: .semibold))
                     .foregroundStyle(iconTint)
             }
             Text(title.uppercased())
-                .font(.system(size: 11, weight: .semibold))
+                .font(.cairnScaled(size: 11, weight: .semibold))
                 .tracking(0.9)
                 .foregroundStyle(t.textMuted)
             Spacer()
@@ -599,15 +599,15 @@ public struct KeyValRow: View {
     public var body: some View {
         HStack(spacing: 8) {
             Text(label)
-                .font(.system(size: 15))
+                .font(.cairnScaled(size: 15))
                 .foregroundStyle(t.textBody)
             Spacer(minLength: 12)
             value
-                .font(.system(size: mono ? 13 : 15, design: mono ? .monospaced : .default))
+                .font(.cairnScaled(size: mono ? 13 : 15, design: mono ? .monospaced : .default))
                 .foregroundStyle(t.textBody)
             if chevron {
                 Image(systemName: "chevron.right")
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(.cairnScaled(size: 12, weight: .semibold))
                     .foregroundStyle(t.textHint)
             }
         }
@@ -640,11 +640,11 @@ public struct ToggleRow: View {
         HStack(alignment: sub == nil ? .center : .top, spacing: 12) {
             VStack(alignment: .leading, spacing: 3) {
                 Text(label)
-                    .font(.system(size: 15))
+                    .font(.cairnScaled(size: 15))
                     .foregroundStyle(t.textBody)
                 if let sub {
                     Text(sub)
-                        .font(.system(size: 12))
+                        .font(.cairnScaled(size: 12))
                         .foregroundStyle(t.textMuted)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -703,16 +703,16 @@ public struct Stat: View {
     public var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(label.uppercased())
-                .font(.system(size: 11, weight: .semibold))
+                .font(.cairnScaled(size: 11, weight: .semibold))
                 .tracking(0.9)
                 .foregroundStyle(t.textMuted)
             Text(value)
-                .font(.system(size: 24, weight: .semibold).monospacedDigit())
+                .font(.cairnScaled(size: 24, weight: .semibold).monospacedDigit())
                 .tracking(-0.5)
                 .foregroundStyle(color ?? t.text)
             if let sub {
                 Text(sub)
-                    .font(.system(size: 12))
+                    .font(.cairnScaled(size: 12))
                     .foregroundStyle(t.textMuted)
             }
         }
@@ -749,11 +749,11 @@ public struct Callout<Content: View>: View {
         HStack(alignment: .top, spacing: 10) {
             if let icon {
                 Image(systemName: icon)
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(.cairnScaled(size: 14, weight: .semibold))
                     .foregroundStyle(inkColor)
             }
             content
-                .font(.system(size: 13))
+                .font(.cairnScaled(size: 13))
                 .foregroundStyle(inkColor)
         }
         // Fill the available horizontal width so callouts span the
@@ -835,7 +835,7 @@ public struct HelpPopover<Content: View>: View {
             showing.toggle()
         } label: {
             Image(systemName: "questionmark.circle")
-                .font(.system(size: 13, weight: .regular))
+                .font(.cairnScaled(size: 13, weight: .regular))
                 .foregroundStyle(t.textHint)
                 .padding(.horizontal, 6)
                 .padding(.vertical, 6)
@@ -889,7 +889,7 @@ public struct HelpPopover<Content: View>: View {
             VStack(alignment: .leading, spacing: 10) {
                 content
             }
-            .font(.system(size: 14))
+            .font(.cairnScaled(size: 14))
             .foregroundStyle(t.textBody)
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -1181,7 +1181,7 @@ public struct SliderInputRow: View {
         VStack(alignment: .leading, spacing: style == .compact ? 8 : 6) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text(label)
-                    .font(.system(size: style == .compact ? 14 : 15))
+                    .font(.cairnScaled(size: style == .compact ? 14 : 15))
                     .foregroundStyle(t.textBody)
                 Spacer(minLength: 8)
                 EditableNumericField(
@@ -1195,7 +1195,7 @@ public struct SliderInputRow: View {
             }
             if style == .standard, let sub {
                 Text(sub)
-                    .font(.system(size: 12))
+                    .font(.cairnScaled(size: 12))
                     .foregroundStyle(t.textMuted)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.bottom, 4)
@@ -1208,7 +1208,7 @@ public struct SliderInputRow: View {
             // card where vertical space is scarce.
             if style == .compact, let sub {
                 Text(sub)
-                    .font(.system(size: 11))
+                    .font(.cairnScaled(size: 11))
                     .foregroundStyle(t.textMuted)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -1270,7 +1270,7 @@ public struct EditableNumericField: View {
         HStack(spacing: 0) {
             TextField("", text: $editing)
                 .textFieldStyle(.plain)
-                .font(.system(size: 13, design: .monospaced).monospacedDigit())
+                .font(.cairnScaled(size: 13, design: .monospaced).monospacedDigit())
                 .foregroundStyle(t.textMuted)
                 #if os(iOS)
                 .keyboardType(.decimalPad)
@@ -1296,7 +1296,7 @@ public struct EditableNumericField: View {
                 .fixedSize()
             if !unitSuffix.isEmpty && !focused {
                 Text(unitSuffix)
-                    .font(.system(size: 13, design: .monospaced).monospacedDigit())
+                    .font(.cairnScaled(size: 13, design: .monospaced).monospacedDigit())
                     .foregroundStyle(t.textMuted)
             }
         }
@@ -1404,12 +1404,12 @@ public struct CairnTabBar: View {
                                 CairnMark(size: 22)
                             } else if let sym = tab.systemImage {
                                 Image(systemName: sym)
-                                    .font(.system(size: 18))
+                                    .font(.cairnScaled(size: 18))
                             }
                         }
                         .frame(height: 22)
                         Text(tab.label)
-                            .font(.system(size: 11, weight: .medium))
+                            .font(.cairnScaled(size: 11, weight: .medium))
                     }
                     .foregroundStyle(active.id == tab.id ? t.text : t.textMuted)
                     .frame(maxWidth: .infinity)
@@ -1460,7 +1460,7 @@ public struct MockAssetThumb: View {
             .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
             if isLivePair {
                 Image(systemName: "livephoto")
-                    .font(.system(size: max(10, size * 0.18), weight: .semibold))
+                    .font(.cairnScaled(size: max(10, size * 0.18), weight: .semibold))
                     .foregroundStyle(.white)
                     .padding(4)
                     .background(.black.opacity(0.45), in: Circle())
@@ -1553,7 +1553,7 @@ public struct CairnSegmentedPicker<Value: Hashable>: View {
                         .matchedGeometryEffect(id: "cairn-segmented-pill", in: pillNamespace)
                 }
                 Text(option.label)
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.cairnScaled(size: 13, weight: .semibold))
                     .foregroundStyle(isSelected ? t.text : t.textMuted)
                     .padding(.vertical, 7)
             }
@@ -1640,11 +1640,11 @@ public struct CairnRadioList<Value: Hashable>: View {
                     .padding(.top, 2)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(option.title)
-                        .font(.system(size: 15, weight: .semibold))
+                        .font(.cairnScaled(size: 15, weight: .semibold))
                         .foregroundStyle(t.text)
                     if let subtitle = option.subtitle {
                         Text(subtitle)
-                            .font(.system(size: 13))
+                            .font(.cairnScaled(size: 13))
                             .foregroundStyle(t.textMuted)
                             .fixedSize(horizontal: false, vertical: true)
                             .lineSpacing(2)
@@ -1751,10 +1751,10 @@ public struct SyncPhaseChecklist: View {
     public var body: some View {
         HStack(spacing: 8) {
             Image(systemName: "circle.dotted.circle")
-                .font(.system(size: 12))
+                .font(.cairnScaled(size: 12))
                 .foregroundStyle(t.pendingInk)
             Text(phase.displayName)
-                .font(.system(size: 12, weight: .medium))
+                .font(.cairnScaled(size: 12, weight: .medium))
                 .foregroundStyle(t.textBody)
             Spacer(minLength: 0)
         }
@@ -1795,7 +1795,7 @@ public struct ProcessingBreakdown: View {
                         .foregroundStyle(t.textMuted)
                 }
             }
-            .font(.system(size: 12))
+            .font(.cairnScaled(size: 12))
         }
     }
 }

@@ -43,7 +43,7 @@ private struct HeroWordmarkGrid: View {
     var body: some View {
         VStack(spacing: 28) {
             Text("cairn hero wordmark — preview matrix")
-                .font(.system(size: 14, weight: .semibold))
+                .font(.cairnScaled(size: 14, weight: .semibold))
                 .opacity(0.7)
 
             // Icon-prefix arrangement (current production treatment).
@@ -89,7 +89,7 @@ private struct HeroWordmarkGrid: View {
     ) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(title)
-                .font(.system(size: 11, weight: .semibold))
+                .font(.cairnScaled(size: 11, weight: .semibold))
                 .tracking(0.8)
                 .opacity(0.5)
             content()
@@ -163,12 +163,12 @@ private struct MarkScaleSweep: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text("markScale sweep · \(variant == .adaptive ? "adaptive" : "rich") mark")
-                .font(.system(size: 12, weight: .semibold))
+                .font(.cairnScaled(size: 12, weight: .semibold))
                 .opacity(0.6)
             ForEach(sweepValues, id: \.self) { scale in
                 HStack(spacing: 18) {
                     Text(String(format: "%.2f", scale))
-                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .font(.cairnScaled(size: 11, weight: .medium, design: .monospaced))
                         .opacity(0.5)
                         .frame(width: 38, alignment: .trailing)
                     CairnWordmark(

@@ -47,9 +47,9 @@ public struct PendingTrashesSheet: View {
                     Button(action: onClose) {
                         HStack(spacing: 4) {
                             Image(systemName: "chevron.left")
-                                .font(.system(size: 13, weight: .semibold))
+                                .font(.cairnScaled(size: 13, weight: .semibold))
                             Text("Status")
-                                .font(.system(size: 15))
+                                .font(.cairnScaled(size: 15))
                         }
                         .foregroundStyle(t.textBody)
                         .padding(.vertical, 4)
@@ -85,7 +85,7 @@ public struct PendingTrashesSheet: View {
 
     private var explainer: some View {
         Text("These trash runs failed and are queued for retry. They run automatically on the next sync. Items hit the retry limit (\(maxRetryAttempts) attempts) typically when the server is unreachable or the API key has changed — fix the root cause and tap Retry now.")
-            .font(.system(size: 13))
+            .font(.cairnScaled(size: 13))
             .foregroundStyle(t.textMuted)
             .fixedSize(horizontal: false, vertical: true)
     }
@@ -127,22 +127,22 @@ public struct PendingTrashesSheet: View {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
                     Text(label)
-                        .font(.system(size: 14, weight: .medium))
+                        .font(.cairnScaled(size: 14, weight: .medium))
                         .foregroundStyle(t.text)
                         .lineLimit(1)
                         .truncationMode(.middle)
                     if extra > 0 {
                         Text("+\(extra)")
-                            .font(.system(size: 11, weight: .semibold))
+                            .font(.cairnScaled(size: 11, weight: .semibold))
                             .foregroundStyle(t.textMuted)
                     }
                 }
                 Text(metaLine(intent: intent, isStuck: isStuck))
-                    .font(.system(size: 11))
+                    .font(.cairnScaled(size: 11))
                     .foregroundStyle(isStuck ? t.danger : t.textMuted)
                 if let err = intent.lastError {
                     Text(err)
-                        .font(.system(size: 11))
+                        .font(.cairnScaled(size: 11))
                         .foregroundStyle(t.textMuted)
                         .lineLimit(2)
                         .fixedSize(horizontal: false, vertical: true)
@@ -151,7 +151,7 @@ public struct PendingTrashesSheet: View {
             Spacer(minLength: 8)
             Button(action: { onDiscard(intent.id) }) {
                 Image(systemName: "trash")
-                    .font(.system(size: 14))
+                    .font(.cairnScaled(size: 14))
                     .foregroundStyle(t.textMuted)
                     .frame(width: 44, height: 44)
                     .contentShape(Rectangle())
@@ -173,13 +173,13 @@ public struct PendingTrashesSheet: View {
         VStack(spacing: 12) {
             Spacer()
             Image(systemName: "checkmark.circle")
-                .font(.system(size: 36, weight: .light))
+                .font(.cairnScaled(size: 36, weight: .light))
                 .foregroundStyle(t.verifiedInk)
             Text("Nothing pending")
-                .font(.system(size: 17, weight: .semibold))
+                .font(.cairnScaled(size: 17, weight: .semibold))
                 .foregroundStyle(t.text)
             Text("All trash requests completed successfully.")
-                .font(.system(size: 13))
+                .font(.cairnScaled(size: 13))
                 .foregroundStyle(t.textMuted)
             Spacer()
         }

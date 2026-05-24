@@ -176,19 +176,19 @@ public struct RunsScreen: View {
                         )
                         .frame(width: 64, height: 64)
                     Image(systemName: "list.bullet")
-                        .font(.system(size: 22, weight: .regular))
+                        .font(.cairnScaled(size: 22, weight: .regular))
                         .foregroundStyle(t.textMuted)
                 }
                 .padding(.bottom, 18)
 
                 Text("No runs yet.")
-                    .font(.system(size: 18, weight: .semibold))
+                    .font(.cairnScaled(size: 18, weight: .semibold))
                     .tracking(-0.27)
                     .foregroundStyle(t.text)
                     .padding(.bottom, 6)
 
                 Text("Every sync lands here — completed, aborted, or restored — with the candidate list and the journal of API calls. You can restore any trashed batch while Immich still has it.")
-                    .font(.system(size: 13))
+                    .font(.cairnScaled(size: 13))
                     .foregroundStyle(t.textMuted)
                     .multilineTextAlignment(.center)
                     .lineSpacing(2)
@@ -202,7 +202,7 @@ public struct RunsScreen: View {
                 // CTA (verbatim, screens/runs.jsx:67).
                 Button(action: onStartSync) {
                     Text("Start a sync from Status")
-                        .font(.system(size: 16, weight: .semibold))
+                        .font(.cairnScaled(size: 16, weight: .semibold))
                         .frame(minWidth: 200)
                         .padding(.vertical, 14)
                         .padding(.horizontal, 18)
@@ -228,7 +228,7 @@ public struct RunsScreen: View {
         ]
         return VStack(alignment: .leading, spacing: 0) {
             Text("A run includes".uppercased())
-                .font(.system(size: 11, weight: .semibold))
+                .font(.cairnScaled(size: 11, weight: .semibold))
                 .tracking(0.88)
                 .foregroundStyle(t.textHint)
                 .padding(.bottom, 10)
@@ -240,13 +240,13 @@ public struct RunsScreen: View {
                             .fill(t.surfaceAlt)
                             .frame(width: 14, height: 14)
                         Image(systemName: "checkmark")
-                            .font(.system(size: 8, weight: .bold))
+                            .font(.cairnScaled(size: 8, weight: .bold))
                             .foregroundStyle(t.textMuted)
                     }
                     .padding(.top, 2)
 
                     Text(line)
-                        .font(.system(size: 12.5))
+                        .font(.cairnScaled(size: 12.5))
                         .foregroundStyle(t.textBody)
                         .lineSpacing(2)
                         .fixedSize(horizontal: false, vertical: true)
@@ -297,7 +297,7 @@ private struct RunListRow: View {
                         .fill(iconBg)
                         .frame(width: 30, height: 30)
                     Image(systemName: iconName)
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.cairnScaled(size: 13, weight: .semibold))
                         .foregroundStyle(iconInk)
                 }
                 .padding(.top, 1)
@@ -306,7 +306,7 @@ private struct RunListRow: View {
                     HStack(spacing: 8) {
                         StatusPill(label: pillLabel, tone: pillTone)
                         Text("\(countLabel)")
-                            .font(.system(size: 13, weight: .medium))
+                            .font(.cairnScaled(size: 13, weight: .medium))
                             .foregroundStyle(t.textBody)
                         if run.restored > 0 {
                             StatusPill(label: "\(run.restored) restored", tone: .neutral)
@@ -314,18 +314,18 @@ private struct RunListRow: View {
                     }
                     HStack(spacing: 4) {
                         Text(CairnTimeHelpers.relativeTime(run.startedAt, now: now))
-                            .font(.system(size: 11.5))
+                            .font(.cairnScaled(size: 11.5))
                             .foregroundStyle(t.textHint)
                         Text("·")
-                            .font(.system(size: 11.5))
+                            .font(.cairnScaled(size: 11.5))
                             .foregroundStyle(t.textHint)
                         Text(timeOfDay)
-                            .font(.system(size: 11.5))
+                            .font(.cairnScaled(size: 11.5))
                             .foregroundStyle(t.textHint)
                     }
                     if let tag = run.tag {
                         Text(tag)
-                            .font(.system(size: 11, design: .monospaced))
+                            .font(.cairnScaled(size: 11, design: .monospaced))
                             .foregroundStyle(t.textHint)
                             .lineLimit(1)
                             .truncationMode(.middle)
@@ -335,7 +335,7 @@ private struct RunListRow: View {
                 Spacer(minLength: 0)
 
                 Image(systemName: "chevron.right")
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(.cairnScaled(size: 12, weight: .semibold))
                     .foregroundStyle(t.textHint)
                     .padding(.top, 6)
             }
@@ -428,7 +428,7 @@ private struct StatusPill: View {
                 .fill(inkColor.opacity(0.85))
                 .frame(width: 5, height: 5)
             Text(label)
-                .font(.system(size: 10.5, weight: .semibold))
+                .font(.cairnScaled(size: 10.5, weight: .semibold))
                 .tracking(0.2)
         }
         .padding(.horizontal, 7)

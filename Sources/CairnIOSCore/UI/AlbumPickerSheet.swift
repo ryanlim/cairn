@@ -82,15 +82,15 @@ public struct AlbumPickerSheet: View {
     private var header: some View {
         HStack {
             Button("Cancel", action: onClose)
-                .font(.system(size: 15))
+                .font(.cairnScaled(size: 15))
                 .foregroundStyle(t.textBody)
             Spacer()
             VStack(spacing: 1) {
                 Text("Selected albums")
-                    .font(.system(size: 15, weight: .semibold))
+                    .font(.cairnScaled(size: 15, weight: .semibold))
                     .foregroundStyle(t.text)
                 Text(selectionSummary)
-                    .font(.system(size: 11))
+                    .font(.cairnScaled(size: 11))
                     .foregroundStyle(t.textMuted)
                     .monospacedDigit()
             }
@@ -99,7 +99,7 @@ public struct AlbumPickerSheet: View {
                 onSave(selection)
                 onClose()
             }
-            .font(.system(size: 15, weight: .semibold))
+            .font(.cairnScaled(size: 15, weight: .semibold))
             .foregroundStyle(selection.isEmpty ? t.textMuted : t.infoInk)
             .disabled(selection.isEmpty)
         }
@@ -142,7 +142,7 @@ public struct AlbumPickerSheet: View {
         VStack(spacing: 12) {
             ProgressView()
             Text("Loading albums…")
-                .font(.system(size: 13))
+                .font(.cairnScaled(size: 13))
                 .foregroundStyle(t.textMuted)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -151,13 +151,13 @@ public struct AlbumPickerSheet: View {
     private var unauthorizedState: some View {
         VStack(spacing: 8) {
             Image(systemName: "lock")
-                .font(.system(size: 28))
+                .font(.cairnScaled(size: 28))
                 .foregroundStyle(t.textMuted)
             Text("Photos access required")
-                .font(.system(size: 15, weight: .semibold))
+                .font(.cairnScaled(size: 15, weight: .semibold))
                 .foregroundStyle(t.text)
             Text("Grant Full Photos access in Settings → cairn → Photos to pick albums.")
-                .font(.system(size: 13))
+                .font(.cairnScaled(size: 13))
                 .foregroundStyle(t.textMuted)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 32)
@@ -168,13 +168,13 @@ public struct AlbumPickerSheet: View {
     private var emptyState: some View {
         VStack(spacing: 8) {
             Image(systemName: "rectangle.stack")
-                .font(.system(size: 28))
+                .font(.cairnScaled(size: 28))
                 .foregroundStyle(t.textMuted)
             Text("No user-created albums")
-                .font(.system(size: 15, weight: .semibold))
+                .font(.cairnScaled(size: 15, weight: .semibold))
                 .foregroundStyle(t.text)
             Text("Create an album in Photos.app to scope cairn to it.")
-                .font(.system(size: 13))
+                .font(.cairnScaled(size: 13))
                 .foregroundStyle(t.textMuted)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 32)
@@ -207,15 +207,15 @@ public struct AlbumPickerSheet: View {
         } label: {
             HStack(spacing: 12) {
                 Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: 19))
+                    .font(.cairnScaled(size: 19))
                     .foregroundStyle(isSelected ? t.infoInk : t.textHint)
                     .frame(width: 22)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(album.title)
-                        .font(.system(size: 15))
+                        .font(.cairnScaled(size: 15))
                         .foregroundStyle(t.text)
                     Text(assetCountLabel(album.assetCount))
-                        .font(.system(size: 12))
+                        .font(.cairnScaled(size: 12))
                         .foregroundStyle(t.textMuted)
                         .monospacedDigit()
                 }

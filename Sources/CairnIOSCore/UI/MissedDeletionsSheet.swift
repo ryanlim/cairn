@@ -114,18 +114,18 @@ public struct MissedDeletionsSheet: View {
         HStack(alignment: .center, spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Find missed deletions")
-                    .font(.system(size: 17, weight: .semibold))
+                    .font(.cairnScaled(size: 17, weight: .semibold))
                     .foregroundStyle(t.text)
                 if case .loaded(let assets) = state {
                     let visible = assets.filter { !dismissedIds.contains($0.id) }.count
                     Text(visible == 0 ? "Nothing flagged" : "\(visible) candidate\(visible == 1 ? "" : "s")")
-                        .font(.system(size: 12))
+                        .font(.cairnScaled(size: 12))
                         .foregroundStyle(t.textMuted)
                 }
             }
             Spacer()
             Button("Done", action: onClose)
-                .font(.system(size: 15))
+                .font(.cairnScaled(size: 15))
                 .foregroundStyle(t.textBody)
         }
         .padding(.horizontal, 16)
@@ -160,12 +160,12 @@ public struct MissedDeletionsSheet: View {
         ScrollView {
             VStack(spacing: 20) {
                 Image(systemName: "magnifyingglass")
-                    .font(.system(size: 32))
+                    .font(.cairnScaled(size: 32))
                     .foregroundStyle(t.textMuted)
                     .padding(.top, 16)
 
                 (Text("Scans Immich for assets that look like prior iPhone uploads ") + .cairnWord + Text(" never observed. Use the Stricter filter to require positive evidence that ") + .cairnWord + Text(" previously saw the photo on this device — much more precise, but won't catch photos ") + .cairnWord + Text(" never observed at all."))
-                    .font(.system(size: 13))
+                    .font(.cairnScaled(size: 13))
                     .foregroundStyle(t.textMuted)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 24)
@@ -184,7 +184,7 @@ public struct MissedDeletionsSheet: View {
                 Image(systemName: "magnifyingglass")
                     .foregroundStyle(t.infoInk)
                 Text("Scan options")
-                    .font(.system(size: 15, weight: .semibold))
+                    .font(.cairnScaled(size: 15, weight: .semibold))
                     .foregroundStyle(t.text)
             }
             dateRangeControls
@@ -192,10 +192,10 @@ public struct MissedDeletionsSheet: View {
             Toggle(isOn: $strictHistorical) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Stricter filter")
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.cairnScaled(size: 13, weight: .semibold))
                         .foregroundStyle(t.text)
                     (Text("Only flag photos ") + .cairnWord + Text(" previously saw on this device. Excludes Immich-only uploads with iPhone-style filenames."))
-                        .font(.system(size: 11))
+                        .font(.cairnScaled(size: 11))
                         .foregroundStyle(t.textMuted)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -219,13 +219,13 @@ public struct MissedDeletionsSheet: View {
     private var dateRangeControls: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("DATE RANGE")
-                .font(.system(size: 11, weight: .semibold))
+                .font(.cairnScaled(size: 11, weight: .semibold))
                 .tracking(0.99)
                 .foregroundStyle(t.textMuted)
             HStack {
                 Toggle(isOn: $minBoundEnabled) {
                     Text("From")
-                        .font(.system(size: 13))
+                        .font(.cairnScaled(size: 13))
                         .foregroundStyle(t.textBody)
                 }
                 .labelsHidden()
@@ -239,7 +239,7 @@ public struct MissedDeletionsSheet: View {
                     .labelsHidden()
                 } else {
                     Text("From: any")
-                        .font(.system(size: 13))
+                        .font(.cairnScaled(size: 13))
                         .foregroundStyle(t.textMuted)
                 }
                 Spacer()
@@ -247,7 +247,7 @@ public struct MissedDeletionsSheet: View {
             HStack {
                 Toggle(isOn: $maxBoundEnabled) {
                     Text("To")
-                        .font(.system(size: 13))
+                        .font(.cairnScaled(size: 13))
                         .foregroundStyle(t.textBody)
                 }
                 .labelsHidden()
@@ -261,7 +261,7 @@ public struct MissedDeletionsSheet: View {
                     .labelsHidden()
                 } else {
                     Text("To: now")
-                        .font(.system(size: 13))
+                        .font(.cairnScaled(size: 13))
                         .foregroundStyle(t.textMuted)
                 }
                 Spacer()
@@ -275,7 +275,7 @@ public struct MissedDeletionsSheet: View {
             ProgressView()
                 .controlSize(.large)
             Text("Scanning Immich…")
-                .font(.system(size: 13))
+                .font(.cairnScaled(size: 13))
                 .foregroundStyle(t.textMuted)
             Spacer()
         }
@@ -289,14 +289,14 @@ public struct MissedDeletionsSheet: View {
                     .fill(t.infoSoft)
                     .frame(width: 56, height: 56)
                 Image(systemName: "checkmark")
-                    .font(.system(size: 22, weight: .semibold))
+                    .font(.cairnScaled(size: 22, weight: .semibold))
                     .foregroundStyle(t.infoInk)
             }
             Text("Nothing flagged")
-                .font(.system(size: 17, weight: .semibold))
+                .font(.cairnScaled(size: 17, weight: .semibold))
                 .foregroundStyle(t.text)
             (Text("Every server asset matches a photo still on your phone or one ") + .cairnWord + Text(" already knows about."))
-                .font(.system(size: 13))
+                .font(.cairnScaled(size: 13))
                 .foregroundStyle(t.textMuted)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 280)
@@ -308,13 +308,13 @@ public struct MissedDeletionsSheet: View {
         VStack(spacing: 16) {
             Spacer()
             Image(systemName: "exclamationmark.triangle")
-                .font(.system(size: 28))
+                .font(.cairnScaled(size: 28))
                 .foregroundStyle(t.dangerInk)
             Text("Couldn't scan")
-                .font(.system(size: 17, weight: .semibold))
+                .font(.cairnScaled(size: 17, weight: .semibold))
                 .foregroundStyle(t.text)
             Text(message)
-                .font(.system(size: 13))
+                .font(.cairnScaled(size: 13))
                 .foregroundStyle(t.textMuted)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 32)
@@ -368,7 +368,7 @@ public struct MissedDeletionsSheet: View {
                 pendingKeepAll = true
             } label: {
                 Text("Keep all")
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(.cairnScaled(size: 14, weight: .semibold))
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 12)
                     .background(t.surfaceAlt)
@@ -381,7 +381,7 @@ public struct MissedDeletionsSheet: View {
                 pendingTrashAll = true
             } label: {
                 Text("Trash all \(count)")
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(.cairnScaled(size: 14, weight: .semibold))
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 12)
                     .background(t.danger)
@@ -459,7 +459,7 @@ private struct MissedDeletionRow: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(asset.originalFileName ?? "—")
-                    .font(.system(size: 13, design: .monospaced))
+                    .font(.cairnScaled(size: 13, design: .monospaced))
                     .tracking(-0.065)
                     .foregroundStyle(t.text)
                     .lineLimit(1)
@@ -467,7 +467,7 @@ private struct MissedDeletionRow: View {
 
                 if let date = asset.fileCreatedAt {
                     Text(Self.dateFormatter.string(from: date))
-                        .font(.system(size: 11.5))
+                        .font(.cairnScaled(size: 11.5))
                         .foregroundStyle(t.textMuted)
                 }
             }
