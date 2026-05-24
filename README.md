@@ -4,6 +4,10 @@ Reconciles your iPhone photo library against your [Immich](https://immich.app) s
 
 `cairn` is not affiliated with Immich — it talks to Immich over its public API.
 
+## Is this safe to try on a server I care about?
+
+`cairn` never hard-deletes. Every photo it removes lands in Immich's Trash (30-day retention by default) with a `cairn/v1/run/<id>` tag — one tap to restore. The first run on any device is forced into dry-run, regardless of settings. Every subsequent run previews every candidate before you confirm. There's a configurable 14-day quarantine window between when iOS confirms a deletion and when cairn propagates it to Immich, so an accidental tap has time to surface. A percent-of-library safety rail aborts any run that would touch more than 1% of matched assets (configurable). The full safety model is documented in [Safety model](#safety-model) below; the code that enforces it lives in [`Sources/CairnCore/SafetyRails.swift`](Sources/CairnCore/SafetyRails.swift).
+
 <p align="center">
   <img src="iOS/fastlane/screenshots/en-US/iPhone 17 Pro Max-01-Status-Light.png" width="220" alt="Status screen" />
   &nbsp;&nbsp;
@@ -38,7 +42,7 @@ It's deliberately narrow:
 6. **Breadcrumb tags.** Every run writes a tag `cairn/v1/run/<run_id>` onto every affected asset on Immich. The tag plus Immich's 30-day Trash retention form the undo surface.
 7. **Append-only local journal.** A JSONL file records every step of every run (planned, tagged, trashed, restored, failed) for forensics and restore.
 
-The full design is in [`immich-ios-deletion-sync-plan.md`](immich-ios-deletion-sync-plan.md) — deliberately long, including non-goals, failure modes, and the pivot from Recently-Deleted enumeration to persistent-change events.
+The full design is in [`ARCHITECTURE.md`](ARCHITECTURE.md) — covers the identity model, confirmed-deletion signal, edit semantics, Live Photo handling, and the portability contract that keeps `CairnCore` Apple-API-free.
 
 ## Install
 
@@ -106,7 +110,8 @@ Full privacy policy: [`PRIVACY.md`](PRIVACY.md).
 
 - `swift test` runs the full SPM test suite (reconciliation logic, safety rails, SHA1 hashing, journal, orchestrators, Immich client, tag schema, iOS-side store implementations).
 - `make test` (from `iOS/`) runs the same tests.
-- `CLAUDE.md` captures project conventions and accumulated context — worth reading before touching anything substantial.
+- [`ARCHITECTURE.md`](ARCHITECTURE.md) captures project conventions and accumulated design context — worth reading before touching anything substantial. [`CLAUDE.md`](CLAUDE.md) is the smaller working-session companion (current state, in-flight workstreams).
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) covers prerequisites, style, and the PR flow.
 
 ## License
 

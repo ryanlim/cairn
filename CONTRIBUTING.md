@@ -35,7 +35,7 @@ See [`iOS/README.md`](iOS/README.md) for the full iOS setup, including the one-t
 
 ## Style
 
-Read [`CLAUDE.md`](CLAUDE.md) before anything substantial — it captures accumulated conventions the codebase follows, including the portability contract that keeps `CairnCore` platform-neutral.
+Read [`ARCHITECTURE.md`](ARCHITECTURE.md) before anything substantial — it captures the accumulated design context the codebase follows, including the portability contract that keeps `CairnCore` platform-neutral. [`CLAUDE.md`](CLAUDE.md) is the shorter working-session companion (current status, in-flight workstreams, and notes useful to AI-pair-programming sessions).
 
 Beyond that:
 

@@ -1,5 +1,19 @@
 # Minimal iOS Immich Deletion-Sync App — Plan
 
+> **⚠ ARCHIVED 2026-05-24.** This was the pre-implementation design
+> document. The architecture pivoted significantly during construction
+> (notably: the "enumerate `PHAssetCollectionSubtype.smartAlbumRecentlyDeleted`"
+> approach in the Wave 4 section was abandoned — that subtype doesn't
+> exist as a public API; the production design uses
+> `PHPhotoLibrary.fetchPersistentChanges(since:)` instead). Other details
+> have drifted: default strictness flipped from `.strict` to `.trusting`,
+> `EverSeenStore` was renamed to `ObservedStore`, LoC estimates ended up
+> dramatically off.
+>
+> **Current architecture lives in [`ARCHITECTURE.md`](../../ARCHITECTURE.md).**
+> Keep this file for historical context only — the "why we did X" framing
+> is still useful even where the implementation diverged.
+
 ## Current state and next steps (read first)
 
 > Snapshot taken 2026-04-21 to give a fresh Claude session full context.
