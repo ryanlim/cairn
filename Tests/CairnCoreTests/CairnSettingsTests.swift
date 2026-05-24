@@ -143,6 +143,40 @@ struct CairnSettingsTests {
         }
     }
 
+    @Test("useIncrementalServerSync defaults to false (initial roll-out is opt-in)")
+    func useIncrementalServerSyncDefaultsFalse() {
+        #expect(CairnSettings.defaults.useIncrementalServerSync == false)
+    }
+
+    @Test("legacy JSON without useIncrementalServerSync decodes as false")
+    func legacyJSONMissingIncrementalSyncDefaultsFalse() throws {
+        // The plan flips the default once a release cycle of beta
+        // soak-testing surfaces no regressions. Until then, decoding
+        // legacy payloads as `false` matches the install-default and
+        // keeps the existing paginated path in charge.
+        let legacyJSON = """
+        {
+            "maxDeletePercent": 1.0,
+            "minDeleteFloor": 5,
+            "notifyOnAbort": true,
+            "verboseLogging": false,
+            "deletionStrictness": "trusting"
+        }
+        """
+        let decoded = try JSONDecoder().decode(CairnSettings.self, from: Data(legacyJSON.utf8))
+        #expect(decoded.useIncrementalServerSync == false)
+    }
+
+    @Test("useIncrementalServerSync round-trips both true and false")
+    func useIncrementalServerSyncRoundTrips() throws {
+        for value in [true, false] {
+            let original = CairnSettings(useIncrementalServerSync: value)
+            let data = try JSONEncoder().encode(original)
+            let decoded = try JSONDecoder().decode(CairnSettings.self, from: data)
+            #expect(decoded.useIncrementalServerSync == value)
+        }
+    }
+
     @Test("legacy JSON without indexingScope decodes as .fullLibrary")
     func legacyJSONMissingIndexingScopeUsesFullLibrary() throws {
         let legacyJSON = """

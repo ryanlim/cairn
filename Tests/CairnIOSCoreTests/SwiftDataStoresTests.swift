@@ -1415,17 +1415,62 @@ struct SwiftDataServerAssetCacheStoreTests {
         #expect(try await store.size() == 0)
     }
 
-    @Test("snapshot maps deletedAt to ServerAsset.isTrashed")
-    func deletedAtMapsToIsTrashed() async throws {
+    @Test("snapshot excludes server-trashed assets (deletedAt != nil) to match listAllAssets default")
+    func snapshotExcludesTrashed() async throws {
         let store = SwiftDataServerAssetCacheStore(container: try makeContainer())
         _ = try await store.applyEvents([
             .asset(asset(id: "a1", ck: "AAAA", deletedAt: Date(timeIntervalSince1970: 1_700_000_000)), ack: "ack"),
             .asset(asset(id: "a2", ck: "BBBB"), ack: "ack"),
         ])
         let snap = try await store.snapshot()
-        let byId = Dictionary(uniqueKeysWithValues: snap.map { ($0.id, $0) })
-        #expect(byId["a1"]?.isTrashed == true)
-        #expect(byId["a2"]?.isTrashed == false)
+        let ids = Set(snap.map(\.id))
+        // Trashed asset is filtered out; non-trashed remains.
+        // size() still counts both rows — the filter is read-side only.
+        #expect(ids == ["a2"])
+        #expect(try await store.size() == 2)
+    }
+
+    @Test("snapshot excludes hidden + locked visibility — matches default listAllAssets")
+    func snapshotExcludesHiddenAndLocked() async throws {
+        let store = SwiftDataServerAssetCacheStore(container: try makeContainer())
+        let hidden = SyncAssetV1(
+            id: "live-motion",
+            ownerId: "u1",
+            originalFileName: "MOV.MOV",
+            checksum: "MOTION",
+            livePhotoVideoId: nil,
+            deletedAt: nil,
+            visibility: "hidden",
+            isFavorite: false,
+            type: "video",
+            fileCreatedAt: nil,
+            fileModifiedAt: nil,
+            width: nil,
+            height: nil
+        )
+        let locked = SyncAssetV1(
+            id: "locked-one",
+            ownerId: "u1",
+            originalFileName: "LOCKED.HEIC",
+            checksum: "LOCKED",
+            livePhotoVideoId: nil,
+            deletedAt: nil,
+            visibility: "locked",
+            isFavorite: false,
+            type: "image",
+            fileCreatedAt: nil,
+            fileModifiedAt: nil,
+            width: nil,
+            height: nil
+        )
+        _ = try await store.applyEvents([
+            .asset(asset(id: "a1", ck: "AAAA"), ack: "ack1"),
+            .asset(hidden, ack: "ack2"),
+            .asset(locked, ack: "ack3"),
+        ])
+        let snap = try await store.snapshot()
+        let ids = Set(snap.map(\.id))
+        #expect(ids == ["a1"])
     }
 
     @Test("reset wipes every row")

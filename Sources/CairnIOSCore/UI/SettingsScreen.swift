@@ -736,6 +736,12 @@ public struct SettingsScreen: View {
                         ThumbnailCacheCapRow(mb: $settings.thumbnailCacheCapMB)
                         RowDivider()
                         ThumbhashCacheCapRow(mb: $settings.thumbhashCapMB)
+                        RowDivider()
+                        ToggleRow(
+                            "Incremental server sync",
+                            sub: "Use Immich's sync/stream change-data-capture endpoint instead of paginating every sync. Faster on large libraries; falls back to the paginated path if the API key lacks the sync.* scopes.",
+                            value: $settings.useIncrementalServerSync
+                        )
                         #if DEBUG
                         RowDivider()
                         KeyValRow(

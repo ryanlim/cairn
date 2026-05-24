@@ -1643,8 +1643,31 @@ public actor SwiftDataServerAssetCacheStore: ServerAssetCacheStore {
     }
 
     public func snapshot() async throws -> [ServerAsset] {
+        // Filter at read time to match `ImmichClient.listAllAssets()`
+        // default semantics so the reconciler sees an equivalent set
+        // whether it's reading from the cache or the paginated path:
+        //
+        // - `deletedAt != nil` → server-side trashed; the engine
+        //   already drops trashed assets but excluding them here
+        //   keeps the byChecksum lookup the orchestrator builds
+        //   from snapshot() smaller.
+        // - `visibility == "hidden"` → Live Photo motion videos, etc.
+        //   The reconciler discovers them via the still photo's
+        //   `livePhotoVideoId` linkage; surfacing them as standalone
+        //   ServerAsset entries would double-include them in the
+        //   batch the orchestrator deletes.
+        // - `visibility == "locked"` → PIN-protected; cairn's API
+        //   key can't trash these even if asked, so omitting them
+        //   from the candidate set saves a guaranteed failure.
+        //
+        // Timeline + archive are kept (matches listAllAssets default
+        // server behavior).
         let rows = try context.fetch(FetchDescriptor<StoredServerAsset>())
-        return rows.map(Self.toServerAsset)
+        return rows.compactMap { row in
+            guard row.deletedAt == nil else { return nil }
+            guard row.visibility != "hidden", row.visibility != "locked" else { return nil }
+            return Self.toServerAsset(row)
+        }
     }
 
     public func size() async throws -> Int {

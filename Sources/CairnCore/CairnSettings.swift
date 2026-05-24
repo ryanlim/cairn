@@ -169,6 +169,28 @@ public struct CairnSettings: Sendable, Codable, Equatable {
     /// device).
     public var timeDisplayFormat: TimeDisplayFormat
 
+    /// Opt-in switch for the incremental server-side sync path
+    /// (`POST /api/sync/stream` change-data-capture instead of the
+    /// paginated `search/metadata` rescan). Default **off** during
+    /// initial roll-out so existing installs stay on the well-tested
+    /// path until a user explicitly enables it.
+    ///
+    /// When on:
+    ///   - First sync after enable: bootstraps via the stream with
+    ///     `reset: true`, populating a per-(URL, userId) local cache.
+    ///   - Subsequent syncs: stream only the changes since the last
+    ///     ack — typically zero to tens of events instead of ~N/250
+    ///     pages.
+    ///
+    /// On any stream failure (including missing `sync.*` scopes on
+    /// the API key) the live-reconciliation path falls back to the
+    /// paginated discovery, so flipping this on never blocks sync —
+    /// the worst case is "no faster than before."
+    ///
+    /// Plan to flip the default to `true` once a full release cycle
+    /// of beta soak-testing surfaces no regressions.
+    public var useIncrementalServerSync: Bool
+
     public init(
         maxDeletePercent: Double = 1.0,
         minDeleteFloor: Int = 5,
@@ -184,7 +206,8 @@ public struct CairnSettings: Sendable, Codable, Equatable {
         thumbhashCapMB: Int = 5,
         indexingScope: IndexingScope = .fullLibrary,
         maxRetryAttempts: Int = 5,
-        timeDisplayFormat: TimeDisplayFormat = .system
+        timeDisplayFormat: TimeDisplayFormat = .system,
+        useIncrementalServerSync: Bool = false
     ) {
         self.maxDeletePercent = maxDeletePercent
         self.minDeleteFloor = minDeleteFloor
@@ -201,6 +224,7 @@ public struct CairnSettings: Sendable, Codable, Equatable {
         self.indexingScope = indexingScope
         self.maxRetryAttempts = maxRetryAttempts
         self.timeDisplayFormat = timeDisplayFormat
+        self.useIncrementalServerSync = useIncrementalServerSync
     }
 
     /// The factory defaults. Kept as a single constant so tests and the
@@ -219,6 +243,7 @@ public struct CairnSettings: Sendable, Codable, Equatable {
         case indexingScope
         case maxRetryAttempts
         case timeDisplayFormat
+        case useIncrementalServerSync
     }
 
     public init(from decoder: Decoder) throws {
@@ -239,6 +264,7 @@ public struct CairnSettings: Sendable, Codable, Equatable {
         self.indexingScope = try c.decodeIfPresent(IndexingScope.self, forKey: .indexingScope) ?? d.indexingScope
         self.maxRetryAttempts = try c.decodeIfPresent(Int.self, forKey: .maxRetryAttempts) ?? d.maxRetryAttempts
         self.timeDisplayFormat = try c.decodeIfPresent(TimeDisplayFormat.self, forKey: .timeDisplayFormat) ?? d.timeDisplayFormat
+        self.useIncrementalServerSync = try c.decodeIfPresent(Bool.self, forKey: .useIncrementalServerSync) ?? d.useIncrementalServerSync
     }
 }
 

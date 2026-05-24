@@ -70,6 +70,14 @@ final class AppDependencies {
     private(set) var editRetirementStore: SwiftDataEditRetirementStore?
     private(set) var statusSnapshotStore: SwiftDataStatusSnapshotStore?
     private(set) var pendingTrashStore: SwiftDataPendingTrashIntentStore?
+    private(set) var serverAssetCacheStore: SwiftDataServerAssetCacheStore?
+    private(set) var syncAckStore: SwiftDataSyncAckStore?
+    /// Coordinator for the incremental server-side sync path
+    /// (`POST /api/sync/stream`). Non-nil iff both the cache store and
+    /// an `immichClient` are wired. Live reconciliation calls
+    /// `syncToCache` first when `model.settings.useIncrementalServerSync`
+    /// is on; falls back to paginated discovery on any error.
+    private(set) var serverAssetSyncCoordinator: ServerAssetSyncCoordinator?
     private(set) var journal: DeletionJournal?
 
     var persistentChangeReconciler: PhotoKitPersistentChangeReconciler? {
@@ -388,13 +396,18 @@ final class AppDependencies {
         self.editRetirementStore = SwiftDataEditRetirementStore(container: container)
         self.statusSnapshotStore = SwiftDataStatusSnapshotStore(container: container)
         self.pendingTrashStore = SwiftDataPendingTrashIntentStore(container: container)
+        let cacheStore = SwiftDataServerAssetCacheStore(container: container)
+        let ackStore = SwiftDataSyncAckStore(container: container)
+        self.serverAssetCacheStore = cacheStore
+        self.syncAckStore = ackStore
         let thumbStore = SwiftDataThumbnailStore(container: container)
         self.thumbnailStore = thumbStore
 
         let journalURL = Self.serverJournalURL(for: key)
         self.journal = DeletionJournal(path: journalURL)
 
-        self.immichClient = ImmichClient(baseURL: url, apiKey: apiKey, session: ImmichClient.makeAppURLSession())
+        let client = ImmichClient(baseURL: url, apiKey: apiKey, session: ImmichClient.makeAppURLSession())
+        self.immichClient = client
         self.thumbnailLoader = ImmichThumbnailLoader(
             baseURL: url,
             apiKey: apiKey,
@@ -402,6 +415,11 @@ final class AppDependencies {
             onFetched: { assetId, data in
                 try? await thumbStore.saveThumbnail(assetId: assetId, data: data)
             }
+        )
+        self.serverAssetSyncCoordinator = ServerAssetSyncCoordinator(
+            client: client,
+            cache: cacheStore,
+            ackStore: ackStore
         )
     }
 
@@ -971,8 +989,34 @@ final class AppDependencies {
         serverChecksumSet = nil
         let hashStoreRef = self.localHashStore
         let serverFetchStart = Date()
+        // Snapshot the feature-flag + coordinator/cache refs onto the
+        // Task's locals so the closure doesn't re-touch MainActor state
+        // mid-flight. The closure decides bootstrap-vs-incremental
+        // discovery once at task start.
+        let useIncremental = model.settings.useIncrementalServerSync
+        let coordinator = self.serverAssetSyncCoordinator
+        let cache = self.serverAssetCacheStore
         let serverAssetsTask = Task { [weak self] () -> [ServerAsset] in
-            let assets = try await client.listAllAssets()
+            let assets: [ServerAsset]
+            if useIncremental, let coordinator, let cache {
+                do {
+                    let summary = try await coordinator.syncToCache()
+                    syncLog.info("[cairn.sync.stream] mode=\(summary.mode.rawValue, privacy: .public) upserted=\(summary.upserted, privacy: .public) deleted=\(summary.deleted, privacy: .public) ignored=\(summary.ignored, privacy: .public) durationMs=\(summary.durationMs, privacy: .public)")
+                    assets = try await cache.snapshot()
+                } catch let err as ImmichClientError {
+                    if case .missingScope(let scopes) = err {
+                        syncLog.warning("[cairn.sync.stream] missing scopes \(scopes.joined(separator: ","), privacy: .public) — falling back to paginated")
+                    } else {
+                        syncLog.warning("[cairn.sync.stream] failed (\(String(describing: err), privacy: .public)) — falling back to paginated")
+                    }
+                    assets = try await client.listAllAssets()
+                } catch {
+                    syncLog.warning("[cairn.sync.stream] failed (\(String(describing: error), privacy: .public)) — falling back to paginated")
+                    assets = try await client.listAllAssets()
+                }
+            } else {
+                assets = try await client.listAllAssets()
+            }
             let checksums = Set(assets.map(\.checksum))
             let nonTrashed = assets.filter { !$0.isTrashed }.count
             // Seed matched from already-cached hashes so a resumed scan
@@ -2269,6 +2313,16 @@ final class AppDependencies {
                 return nil
             case .unexpectedResponse:
                 return .serverDown
+            case .missingScope:
+                // Missing-scope means the API key works for some
+                // endpoints but not others (specifically the sync.*
+                // endpoints). That's a soft degradation — the
+                // paginated fallback in performLiveReconciliation
+                // keeps things working — so don't escalate to authStale
+                // here. A future revision could add a dedicated
+                // .missingScope degraded state with a "regenerate your
+                // API key" CTA.
+                return nil
             }
         }
         let nsError = error as NSError
@@ -2347,6 +2401,8 @@ final class AppDependencies {
                 return "Unexpected Immich response: \(msg)"
             case .invalidURL:
                 return "The Immich URL looks malformed. Fix it in Settings."
+            case .missingScope(let scopes):
+                return "API key is missing scopes: \(scopes.joined(separator: ", ")). Regenerate the key in Immich Settings."
             }
         }
         if let e = error as? PhotoKitPhotoEnumerator.Error {
