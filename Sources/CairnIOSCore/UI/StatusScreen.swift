@@ -37,6 +37,13 @@ public struct StatusScreen: View {
         case authStale
         case photosLimited
         case tinyLibrary
+        /// Set when an `/sync/*` request returns 401 while a session
+        /// token was in use — the token has been revoked (admin
+        /// action) or the server's session store was wiped. Cairn
+        /// auto-clears the local token and falls back to the
+        /// paginated discovery path; the banner prompts the user to
+        /// sign back in to restore incremental sync.
+        case sessionExpired
     }
 
     public let appState: AppState
@@ -167,6 +174,10 @@ public struct StatusScreen: View {
     /// syncCard MUST NOT read `model.syncActivity` or derivatives,
     /// or `@Observable` would re-render Status on every emit.
     public let onOpenSyncDetail: () -> Void
+    /// Tapped by the `Degraded.sessionExpired` banner's "Sign in
+    /// again" button. Host opens the session sign-in sheet; sheet
+    /// dismissal on success flips `degraded` back to `.none`.
+    public let onResumeSession: () -> Void
     /// Token incremented by the host when the user re-taps the active
     /// tab — see `CairnTabBar.onReselect`. Each increment scrolls the
     /// screen back to the top.
@@ -265,6 +276,7 @@ public struct StatusScreen: View {
         onOpenPendingTrashes: @escaping () -> Void = {},
         onRetryConnection: @escaping () -> Void = {},
         onOpenSyncDetail: @escaping () -> Void = {},
+        onResumeSession: @escaping () -> Void = {},
         scrollResetToken: Int = 0
     ) {
         self.appState = appState
@@ -310,6 +322,7 @@ public struct StatusScreen: View {
         self.onOpenPendingTrashes = onOpenPendingTrashes
         self.onRetryConnection = onRetryConnection
         self.onOpenSyncDetail = onOpenSyncDetail
+        self.onResumeSession = onResumeSession
         self.scrollResetToken = scrollResetToken
     }
 
@@ -321,7 +334,7 @@ public struct StatusScreen: View {
     private var syncBlocked: Bool {
         switch degraded {
         case .serverDown, .authStale, .photosLimited: return true
-        case .none, .tinyLibrary: return false
+        case .none, .tinyLibrary, .sessionExpired: return false
         }
     }
 
@@ -538,6 +551,7 @@ public struct StatusScreen: View {
             case .authStale:      return ("auth expired", .danger)
             case .photosLimited:  return ("limited", .danger)
             case .tinyLibrary:    return ("small library", .info)
+            case .sessionExpired: return ("session expired", .pending)
             }
         }()
         return Chip(label: label, tone: tone)
@@ -620,6 +634,28 @@ public struct StatusScreen: View {
                     Text("Library is small").fontWeight(.semibold)
                     Text("Your iPhone has a small photo library. With fewer than ~200 assets, any single deletion is a large fraction of the library and the percent-based safety rail can't protect you as well. You can still sync — just treat the first run carefully.")
                         .opacity(0.88).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(.horizontal, 16).padding(.bottom, 12)
+            .transition(bannerTransition)
+        case .sessionExpired:
+            Callout(.pending, icon: "person.crop.circle.badge.xmark") {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Session expired").fontWeight(.semibold)
+                    Text("Your Immich session token was rejected, so incremental sync is on the paginated fallback. Sign in again to restore the streaming path; everything else keeps working in the meantime.")
+                        .opacity(0.88).fixedSize(horizontal: false, vertical: true)
+                    Button(action: onResumeSession) {
+                        Text("Sign in again")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(t.primaryInk)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 8)
+                            .frame(minHeight: 36)
+                            .background(t.primary)
+                            .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Sign in again to restore incremental sync")
                 }
             }
             .padding(.horizontal, 16).padding(.bottom, 12)

@@ -1019,15 +1019,47 @@ final class AppDependencies {
                     outcome = .incremental(summary)
                 } catch let err as ImmichClientError {
                     let reason: String
+                    var sessionLikelyRejected = false
                     if case .missingScope(let scopes) = err {
                         reason = "missing scope \(scopes.first ?? "?")"
                         syncLog.warning("[cairn.sync.stream] missing scopes \(scopes.joined(separator: ","), privacy: .public) — falling back to paginated")
                     } else if case .httpStatus(let code, _) = err {
-                        reason = "stream HTTP \(code)"
+                        // 401 with a session token in use = the server
+                        // revoked or wiped our session. Auto-clear the
+                        // local token so subsequent calls don't keep
+                        // hitting the same wall, and surface a
+                        // .sessionExpired banner so the user can sign
+                        // back in to restore incremental sync.
+                        if code == 401, client.sessionToken != nil {
+                            sessionLikelyRejected = true
+                            reason = "session expired (401)"
+                        } else {
+                            reason = "stream HTTP \(code)"
+                        }
                         syncLog.warning("[cairn.sync.stream] failed (\(String(describing: err), privacy: .public)) — falling back to paginated")
                     } else {
                         reason = "stream error"
                         syncLog.warning("[cairn.sync.stream] failed (\(String(describing: err), privacy: .public)) — falling back to paginated")
+                    }
+                    if sessionLikelyRejected, let self {
+                        await MainActor.run {
+                            try? self.secretStore.setSessionToken(nil)
+                            if let existingClient = self.immichClient {
+                                let updatedClient = existingClient.withSessionToken(nil)
+                                self.immichClient = updatedClient
+                                if let cache = self.serverAssetCacheStore,
+                                   let acks = self.syncAckStore {
+                                    self.serverAssetSyncCoordinator = ServerAssetSyncCoordinator(
+                                        client: updatedClient,
+                                        cache: cache,
+                                        ackStore: acks
+                                    )
+                                }
+                            }
+                            self.model.hasSessionToken = false
+                            self.model.degraded = .sessionExpired
+                        }
+                        syncLog.warning("[cairn.session] server returned 401 with session token — cleared local token, surfaced .sessionExpired banner")
                     }
                     assets = try await client.listAllAssets()
                     outcome = .paginated(fallbackReason: reason)
@@ -4033,6 +4065,13 @@ final class AppDependencies {
                             )
                         }
                         self.model.hasSessionToken = true
+                        // Clear the .sessionExpired banner if it was
+                        // showing — fresh sign-in resolves the
+                        // condition. Leaving the banner up after a
+                        // successful re-sign-in would be misleading.
+                        if self.model.degraded == .sessionExpired {
+                            self.model.degraded = .none
+                        }
                     }
                     syncLog.info("[cairn.session] signed in as \(resp.userEmail, privacy: .public)")
                     return .success
@@ -4071,6 +4110,14 @@ final class AppDependencies {
                         }
                     }
                     self.model.hasSessionToken = false
+                    // If the user manually signed out from the banner,
+                    // they've acted on the .sessionExpired notice —
+                    // clear it. (If sign-out came from the Settings
+                    // row while the banner wasn't up, this is a
+                    // harmless no-op.)
+                    if self.model.degraded == .sessionExpired {
+                        self.model.degraded = .none
+                    }
                 }
                 syncLog.info("[cairn.session] signed out")
             }

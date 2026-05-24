@@ -541,6 +541,9 @@ public struct CairnAppRoot: View {
                 onOpenSyncDetail: {
                     model.presentedSheet = .syncDetail
                 },
+                onResumeSession: {
+                    model.presentedSheet = .sessionSignIn
+                },
                 scrollResetToken: scrollResetTokens["status"] ?? 0
             )
         case "runs":
