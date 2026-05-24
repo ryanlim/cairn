@@ -3,3 +3,7 @@ Incremental server sync (opt-in): a new Settings → Advanced toggle, "Increment
 Under the hood: cairn caches every server asset in a per-(URL, userId) SwiftData store and advances both server-side and local cursors after each batch. The cache survives relaunches. Crash safety: events are written to the local cache before the server gets its ack, so a crash mid-sync replays at most one batch — the cache's apply step is idempotent by server-side asset id.
 
 Setup screen now lists the four sync.* scopes alongside the existing seven so users regenerating their API key today won't need to do it again when the default flips on next release.
+
+Thumbhash placeholders on the Excluded / Pending Review screens now render the same way under the cache-fed path as they did under the paginated one — the first cut of the cache dropped the field on the floor.
+
+Sync detail sheet now includes a "Discovery" row in the activity feed showing which server-side discovery path ran: "streaming (bootstrap) · 6,437 events · 8,421ms" the first time, "streaming · 12 events · 234ms" on subsequent syncs, or a warn-tone "paginated (fallback: missing scope sync.stream)" if the streaming attempt failed and cairn fell back. Lets you confirm the new path is actually firing without attaching to Console.app.

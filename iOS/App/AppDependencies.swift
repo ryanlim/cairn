@@ -996,26 +996,37 @@ final class AppDependencies {
         let useIncremental = model.settings.useIncrementalServerSync
         let coordinator = self.serverAssetSyncCoordinator
         let cache = self.serverAssetCacheStore
-        let serverAssetsTask = Task { [weak self] () -> [ServerAsset] in
+        let serverAssetsTask = Task { [weak self] () -> (assets: [ServerAsset], outcome: DiscoveryOutcome) in
             let assets: [ServerAsset]
+            let outcome: DiscoveryOutcome
             if useIncremental, let coordinator, let cache {
                 do {
                     let summary = try await coordinator.syncToCache()
                     syncLog.info("[cairn.sync.stream] mode=\(summary.mode.rawValue, privacy: .public) upserted=\(summary.upserted, privacy: .public) deleted=\(summary.deleted, privacy: .public) ignored=\(summary.ignored, privacy: .public) durationMs=\(summary.durationMs, privacy: .public)")
                     assets = try await cache.snapshot()
+                    outcome = .incremental(summary)
                 } catch let err as ImmichClientError {
+                    let reason: String
                     if case .missingScope(let scopes) = err {
+                        reason = "missing scope \(scopes.first ?? "?")"
                         syncLog.warning("[cairn.sync.stream] missing scopes \(scopes.joined(separator: ","), privacy: .public) — falling back to paginated")
+                    } else if case .httpStatus(let code, _) = err {
+                        reason = "stream HTTP \(code)"
+                        syncLog.warning("[cairn.sync.stream] failed (\(String(describing: err), privacy: .public)) — falling back to paginated")
                     } else {
+                        reason = "stream error"
                         syncLog.warning("[cairn.sync.stream] failed (\(String(describing: err), privacy: .public)) — falling back to paginated")
                     }
                     assets = try await client.listAllAssets()
+                    outcome = .paginated(fallbackReason: reason)
                 } catch {
                     syncLog.warning("[cairn.sync.stream] failed (\(String(describing: error), privacy: .public)) — falling back to paginated")
                     assets = try await client.listAllAssets()
+                    outcome = .paginated(fallbackReason: "stream error")
                 }
             } else {
                 assets = try await client.listAllAssets()
+                outcome = .paginated(fallbackReason: nil)
             }
             let checksums = Set(assets.map(\.checksum))
             let nonTrashed = assets.filter { !$0.isTrashed }.count
@@ -1037,7 +1048,7 @@ final class AppDependencies {
                     self.model.library = self.model.library.with(server: nonTrashed, matched: initialMatched)
                 }
             }
-            return assets
+            return (assets, outcome)
         }
 
         guard let reconciler = persistentChangeReconciler else {
@@ -1180,7 +1191,7 @@ final class AppDependencies {
 
         syncLog.info("[cairn.sync] store snapshots took \(Int(Date().timeIntervalSince(t2) * 1000))ms (edit-retirement-held=\(editRetirementHeld.count))")
         let t3 = Date()
-        let serverAssets = try await serverAssetsTask.value
+        let (serverAssets, discoveryOutcome) = try await serverAssetsTask.value
         let serverFetchMs = max(0, Int(Date().timeIntervalSince(serverFetchStart) * 1000))
         syncLog.info("[cairn.sync] server fetch took \(Int(Date().timeIntervalSince(t3) * 1000))ms (\(serverAssets.count) assets)")
         // `.fetchingServer` ran in parallel with the prep+scan, so the
@@ -1196,6 +1207,13 @@ final class AppDependencies {
             kind: .fetched,
             detail: "\(serverAssets.count.formatted(.number)) server assets · \(serverFetchMs.formatted(.number))ms"
         ))
+        // Discovery-path receipt — lets the user confirm which
+        // server-side discovery path actually ran without grepping
+        // OSLog. Streaming success in success tone; paginated fallback
+        // after a streaming attempt in warn tone (so a missing-scope
+        // or transient failure is visible at a glance).
+        let discoveryEntry = Self.discoveryActivity(for: discoveryOutcome)
+        model.appendSyncActivity(discoveryEntry)
 
         try Task.checkCancellation()
         model.transitionSyncPhase(to: .reconciling)
@@ -2300,6 +2318,43 @@ final class AppDependencies {
             return .distantPast
         }
         return seedAt
+    }
+
+    /// What the server-side discovery pass actually did this sync.
+    /// Returned from the parallel server-fetch task and rendered into
+    /// the sync activity feed so the user can confirm the configured
+    /// path without grepping OSLog.
+    fileprivate enum DiscoveryOutcome: Sendable {
+        /// The streaming/CDC path ran. `summary` carries mode (bootstrap
+        /// vs. incremental), event counts, and duration.
+        case incremental(SyncRunSummary)
+        /// The paginated path ran. `fallbackReason` is `nil` when the
+        /// feature flag was off (so nothing was even attempted) and a
+        /// short prose string when the streaming attempt failed and
+        /// fell back ("missing scope sync.stream", "stream HTTP 500").
+        case paginated(fallbackReason: String?)
+    }
+
+    /// Build the activity-feed row for a discovery outcome. Streaming
+    /// success gets a `.note` (success/neutral tone); a paginated
+    /// fallback after a streaming attempt gets `.warning` (warn tone)
+    /// so a missing-scope or transient failure surfaces visually. A
+    /// flag-off paginated run gets `.note` since that's the
+    /// configured-by-default behavior, not a regression.
+    nonisolated fileprivate static func discoveryActivity(
+        for outcome: DiscoveryOutcome
+    ) -> CairnAppModel.SyncActivity {
+        switch outcome {
+        case .incremental(let summary):
+            let events = summary.upserted + summary.deleted + summary.ignored
+            let modeLabel = summary.mode == .bootstrap ? "streaming (bootstrap)" : "streaming"
+            let detail = "Discovery: \(modeLabel) · \(events.formatted(.number)) events · \(summary.durationMs.formatted(.number))ms"
+            return .init(kind: .note, detail: detail)
+        case .paginated(.none):
+            return .init(kind: .note, detail: "Discovery: paginated")
+        case .paginated(.some(let reason)):
+            return .init(kind: .warning, detail: "Discovery: paginated (fallback: \(reason))")
+        }
     }
 
     nonisolated fileprivate static func degradedState(for error: Swift.Error) -> StatusScreen.Degraded? {
