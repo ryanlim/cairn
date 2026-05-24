@@ -7,6 +7,12 @@ public enum ImmichClientError: Error, CustomStringConvertible {
     case httpStatus(Int, body: String)
     case unexpectedResponse(String)
     case invalidURL
+    /// The current API key lacks one or more scopes needed for the
+    /// endpoint we just hit. Distinct from generic `.httpStatus(403, ...)`
+    /// so the caller (typically the sync coordinator) can route this to
+    /// the actionable "regenerate your API key with these scopes" UI
+    /// instead of the generic "request rejected" alert.
+    case missingScope([String])
 
     public var description: String {
         switch self {
@@ -16,12 +22,14 @@ public enum ImmichClientError: Error, CustomStringConvertible {
             return "unexpected response: \(msg)"
         case .invalidURL:
             return "invalid URL"
+        case .missingScope(let scopes):
+            return "API key missing scope(s): \(scopes.joined(separator: ", "))"
         }
     }
 
     /// HTTP status code if this is an `httpStatus` case; nil for
-    /// `unexpectedResponse` and `invalidURL`. Convenience accessor so
-    /// orchestrators can populate `trashFailed.httpStatus` /
+    /// `unexpectedResponse`, `invalidURL`, and `missingScope`. Convenience
+    /// accessor so orchestrators can populate `trashFailed.httpStatus` /
     /// `restoreFailed.httpStatus` without re-pattern-matching.
     public var httpStatusCode: Int? {
         if case .httpStatus(let code, _) = self { return code }
@@ -502,6 +510,142 @@ public struct ImmichClient: Sendable {
         try Self.expectOK(resp, data: data)
     }
 
+    // MARK: - Sync stream (incremental CDC)
+    //
+    // Streams change-data-capture events for the asset entity since the
+    // last acknowledged cursor. Lets cairn skip the paginated
+    // `search/metadata` rescan on every sync once the cache is seeded.
+    // See `notes/sync-stream-incremental-server-sync-plan.md` for the
+    // full design and the cache layer that consumes these events.
+
+    /// API-key scopes the streaming endpoint requires. Surfaced on a
+    /// `.missingScope` error so the coordinator can route to the
+    /// "regenerate your API key with these scopes" UI.
+    public static let syncStreamRequiredScopes = ["sync.stream"]
+    public static let syncAckGetRequiredScopes = ["sync.checkpoint.read"]
+    public static let syncAckSetRequiredScopes = ["sync.checkpoint.update"]
+    public static let syncAckDeleteRequiredScopes = ["sync.checkpoint.delete"]
+
+    /// Open a JSONL change-data-capture stream against `POST /api/sync/stream`.
+    /// The returned `AsyncThrowingStream` yields one decoded `SyncEvent` per
+    /// non-empty line on the wire and finishes when the server closes the
+    /// connection (request/response, not long-poll — caller re-opens to
+    /// continue past `SyncCompleteV1`).
+    ///
+    /// Failure modes:
+    /// - 403 → `ImmichClientError.missingScope(["sync.stream"])`. Coordinator
+    ///   should fall back to the paginated path and prompt the user to
+    ///   regenerate the API key with `sync.*` scopes.
+    /// - Other non-2xx → `ImmichClientError.httpStatus(_, body:)` with the
+    ///   (drained, capped at ~4 KB) error body.
+    /// - Malformed JSONL mid-stream → throws from the iteration site.
+    ///   `SyncWireDecoder.decodeLine` is permissive about empty lines and
+    ///   unknown event types, so this typically means the stream itself
+    ///   was truncated.
+    ///
+    /// Cancellation: cancelling the consuming task or breaking out of the
+    /// `for try await` loop terminates the underlying `URLSessionTask`
+    /// via the stream's `onTermination` handler.
+    public func syncStream(
+        types: [SyncRequestType],
+        reset: Bool = false
+    ) -> AsyncThrowingStream<SyncEvent, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    var req = try makeRequest(method: "POST", path: "sync/stream")
+                    req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                    req.httpBody = try JSONEncoder().encode(
+                        SyncStreamRequest(types: types, reset: reset ? true : nil)
+                    )
+
+                    // `bytes(for:)` returns as soon as headers are
+                    // available; the body streams lazily as we iterate.
+                    let (bytes, resp) = try await session.bytes(for: req)
+                    guard let http = resp as? HTTPURLResponse else {
+                        throw ImmichClientError.unexpectedResponse("not an HTTP response")
+                    }
+                    if http.statusCode == 403 {
+                        throw ImmichClientError.missingScope(Self.syncStreamRequiredScopes)
+                    }
+                    guard (200..<300).contains(http.statusCode) else {
+                        // Drain a capped slice of the error body so logs
+                        // include it. Stops early to avoid pulling MB of
+                        // unrelated bytes on a misconfigured proxy that
+                        // chunks an HTML error page.
+                        var bodyBytes: [UInt8] = []
+                        for try await byte in bytes {
+                            bodyBytes.append(byte)
+                            if bodyBytes.count > 4096 { break }
+                        }
+                        throw ImmichClientError.httpStatus(
+                            http.statusCode,
+                            body: String(bytes: bodyBytes, encoding: .utf8) ?? ""
+                        )
+                    }
+
+                    let decoder = SyncWireDecoder.make()
+                    for try await line in bytes.lines {
+                        try Task.checkCancellation()
+                        if let event = try SyncWireDecoder.decodeLine(line, decoder: decoder) {
+                            continuation.yield(event)
+                        }
+                    }
+                    continuation.finish()
+                } catch is CancellationError {
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    /// `POST /api/sync/ack` — submit a batch of opaque ack ids the
+    /// streaming consumer has successfully applied to its cache. Server
+    /// advances per-entity cursors so the next `syncStream` call picks
+    /// up after the last ack.
+    ///
+    /// Empty input is a no-op (saves a round trip). Server caps acks at
+    /// 1000 per request (`SyncAckSetRequest.maxAcksPerRequest`); the
+    /// coordinator is responsible for chunking.
+    public func ackSync(_ ackIds: [String]) async throws {
+        guard !ackIds.isEmpty else { return }
+        var req = try makeRequest(method: "POST", path: "sync/ack")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONEncoder().encode(SyncAckSetRequest(acks: ackIds))
+        let (data, resp) = try await session.data(for: req)
+        try Self.expectOKOrMissingScope(resp, data: data, scopes: Self.syncAckSetRequiredScopes)
+    }
+
+    /// `GET /api/sync/ack` — retrieve the server-side acknowledgment
+    /// state for diagnostics. Cairn primarily relies on its own
+    /// persisted cursor (`SyncAckStore`) and uses this method only when
+    /// the local store is empty or suspected of being out of sync.
+    public func currentSyncAcks() async throws -> [SyncAckRecord] {
+        let req = try makeRequest(method: "GET", path: "sync/ack")
+        let (data, resp) = try await session.data(for: req)
+        try Self.expectOKOrMissingScope(resp, data: data, scopes: Self.syncAckGetRequiredScopes)
+        return try JSONDecoder().decode([SyncAckRecord].self, from: data)
+    }
+
+    /// `DELETE /api/sync/ack` — wipe the server-side cursor for either
+    /// all entity types (`types == nil`) or a specific subset. Forces
+    /// the next `syncStream(reset: false)` call to replay everything.
+    /// Used when the local cache is rebuilt or the feature flag is
+    /// toggled off and back on.
+    public func clearSyncAcks(types: [SyncEntityType]? = nil) async throws {
+        var req = try makeRequest(method: "DELETE", path: "sync/ack")
+        if let types {
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            let body: [String: Any] = ["types": types.map(\.rawValue)]
+            req.httpBody = try JSONSerialization.data(withJSONObject: body)
+        }
+        let (data, resp) = try await session.data(for: req)
+        try Self.expectOKOrMissingScope(resp, data: data, scopes: Self.syncAckDeleteRequiredScopes)
+    }
+
     // MARK: - HTTP plumbing
 
     /// Builds a request with `x-api-key` auth and no Accept header —
@@ -527,6 +671,23 @@ public struct ImmichClient: Sendable {
     private static func expectOK(_ resp: URLResponse, data: Data) throws {
         guard let http = resp as? HTTPURLResponse else {
             throw ImmichClientError.unexpectedResponse("not an HTTP response")
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            throw ImmichClientError.httpStatus(http.statusCode, body: String(data: data, encoding: .utf8) ?? "")
+        }
+    }
+
+    /// Variant of `expectOK` that maps 403 to `.missingScope(scopes)`
+    /// instead of the generic `.httpStatus(403, ...)`. Used on the
+    /// `sync/*` endpoints so the caller can route scope-deny to an
+    /// actionable "regenerate your API key" UI rather than the generic
+    /// "request rejected" alert.
+    private static func expectOKOrMissingScope(_ resp: URLResponse, data: Data, scopes: [String]) throws {
+        guard let http = resp as? HTTPURLResponse else {
+            throw ImmichClientError.unexpectedResponse("not an HTTP response")
+        }
+        if http.statusCode == 403 {
+            throw ImmichClientError.missingScope(scopes)
         }
         guard (200..<300).contains(http.statusCode) else {
             throw ImmichClientError.httpStatus(http.statusCode, body: String(data: data, encoding: .utf8) ?? "")
