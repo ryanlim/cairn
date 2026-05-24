@@ -12,6 +12,12 @@ Reconciles your iPhone photo library against your [Immich](https://immich.app) s
   <img src="iOS/fastlane/screenshots/en-US/iPhone 17 Pro Max-05-Setup-Welcome-Light.png" width="220" alt="Setup Welcome screen" />
 </p>
 
+<p align="center">
+  <a href="https://apps.apple.com/app/id6763392945">
+    <img src="https://developer.apple.com/assets/elements/badges/download-on-the-app-store.svg" alt="Download cairn on the App Store" height="48">
+  </a>
+</p>
+
 ## Why
 
 The Immich iOS app uploads; it doesn't reap. If you rely on its automatic upload and delete from your iPhone, the server copy stays forever. `cairn` closes that loop.
@@ -36,7 +42,7 @@ The full design is in [`immich-ios-deletion-sync-plan.md`](immich-ios-deletion-s
 
 ## Install
 
-**App Store:** not yet published. TestFlight link will land here when there's a build to share.
+**[App Store](https://apps.apple.com/app/id6763392945).** Current public release.
 
 **From source (iOS app):** see [`iOS/README.md`](iOS/README.md). Short version: Xcode 16+, `make install && make generate`, set your development team in Xcode once, `Cmd-R`.
 
