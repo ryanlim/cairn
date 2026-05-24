@@ -50,19 +50,33 @@ public enum ImmichClientError: Error, CustomStringConvertible {
 /// actors. `URLSession` handles connection pooling so constructing
 /// fresh instances on credential rotation is cheap.
 ///
-/// Authentication is `x-api-key` on every request. The API key's scope
-/// determines which endpoints work: `asset.read`, `asset.delete`,
-/// `tag.create`, and `tag.asset` cover the trash/restore path;
-/// `tag.read` is additionally required for history reconstruction.
+/// Authentication is `x-api-key` on every request **except** the
+/// `/sync/*` endpoint family, which Immich rejects for API-key callers
+/// (`sync.service.ts` requires `auth.session?.id`). When `sessionToken`
+/// is set, those endpoints send `Authorization: Bearer <token>` instead;
+/// all other endpoints continue to use the API key. The session token
+/// is acquired via `login(email:password:)`.
 public struct ImmichClient: Sendable {
     public let baseURL: URL
     public let apiKey: String
+    /// Optional session access token from a `login` call. When present,
+    /// the `/sync/*` endpoints authenticate via Bearer instead of the
+    /// API-key header (which Immich rejects for those routes). Nil =
+    /// API-key-only mode; the sync coordinator stays disabled.
+    public let sessionToken: String?
     private let session: URLSession
 
-    public init(baseURL: URL, apiKey: String, session: URLSession = .shared) {
+    public init(baseURL: URL, apiKey: String, sessionToken: String? = nil, session: URLSession = .shared) {
         self.baseURL = Self.normalize(baseURL)
         self.apiKey = apiKey
+        self.sessionToken = sessionToken
         self.session = session
+    }
+
+    /// Return a copy with a new session token. Used after `login`
+    /// succeeds and after a token-refresh flow.
+    public func withSessionToken(_ token: String?) -> ImmichClient {
+        ImmichClient(baseURL: baseURL, apiKey: apiKey, sessionToken: token, session: session)
     }
 
     /// Build a `URLSession` with timeouts and connectivity behavior
@@ -141,6 +155,75 @@ public struct ImmichClient: Sendable {
             return nil
         }
         return url
+    }
+
+    // MARK: - Session auth (login / logout)
+
+    /// `POST /api/auth/login` request body (`LoginCredentialDto`).
+    public struct LoginCredential: Sendable, Codable, Equatable {
+        public let email: String
+        public let password: String
+
+        public init(email: String, password: String) {
+            self.email = email
+            self.password = password
+        }
+    }
+
+    /// `POST /api/auth/login` response body (`LoginResponseDto`). Cairn
+    /// keeps `accessToken`, `userId`, and `userEmail`; the other fields
+    /// (isAdmin, isOnboarded, etc.) aren't relevant here but are
+    /// decoded permissively in case the server adds new ones.
+    public struct LoginResponse: Sendable, Codable, Equatable {
+        public let accessToken: String
+        public let userId: String
+        public let userEmail: String
+        public let name: String
+
+        public init(accessToken: String, userId: String, userEmail: String, name: String) {
+            self.accessToken = accessToken
+            self.userId = userId
+            self.userEmail = userEmail
+            self.name = name
+        }
+    }
+
+    /// Authenticate with email + password and receive a session access
+    /// token. The token is the discriminator the server uses for
+    /// session-based routes — `/sync/*` notably, which reject API key
+    /// auth.
+    ///
+    /// Cairn stores the token via `withSessionToken(_:)` on the
+    /// returned client (or via the iOS-side Keychain helper). A failed
+    /// login surfaces as `ImmichClientError.httpStatus(401, ...)` for
+    /// wrong credentials; 400 for malformed email; other status codes
+    /// passed through.
+    public func login(email: String, password: String) async throws -> LoginResponse {
+        let url = baseURL.appending(path: "auth/login")
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONEncoder().encode(LoginCredential(email: email, password: password))
+        let (data, resp) = try await session.data(for: req)
+        try Self.expectOK(resp, data: data)
+        return try JSONDecoder().decode(LoginResponse.self, from: data)
+    }
+
+    /// `POST /api/auth/logout` — invalidates the current session token
+    /// server-side. Best-effort: cairn drops the local token regardless
+    /// of whether the server confirms.
+    public func logout() async throws {
+        guard sessionToken != nil else { return }
+        let url = baseURL.appending(path: "auth/logout")
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        if let token = sessionToken {
+            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        _ = try await session.data(for: req)
+        // Don't `expectOK` — the server returns the logout state in
+        // the body even on partial-failure modes; from the client's
+        // POV the local-side cleanup happens regardless.
     }
 
     // MARK: - Ping / verify
@@ -553,7 +636,7 @@ public struct ImmichClient: Sendable {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    var req = try makeRequest(method: "POST", path: "sync/stream")
+                    var req = try makeSyncRequest(method: "POST", path: "sync/stream")
                     req.setValue("application/json", forHTTPHeaderField: "Content-Type")
                     req.httpBody = try JSONEncoder().encode(
                         SyncStreamRequest(types: types, reset: reset ? true : nil)
@@ -612,7 +695,7 @@ public struct ImmichClient: Sendable {
     /// coordinator is responsible for chunking.
     public func ackSync(_ ackIds: [String]) async throws {
         guard !ackIds.isEmpty else { return }
-        var req = try makeRequest(method: "POST", path: "sync/ack")
+        var req = try makeSyncRequest(method: "POST", path: "sync/ack")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try JSONEncoder().encode(SyncAckSetRequest(acks: ackIds))
         let (data, resp) = try await session.data(for: req)
@@ -624,7 +707,7 @@ public struct ImmichClient: Sendable {
     /// persisted cursor (`SyncAckStore`) and uses this method only when
     /// the local store is empty or suspected of being out of sync.
     public func currentSyncAcks() async throws -> [SyncAckRecord] {
-        let req = try makeRequest(method: "GET", path: "sync/ack")
+        let req = try makeSyncRequest(method: "GET", path: "sync/ack")
         let (data, resp) = try await session.data(for: req)
         try Self.expectOKOrMissingScope(resp, data: data, scopes: Self.syncAckGetRequiredScopes)
         return try JSONDecoder().decode([SyncAckRecord].self, from: data)
@@ -636,7 +719,7 @@ public struct ImmichClient: Sendable {
     /// Used when the local cache is rebuilt or the feature flag is
     /// toggled off and back on.
     public func clearSyncAcks(types: [SyncEntityType]? = nil) async throws {
-        var req = try makeRequest(method: "DELETE", path: "sync/ack")
+        var req = try makeSyncRequest(method: "DELETE", path: "sync/ack")
         if let types {
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
             let body: [String: Any] = ["types": types.map(\.rawValue)]
@@ -656,6 +739,27 @@ public struct ImmichClient: Sendable {
         var req = URLRequest(url: url)
         req.httpMethod = method
         req.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+        return req
+    }
+
+    /// Variant for the `/sync/*` family — uses Bearer session auth when
+    /// a token is set, falls back to the API-key path otherwise (which
+    /// the server rejects, but the caller's missing-scope handling
+    /// surfaces the right error message). Keeping the fallback rather
+    /// than failing early means the existing API-key-only mode still
+    /// works for the non-sync paths.
+    private func makeSyncRequest(method: String, path: String) throws -> URLRequest {
+        let url = baseURL.appending(path: path)
+        var req = URLRequest(url: url)
+        req.httpMethod = method
+        if let token = sessionToken {
+            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        } else {
+            // No session token — set the API key so the server gets a
+            // structured 403 instead of "no auth at all" (the missing-
+            // scope code path expects that shape).
+            req.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+        }
         return req
     }
 

@@ -405,4 +405,133 @@ struct ImmichClientSyncStreamTests {
         try await client.ackSync(["a"])
         #expect(keySink.value == "TEST-KEY")
     }
+
+    // MARK: - Session-token (Bearer) routing
+
+    @Test("syncStream sends Authorization: Bearer when sessionToken is set, no x-api-key")
+    func syncStreamUsesBearerWhenSessionPresent() async throws {
+        let baseClient = makeClient()
+        let client = baseClient.withSessionToken("session-XYZ")
+        let authSink = Ref<String?>(nil)
+        let apiKeySink = Ref<String?>(nil)
+        MockURLProtocol.handler = { req in
+            if req.url?.path == "/api/sync/stream" {
+                authSink.value = req.value(forHTTPHeaderField: "Authorization")
+                apiKeySink.value = req.value(forHTTPHeaderField: "x-api-key")
+            }
+            return (
+                HTTPURLResponse(url: req.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
+                Data()
+            )
+        }
+        for try await _ in client.syncStream(types: [.assetsV1]) { }
+        #expect(authSink.value == "Bearer session-XYZ")
+        // Critical: with a session token, x-api-key is NOT sent —
+        // otherwise the server's auth pipeline could short-circuit
+        // on the API-key path before honoring the session token, and
+        // the session-required endpoints would still reject.
+        #expect(apiKeySink.value == nil)
+    }
+
+    @Test("ackSync sends Authorization: Bearer when sessionToken is set")
+    func ackSyncUsesBearerWhenSessionPresent() async throws {
+        let baseClient = makeClient()
+        let client = baseClient.withSessionToken("session-XYZ")
+        let authSink = Ref<String?>(nil)
+        MockURLProtocol.handler = { req in
+            authSink.value = req.value(forHTTPHeaderField: "Authorization")
+            return (
+                HTTPURLResponse(url: req.url!, statusCode: 204, httpVersion: nil, headerFields: nil)!,
+                Data()
+            )
+        }
+        try await client.ackSync(["a"])
+        #expect(authSink.value == "Bearer session-XYZ")
+    }
+
+    @Test("login POSTs credentials to /api/auth/login and decodes the access token")
+    func loginRoundTrip() async throws {
+        let client = makeClient()
+        let bodySink = Ref<Data?>(nil)
+        MockURLProtocol.handler = { req in
+            #expect(req.url?.path == "/api/auth/login")
+            #expect(req.httpMethod == "POST")
+            bodySink.value = req.readBody()
+            let body = Data(#"{"accessToken":"abc-123","userId":"u1","userEmail":"a@b.co","name":"Alice","isAdmin":false,"profileImagePath":"","shouldChangePassword":false,"isOnboarded":true}"#.utf8)
+            return (
+                HTTPURLResponse(url: req.url!, statusCode: 201, httpVersion: nil, headerFields: nil)!,
+                body
+            )
+        }
+        let resp = try await client.login(email: "a@b.co", password: "pw")
+        #expect(resp.accessToken == "abc-123")
+        #expect(resp.userId == "u1")
+        #expect(resp.userEmail == "a@b.co")
+        #expect(resp.name == "Alice")
+
+        let captured = try #require(bodySink.value)
+        let json = try JSONSerialization.jsonObject(with: captured) as? [String: Any]
+        #expect((json?["email"] as? String) == "a@b.co")
+        #expect((json?["password"] as? String) == "pw")
+    }
+
+    @Test("login surfaces 401 from wrong-credentials as ImmichClientError.httpStatus(401)")
+    func loginRejectsBadCredentials() async {
+        let client = makeClient()
+        MockURLProtocol.handler = { req in
+            return (
+                HTTPURLResponse(url: req.url!, statusCode: 401, httpVersion: nil, headerFields: nil)!,
+                Data(#"{"message":"Invalid credentials","statusCode":401}"#.utf8)
+            )
+        }
+        do {
+            _ = try await client.login(email: "a@b.co", password: "wrong")
+            Issue.record("expected throw")
+        } catch let err as ImmichClientError {
+            guard case .httpStatus(let code, _) = err else {
+                Issue.record("expected .httpStatus, got \(err)")
+                return
+            }
+            #expect(code == 401)
+        } catch {
+            Issue.record("expected ImmichClientError, got \(error)")
+        }
+    }
+
+    @Test("withSessionToken produces a fresh client with the token; original is unchanged")
+    func withSessionTokenIsImmutable() {
+        let original = ImmichClient(
+            baseURL: URL(string: "https://photos.example.com")!,
+            apiKey: "TEST-KEY",
+            session: MockURLProtocol.session()
+        )
+        #expect(original.sessionToken == nil)
+        let session = original.withSessionToken("xyz")
+        #expect(session.sessionToken == "xyz")
+        #expect(original.sessionToken == nil)
+        let cleared = session.withSessionToken(nil)
+        #expect(cleared.sessionToken == nil)
+    }
+
+    @Test("non-sync endpoints continue to use x-api-key even when sessionToken is set")
+    func nonSyncEndpointsKeepApiKey() async throws {
+        // The session token only applies to /sync/*. listAllAssets and
+        // friends should keep using the API key — otherwise turning on
+        // session auth would accidentally break every other endpoint.
+        let baseClient = makeClient()
+        let client = baseClient.withSessionToken("session-XYZ")
+        let apiKeySink = Ref<String?>(nil)
+        let authSink = Ref<String?>(nil)
+        MockURLProtocol.handler = { req in
+            apiKeySink.value = req.value(forHTTPHeaderField: "x-api-key")
+            authSink.value = req.value(forHTTPHeaderField: "Authorization")
+            return (
+                HTTPURLResponse(url: req.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
+                Data(#"{"assets":{"items":[],"nextPage":null}}"#.utf8)
+            )
+        }
+        _ = try await client.listAllAssets()
+        #expect(apiKeySink.value == "TEST-KEY")
+        #expect(authSink.value == nil)
+    }
 }
