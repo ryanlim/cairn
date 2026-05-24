@@ -1355,6 +1355,39 @@ struct SwiftDataServerAssetCacheStoreTests {
         #expect(byId["a2"]?.livePhotoVideoId == "v9")
     }
 
+    @Test("thumbhash round-trips through cache → snapshot")
+    func thumbhashRoundTrips() async throws {
+        let store = SwiftDataServerAssetCacheStore(container: try makeContainer())
+        let withHash = SyncAssetV1(
+            id: "with-hash",
+            ownerId: "u1",
+            originalFileName: "x.HEIC",
+            checksum: "AAAA",
+            thumbhash: "Bw0KFw...",
+            visibility: "timeline",
+            isFavorite: false,
+            type: "image"
+        )
+        let withoutHash = SyncAssetV1(
+            id: "no-hash",
+            ownerId: "u1",
+            originalFileName: "y.HEIC",
+            checksum: "BBBB",
+            thumbhash: nil,
+            visibility: "timeline",
+            isFavorite: false,
+            type: "image"
+        )
+        _ = try await store.applyEvents([
+            .asset(withHash, ack: "a"),
+            .asset(withoutHash, ack: "b"),
+        ])
+        let snap = try await store.snapshot()
+        let byId = Dictionary(uniqueKeysWithValues: snap.map { ($0.id, $0) })
+        #expect(byId["with-hash"]?.thumbhash == "Bw0KFw...")
+        #expect(byId["no-hash"]?.thumbhash == nil)
+    }
+
     @Test("applyEvents upserts existing assets — same id, overwriting fields")
     func upsertsExisting() async throws {
         let store = SwiftDataServerAssetCacheStore(container: try makeContainer())

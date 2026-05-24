@@ -23,7 +23,7 @@ struct ServerAssetSyncCoordinatorTests {
                     isTrashed: payload.deletedAt != nil,
                     originalFileName: payload.originalFileName,
                     fileCreatedAt: payload.fileCreatedAt,
-                    thumbhash: nil
+                    thumbhash: payload.thumbhash
                 )
             }
         }

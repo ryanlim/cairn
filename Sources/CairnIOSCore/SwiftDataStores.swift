@@ -309,6 +309,11 @@ final class StoredServerAsset {
     @Attribute(.unique) var serverAssetId: String
     var checksumBase64: String
     var originalFileName: String
+    /// Server-side `thumbhash` blob, base64-encoded — small (~28 bytes)
+    /// placeholder image data. Carried through the cache so the
+    /// Excluded / Pending Review screens render their blurry
+    /// placeholders the same way under either discovery path.
+    var thumbhash: String?
     var livePhotoVideoId: String?
     var deletedAt: Date?
     var visibility: String
@@ -326,6 +331,7 @@ final class StoredServerAsset {
         serverAssetId: String,
         checksumBase64: String,
         originalFileName: String,
+        thumbhash: String?,
         livePhotoVideoId: String?,
         deletedAt: Date?,
         visibility: String,
@@ -340,6 +346,7 @@ final class StoredServerAsset {
         self.serverAssetId = serverAssetId
         self.checksumBase64 = checksumBase64
         self.originalFileName = originalFileName
+        self.thumbhash = thumbhash
         self.livePhotoVideoId = livePhotoVideoId
         self.deletedAt = deletedAt
         self.visibility = visibility
@@ -1751,7 +1758,7 @@ public actor SwiftDataServerAssetCacheStore: ServerAssetCacheStore {
             isTrashed: isTrashed,
             originalFileName: row.originalFileName,
             fileCreatedAt: row.fileCreatedAt,
-            thumbhash: nil
+            thumbhash: row.thumbhash
         )
     }
 
@@ -1760,6 +1767,7 @@ public actor SwiftDataServerAssetCacheStore: ServerAssetCacheStore {
             serverAssetId: payload.id,
             checksumBase64: payload.checksum,
             originalFileName: payload.originalFileName,
+            thumbhash: payload.thumbhash,
             livePhotoVideoId: payload.livePhotoVideoId,
             deletedAt: payload.deletedAt,
             visibility: payload.visibility,
@@ -1776,6 +1784,7 @@ public actor SwiftDataServerAssetCacheStore: ServerAssetCacheStore {
     private static func copyPayload(_ payload: SyncAssetV1, into row: StoredServerAsset, now: Date) {
         row.checksumBase64 = payload.checksum
         row.originalFileName = payload.originalFileName
+        row.thumbhash = payload.thumbhash
         row.livePhotoVideoId = payload.livePhotoVideoId
         row.deletedAt = payload.deletedAt
         row.visibility = payload.visibility

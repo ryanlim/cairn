@@ -22,6 +22,7 @@ struct SyncEntitiesTests {
         #expect(asset.ownerId == "u1")
         #expect(asset.originalFileName == "IMG_0001.HEIC")
         #expect(asset.checksum == "AAAA")
+        #expect(asset.thumbhash == "abc")
         #expect(asset.livePhotoVideoId == "v1")
         #expect(asset.visibility == "timeline")
         #expect(asset.isFavorite == false)
@@ -44,6 +45,7 @@ struct SyncEntitiesTests {
             return
         }
         #expect(asset.livePhotoVideoId == nil)
+        #expect(asset.thumbhash == nil)
         #expect(asset.fileCreatedAt == nil)
         #expect(asset.fileModifiedAt == nil)
         #expect(asset.width == nil)

@@ -33,16 +33,19 @@ public enum SyncEntityType: String, Sendable, Codable, Hashable {
 // MARK: - Asset payloads
 
 /// Mirrors `SyncAssetV1` from `server/src/dtos/sync.dto.ts:68`. Cairn ignores
-/// thumbhash, exif, stackId, libraryId, localDateTime, duration, isEdited —
-/// none feed reconciliation. `checksum` is **base64-encoded SHA1**, identical
-/// to `AssetResponseDto.checksum` (verified at `sync.service.ts:33-37`,
+/// exif, stackId, libraryId, localDateTime, duration, isEdited — none feed
+/// reconciliation. `checksum` is **base64-encoded SHA1**, identical to
+/// `AssetResponseDto.checksum` (verified at `sync.service.ts:33-37`,
 /// `hexOrBufferToBase64(checksum)`), so it joins directly against cairn's
-/// existing Checksum primitive.
+/// existing Checksum primitive. `thumbhash` is carried through so the
+/// Excluded / Pending Review screens render their blurry placeholders the
+/// same way under the cache-fed path as under the paginated path.
 public struct SyncAssetV1: Sendable, Codable, Equatable, Hashable {
     public let id: String
     public let ownerId: String
     public let originalFileName: String
     public let checksum: String
+    public let thumbhash: String?
     public let livePhotoVideoId: String?
     public let deletedAt: Date?
     public let visibility: String
@@ -58,6 +61,7 @@ public struct SyncAssetV1: Sendable, Codable, Equatable, Hashable {
         ownerId: String,
         originalFileName: String,
         checksum: String,
+        thumbhash: String? = nil,
         livePhotoVideoId: String? = nil,
         deletedAt: Date? = nil,
         visibility: String,
@@ -72,6 +76,7 @@ public struct SyncAssetV1: Sendable, Codable, Equatable, Hashable {
         self.ownerId = ownerId
         self.originalFileName = originalFileName
         self.checksum = checksum
+        self.thumbhash = thumbhash
         self.livePhotoVideoId = livePhotoVideoId
         self.deletedAt = deletedAt
         self.visibility = visibility
