@@ -1343,6 +1343,29 @@ final class AppDependencies {
         ))
         syncLog.notice("[cairn.engine] output: delete=\(result.deleteCandidates.count, privacy: .public) pending=\(result.pendingReviewCandidates.count, privacy: .public) held=\(result.heldByQuarantineCandidates.count, privacy: .public) recycled=\(result.recycledExclusionCandidates.count, privacy: .public) excludedCount=\(result.excludedCandidateCount, privacy: .public)")
 
+        // Per-candidate diagnostic dump for the delete bucket. Tells us
+        // whether each candidate landed there via:
+        //   - "past-quarantine"  → ConfirmedDeleted has an old timestamp
+        //                          (first-write-wins collision OR genuinely
+        //                          old confirmed delete)
+        //   - "unconfirmed"      → no ConfirmedDeleted entry at all
+        //                          (PhotoKit change-log + orphan sweep both
+        //                          missed it at deletion time)
+        // Capped at 20 lines per sync to keep journals readable on bursts.
+        let nowForDiag = Date()
+        let qInterval = TimeInterval(max(0, model.settings.quarantineDays) * 86_400)
+        for asset in result.deleteCandidates.prefix(20) {
+            let confirmedAt = confirmedMap[asset.checksum]
+            let status: String
+            if let confirmedAt {
+                let pastQuarantine = confirmedAt.addingTimeInterval(qInterval) <= nowForDiag
+                status = pastQuarantine ? "past-quarantine(confirmedAt=\(confirmedAt.ISO8601Format()))" : "in-quarantine(confirmedAt=\(confirmedAt.ISO8601Format()))"
+            } else {
+                status = "unconfirmed(no ConfirmedDeleted entry)"
+            }
+            syncLog.notice("[cairn.diag] delete candidate: file=\(asset.originalFileName ?? "(no name)", privacy: .public) checksum=\(asset.checksum.base64, privacy: .public) \(status, privacy: .public)")
+        }
+
         // Token-expiry safety gate. A full re-enumeration triggered by an
         // expired (or unparseable) persistent-change token means the change
         // events that would have stamped quarantine clocks are gone — every
