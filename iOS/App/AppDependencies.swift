@@ -1190,7 +1190,7 @@ final class AppDependencies {
         let exclusionSnapshot = try await exclusionSnapshotTask
         let exclusionSet = Set(exclusionSnapshot.keys)
         let exclusionAddedAt = exclusionSnapshot.mapValues(\.addedAt)
-        let confirmedMap = try await confirmedSnapshotTask
+        var confirmedMap = try await confirmedSnapshotTask
 
         // Edit-retirement: union the firstObserved SHA1s for every
         // alive `localIdentifier` into the "current local" set the
@@ -1322,6 +1322,38 @@ final class AppDependencies {
             }
         }()
         await MainActor.run { self.model.photoAuthStatus = photoAuthOutcome }
+
+        // Limbo recovery. Find SHA1s in Observed-but-absent-from-Local
+        // that were never stamped to ConfirmedDeleted — i.e., the
+        // user-visible "unconfirmed delete candidate that bypasses
+        // quarantine" bug class. Several edge cases produce this state:
+        // mid-loop reconciler interrupt, race in the re-hash path,
+        // deletion event for an id with empty `LocalHashStore[id]`.
+        // Stamp them with `now` so the engine routes them through the
+        // held bucket on this pass instead of straight to ready-to-trash.
+        // The user gets a quarantine window to review / exclude.
+        // Idempotent: a SHA1 that's already in confirmedMap is excluded
+        // upfront, and `ConfirmedDeletedStore.union` is first-write-wins
+        // so a parallel-path stamp can't reset the clock.
+        let limboNow = Date()
+        let limbo = ReconciliationEngine.limboChecksums(
+            observed: observedSet,
+            currentLocal: extendedLocal,
+            confirmedDeleted: Set(confirmedMap.keys),
+            excluded: exclusionSet
+        )
+        if !limbo.isEmpty {
+            syncLog.notice("[cairn.recover] limbo: \(limbo.count, privacy: .public) observed-not-local-not-confirmed checksum(s) stamping to ConfirmedDeleted with now — starts a fresh quarantine clock")
+            try? await confirmed.union(limbo, at: limboNow)
+            // Reflect the stamping into the in-memory map so the
+            // current engine call sees the freshly-stamped entries
+            // and routes them to the held bucket on THIS pass — not
+            // next pass. Without this, the engine would still see
+            // them as unconfirmed for one more sync.
+            for checksum in limbo {
+                confirmedMap[checksum] = limboNow
+            }
+        }
 
         // Diagnostic: surface the inputs and outputs of the engine
         // call so "items in unconfirmed not held" reports can be

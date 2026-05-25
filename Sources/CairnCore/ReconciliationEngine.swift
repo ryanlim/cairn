@@ -173,6 +173,54 @@ public struct ReconciliationOutput: Sendable, Equatable {
 /// suite is the conformance spec, and this is the piece a Kotlin port would
 /// re-implement first.
 public enum ReconciliationEngine {
+    /// Find SHA1s in a "limbo" state: present in `ObservedStore` (cairn
+    /// has hashed them before), absent from the current local library
+    /// (the asset is no longer on the device), and **never recorded in
+    /// `ConfirmedDeletedStore`** (no deletion was ever stamped). Also
+    /// excludes user-protected checksums so excluded items don't get
+    /// retroactively stamped.
+    ///
+    /// In normal operation these sets should be empty — the
+    /// reconciler's change-log + orphan-sweep paths stamp every
+    /// observed-then-deleted SHA1 with `now` so the quarantine clock
+    /// can run. But several edge cases can produce limbo entries:
+    ///
+    /// - A reconciler scan that wrote to `LocalHashStore` for some ids,
+    ///   then was interrupted (app suspension, task cancellation) before
+    ///   the batch `commitObservations` paired write completed for the
+    ///   in-flight id; the next scan finds the asset deleted with no
+    ///   matching cache entry to stamp from.
+    /// - `LocalHashStore.set(_:for:modificationDate:)` deleting prior
+    ///   rows during a re-hash while the reconciler's `retiredByEdit`
+    ///   accounting races; the prior bytes leave the cache without
+    ///   going through the edit-retirement quarantine path.
+    /// - A `deletedLocalIdentifier` event arriving for an id whose
+    ///   `LocalHashStore[id]` was already cleared by some earlier
+    ///   path; the deletion handler sees an empty cached set and stamps
+    ///   nothing.
+    ///
+    /// The recovery strategy: stamp limbo SHA1s into `ConfirmedDeleted`
+    /// with `now`, starting their quarantine clock fresh. In `.trusting`
+    /// mode this turns "instantly ready to trash (unconfirmed)" into
+    /// "held for 14 days, then ready to trash" — the user gets a window
+    /// to catch and exclude before propagation. Safe: these checksums
+    /// have already been judged "absent from device," so stamping
+    /// preserves the engine's existing semantics, it just routes them
+    /// through the held bucket first.
+    ///
+    /// Run once per sync just before building the engine input.
+    public static func limboChecksums(
+        observed: Set<Checksum>,
+        currentLocal: Set<Checksum>,
+        confirmedDeleted: Set<Checksum>,
+        excluded: Set<Checksum>
+    ) -> Set<Checksum> {
+        observed
+            .subtracting(currentLocal)
+            .subtracting(confirmedDeleted)
+            .subtracting(excluded)
+    }
+
     /// Four-pass classification:
     ///
     ///   1. Diff: pick non-trashed server assets whose checksum is in

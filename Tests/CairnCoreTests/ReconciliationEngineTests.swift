@@ -781,4 +781,86 @@ struct ReconciliationEngineTests {
         #expect(output.deleteCandidates.map(\.id) == ["sD"])
         #expect(output.excludedCandidateCount == 1) // C stays filtered
     }
+
+    // MARK: - Limbo recovery
+
+    @Test("limbo: SHA1 in observed-not-local-not-confirmed-not-excluded is flagged")
+    func limboBasicFlag() {
+        let limbo = ReconciliationEngine.limboChecksums(
+            observed: Set([Checksum(base64: "A"), Checksum(base64: "B")]),
+            currentLocal: Set([Checksum(base64: "A")]),
+            confirmedDeleted: [],
+            excluded: []
+        )
+        #expect(limbo == Set([Checksum(base64: "B")]))
+    }
+
+    @Test("limbo: SHA1 already in confirmedDeleted is NOT flagged")
+    func limboExcludesAlreadyConfirmed() {
+        let limbo = ReconciliationEngine.limboChecksums(
+            observed: Set([Checksum(base64: "A"), Checksum(base64: "B")]),
+            currentLocal: [],
+            confirmedDeleted: Set([Checksum(base64: "A")]),
+            excluded: []
+        )
+        // A is already confirmed-deleted; only B is in limbo.
+        #expect(limbo == Set([Checksum(base64: "B")]))
+    }
+
+    @Test("limbo: excluded checksums are NOT retroactively stamped")
+    func limboExcludesExcluded() {
+        // Important: a user who has excluded a SHA1 has explicitly said
+        // "don't touch this on Immich." Flagging it as limbo would
+        // start a quarantine clock that, after 14 days, eventually
+        // promotes it to ready-to-trash. The exclude must win.
+        let limbo = ReconciliationEngine.limboChecksums(
+            observed: Set([Checksum(base64: "A"), Checksum(base64: "B")]),
+            currentLocal: [],
+            confirmedDeleted: [],
+            excluded: Set([Checksum(base64: "A")])
+        )
+        #expect(limbo == Set([Checksum(base64: "B")]))
+    }
+
+    @Test("limbo: SHA1 still in current local is NOT flagged (asset alive)")
+    func limboExcludesAlive() {
+        let limbo = ReconciliationEngine.limboChecksums(
+            observed: Set([Checksum(base64: "A"), Checksum(base64: "B")]),
+            currentLocal: Set([Checksum(base64: "A"), Checksum(base64: "B")]),
+            confirmedDeleted: [],
+            excluded: []
+        )
+        // Both assets are alive locally — nothing in limbo, even
+        // though they're observed.
+        #expect(limbo.isEmpty)
+    }
+
+    @Test("limbo: empty observed → empty limbo (no false positives from empty store)")
+    func limboEmptyObserved() {
+        let limbo = ReconciliationEngine.limboChecksums(
+            observed: [],
+            currentLocal: Set([Checksum(base64: "A")]),
+            confirmedDeleted: [],
+            excluded: []
+        )
+        #expect(limbo.isEmpty)
+    }
+
+    @Test("limbo: representative real-world case — 6 deleted, 4 stamped, 2 limbo")
+    func limboReproducesUserBug() {
+        // Mirrors the field report: a user takes 6 photos, deletes all
+        // 6, but the original sync only stamps 4 to ConfirmedDeleted
+        // (whether via partial mid-loop failure or a re-hash race).
+        // The other 2 sit in Observed without a quarantine clock.
+        let allSix = (1...6).map { Checksum(base64: "ck-\($0)") }
+        let stamped = Set(allSix.prefix(4)) // sha1s 1..4
+        let limbo = ReconciliationEngine.limboChecksums(
+            observed: Set(allSix),
+            currentLocal: [],
+            confirmedDeleted: stamped,
+            excluded: []
+        )
+        // Sha1s 5 and 6 are the missing 2 — they're the limbo set.
+        #expect(limbo == Set(allSix.suffix(2)))
+    }
 }
