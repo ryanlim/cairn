@@ -362,9 +362,13 @@ public struct SetupScreen: View {
             .padding(.bottom, 10)
 
             // Scopes hint — verbatim copy + monospace token list from
-            // `screens/setup.jsx` step 0. sync.* scopes enable incremental
-            // server-side discovery; cairn falls back to paginated discovery
-            // when they're missing, so listing them keeps existing keys working.
+            // `screens/setup.jsx` step 0. Only the API-key-usable
+            // scopes appear here. Incremental sync uses a separate
+            // session-auth path (Settings → Advanced → Sign in to
+            // Immich) and doesn't need anything extra on the key —
+            // see ARCHITECTURE.md "API endpoints" for the discovery
+            // that `sync.*` permissions exist on the server but
+            // aren't reachable via API key auth.
             (Text("Scopes required: ")
                 + monoCode("asset.read") + Text(", ")
                 + monoCode("asset.view") + Text(", ")
@@ -372,11 +376,7 @@ public struct SetupScreen: View {
                 + monoCode("asset.delete") + Text(", ")
                 + monoCode("tag.create") + Text(", ")
                 + monoCode("tag.asset") + Text(", ")
-                + monoCode("tag.read") + Text(", ")
-                + monoCode("sync.stream") + Text(", ")
-                + monoCode("sync.checkpoint.read") + Text(", ")
-                + monoCode("sync.checkpoint.update") + Text(", ")
-                + monoCode("sync.checkpoint.delete") + Text("."))
+                + monoCode("tag.read") + Text("."))
                 .font(.cairnScaled(size: 12))
                 .foregroundStyle(t.textMuted)
                 .lineSpacing(3)

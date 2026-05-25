@@ -261,7 +261,8 @@ API key scopes:
 - **Required for normal operation**: `asset.read`, `asset.view`, `asset.download`, `asset.delete`, `tag.create`, `tag.asset`.
 - **Required additionally** for `cairn history` and `restore --file-name-matches`: `tag.read`.
 - **`asset.view` + `asset.download`** are required for thumbnail fetching in the iOS app.
-- **`sync.stream`, `sync.checkpoint.{read,update,delete}`** are listed for future incremental server-side discovery, but currently Immich rejects `/sync/*` from API key auth so these scopes are inert.
+
+The `sync.*` permission family exists on the Immich server but is unreachable via API-key auth (`sync.service.ts` requires `auth.session?.id` at the service-layer guard, before any permission check). Incremental sync therefore uses a separate session-auth path — `POST /api/auth/login` with email + password, session token cached in Keychain, sent as `Authorization: Bearer` on `/sync/*` calls only. Wired through Settings → Advanced → Sign in to Immich.
 
 ## Confirmed-deletion signal
 
@@ -622,7 +623,11 @@ making changes in the relevant area.
   `auth.session?.id`, which API keys never carry). Permissions
   `sync.stream` and `sync.checkpoint.*` show up in the admin UI as
   togglable but are functionally unreachable for API-key clients.
-  Adding session-cookie auth to cairn would unblock this.
+  Resolution: cairn's iOS app exposes a separate session-auth flow
+  (Settings → Advanced → Sign in to Immich) that hits
+  `/api/auth/login`, caches the access token in Keychain, and sends
+  it as `Authorization: Bearer` on `/sync/*` calls only. Every other
+  endpoint still uses the API key.
 - The harness's "is git repository" check is cached at session start;
   running `git init` mid-session leaves agent worktree isolation
   permanently disabled until the next session start.

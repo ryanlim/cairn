@@ -65,7 +65,7 @@ swift run cairn history list                             # server-side reconstru
 swift run cairn diagnose                                 # visibility classes + Live Photo integrity
 ```
 
-`cairn --help` enumerates every subcommand and flag. API key scopes needed: `asset.read`, `asset.view`, `asset.download`, `asset.delete`, `tag.create`, `tag.asset` — plus `tag.read` for `history` and `restore --file-name-matches`, and `sync.stream`, `sync.checkpoint.read`, `sync.checkpoint.update`, `sync.checkpoint.delete` for incremental server-side discovery (cairn falls back to paginated discovery if these are missing).
+`cairn --help` enumerates every subcommand and flag. API key scopes needed: `asset.read`, `asset.view`, `asset.download`, `asset.delete`, `tag.create`, `tag.asset` — plus `tag.read` for `history` and `restore --file-name-matches`. (Incremental sync uses a separate session-auth path in the iOS app — Settings → Advanced → Sign in to Immich — because Immich's `/sync/*` endpoints don't accept API-key auth at all.)
 
 ## Safety model
 
