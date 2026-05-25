@@ -208,3 +208,102 @@ struct SyncActivityTests {
         #expect(InitialScanScreen.median(of: samples) == 200)
     }
 }
+
+/// Pins the per-asset hash-event contract on `CairnAppModel`.
+/// `applyHashEvent` is the funnel for the reconciler's
+/// `onHashStarted` / `onHashDownloadProgress` / `onHashFinished`
+/// callbacks; `SyncDetailSheet`'s currently-hashing sub-row reads
+/// from `spotlightedHash` (longest-running entry in
+/// `inFlightHashes`).
+@Suite("CairnAppModel — hash events")
+struct HashEventTests {
+
+    private func makeItem(
+        id: String = "A1",
+        name: String = "IMG_0001.HEIC",
+        bytes: Int64 = 4_500_000,
+        at: Date = Date()
+    ) -> CairnAppModel.HashingItem {
+        .init(assetID: id, filename: name, sizeBytes: bytes, startedAt: at)
+    }
+
+    @Test("started inserts a row keyed by assetID")
+    @MainActor
+    func startedInserts() {
+        let model = CairnAppModel()
+        let item = makeItem()
+        model.applyHashEvent(.started(item))
+        #expect(model.inFlightHashes.count == 1)
+        #expect(model.inFlightHashes["A1"] == item)
+    }
+
+    @Test("finished removes the row; idempotent on absent key")
+    @MainActor
+    func finishedRemoves() {
+        let model = CairnAppModel()
+        model.applyHashEvent(.started(makeItem()))
+        model.applyHashEvent(.finished(assetID: "A1"))
+        #expect(model.inFlightHashes.isEmpty)
+        // Late arrival after finish — should not resurrect.
+        model.applyHashEvent(.finished(assetID: "A1"))
+        #expect(model.inFlightHashes.isEmpty)
+    }
+
+    @Test("downloadProgress updates fraction on existing row")
+    @MainActor
+    func progressUpdates() {
+        let model = CairnAppModel()
+        model.applyHashEvent(.started(makeItem()))
+        model.applyHashEvent(.downloadProgress(assetID: "A1", fraction: 0.4))
+        #expect(model.inFlightHashes["A1"]?.downloadFraction == 0.4)
+        model.applyHashEvent(.downloadProgress(assetID: "A1", fraction: 0.9))
+        #expect(model.inFlightHashes["A1"]?.downloadFraction == 0.9)
+    }
+
+    @Test("downloadProgress for an unknown asset is a silent no-op")
+    @MainActor
+    func progressOnUnknownIsNoOp() {
+        let model = CairnAppModel()
+        // The asset already finished; a late progress event arrives.
+        // Inserting an orphan would leave a row in the dict forever
+        // (no matching finished event would ever fire), so the guard
+        // matters.
+        model.applyHashEvent(.downloadProgress(assetID: "ghost", fraction: 0.5))
+        #expect(model.inFlightHashes.isEmpty)
+    }
+
+    @Test("spotlightedHash returns the longest-running entry")
+    @MainActor
+    func spotlightLongestRunning() {
+        let model = CairnAppModel()
+        let t0 = Date(timeIntervalSince1970: 1_700_000_000)
+        let oldest = makeItem(id: "A1", at: t0)
+        let middle = makeItem(id: "A2", at: t0.addingTimeInterval(0.5))
+        let newest = makeItem(id: "A3", at: t0.addingTimeInterval(1.0))
+        model.applyHashEvent(.started(middle))
+        model.applyHashEvent(.started(newest))
+        model.applyHashEvent(.started(oldest))
+        #expect(model.spotlightedHash?.assetID == "A1")
+    }
+
+    @Test("spotlightedHash is nil when no hashes are in flight")
+    @MainActor
+    func spotlightEmpty() {
+        let model = CairnAppModel()
+        #expect(model.spotlightedHash == nil)
+        model.applyHashEvent(.started(makeItem()))
+        model.applyHashEvent(.finished(assetID: "A1"))
+        #expect(model.spotlightedHash == nil)
+    }
+
+    @Test("resetSyncNarration clears in-flight hashes")
+    @MainActor
+    func resetClearsInFlight() {
+        let model = CairnAppModel()
+        model.applyHashEvent(.started(makeItem(id: "A1")))
+        model.applyHashEvent(.started(makeItem(id: "A2")))
+        #expect(model.inFlightHashes.count == 2)
+        model.resetSyncNarration()
+        #expect(model.inFlightHashes.isEmpty)
+    }
+}

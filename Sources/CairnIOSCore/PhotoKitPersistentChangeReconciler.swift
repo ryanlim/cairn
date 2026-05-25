@@ -324,6 +324,28 @@ public final class PhotoKitPersistentChangeReconciler {
     /// unchanged.
     private let onPhaseChange: @Sendable (String, Int) async -> Void
 
+    /// Per-asset hash-start callback. Fires once per asset right before
+    /// `hashOneAsset` begins the resource fetch loop, so the host can
+    /// surface "currently hashing: IMG_4521.HEIC · 47.3 MB" under the
+    /// Hashing row in `SyncDetailSheet`. Pairs with `onHashFinished`
+    /// for matched lifecycle and `onHashDownloadProgress` for the
+    /// iCloud-download fraction.
+    private let onHashStarted: @Sendable (_ assetID: String, _ filename: String, _ sizeBytes: Int64) async -> Void
+
+    /// iCloud download-progress callback for the current per-asset
+    /// fetch. Fires from PhotoKit's `PHAssetResourceRequestOptions.progressHandler`
+    /// at 0…1 during the multi-second download phase of iCloud-only
+    /// resources. Stays silent for locally-available resources (no
+    /// download phase). Throttled internally to ≤4 emits/sec so the
+    /// UI redraws don't melt under a fast-downloading video.
+    private let onHashDownloadProgress: @Sendable (_ assetID: String, _ fraction: Double) async -> Void
+
+    /// Per-asset hash-finished callback. Fires after `hashOneAsset`
+    /// returns (success, defer, timeout, or thrown error) so the host
+    /// can drop the row from its in-flight dict. Guaranteed to fire
+    /// once per `onHashStarted` even on cancellation paths.
+    private let onHashFinished: @Sendable (_ assetID: String) async -> Void
+
     /// Build a reconciler. All stores are injected so tests can wire
     /// in-memory fakes and so the same type works across the
     /// foreground scan and the background refresh.
@@ -377,6 +399,9 @@ public final class PhotoKitPersistentChangeReconciler {
         scope: IndexingScope = .fullLibrary,
         onHashProgress: @escaping @Sendable (Int, Int, Set<Checksum>) async -> Void = { _, _, _ in },
         onPhaseChange: @escaping @Sendable (String, Int) async -> Void = { _, _ in },
+        onHashStarted: @escaping @Sendable (String, String, Int64) async -> Void = { _, _, _ in },
+        onHashDownloadProgress: @escaping @Sendable (String, Double) async -> Void = { _, _ in },
+        onHashFinished: @escaping @Sendable (String) async -> Void = { _ in },
         clock: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.hashStore = hashStore
@@ -395,6 +420,9 @@ public final class PhotoKitPersistentChangeReconciler {
         self.scope = scope
         self.onHashProgress = onHashProgress
         self.onPhaseChange = onPhaseChange
+        self.onHashStarted = onHashStarted
+        self.onHashDownloadProgress = onHashDownloadProgress
+        self.onHashFinished = onHashFinished
         self.clock = clock
     }
 
@@ -1849,6 +1877,13 @@ public final class PhotoKitPersistentChangeReconciler {
         // scan, which is exactly what the eager pattern prevents.)
         var successfullyHashedIDs: Set<String> = []
 
+        // Capture per-asset event callbacks as locals so the @Sendable
+        // task closures below don't need to capture `self`. Matches the
+        // existing softLimit/hardCeiling/timeout capture pattern.
+        let startedCb = onHashStarted
+        let progressCb = onHashDownloadProgress
+        let finishedCb = onHashFinished
+
         try await withThrowingTaskGroup(of: HashResult.self) { group in
             var iterator = assets.makeIterator()
             var inFlight = 0
@@ -1863,7 +1898,10 @@ public final class PhotoKitPersistentChangeReconciler {
                         asset,
                         softLimitBytes: softLimit,
                         hardCeilingBytes: hardCeiling,
-                        timeoutSeconds: timeout
+                        timeoutSeconds: timeout,
+                        onStart: startedCb,
+                        onDownloadProgress: progressCb,
+                        onFinish: finishedCb
                     )
                 }
                 inFlight += 1
@@ -2007,7 +2045,10 @@ public final class PhotoKitPersistentChangeReconciler {
                             next,
                             softLimitBytes: softLimit,
                             hardCeilingBytes: hardCeiling,
-                            timeoutSeconds: timeout
+                            timeoutSeconds: timeout,
+                            onStart: startedCb,
+                            onDownloadProgress: progressCb,
+                            onFinish: finishedCb
                         )
                     }
                     inFlight += 1
@@ -2075,15 +2116,19 @@ public final class PhotoKitPersistentChangeReconciler {
         _ asset: PHAsset,
         softLimitBytes: Int64?,
         hardCeilingBytes: Int64?,
-        timeoutSeconds: TimeInterval?
+        timeoutSeconds: TimeInterval?,
+        onStart: @escaping @Sendable (_ assetID: String, _ filename: String, _ sizeBytes: Int64) async -> Void = { _, _, _ in },
+        onDownloadProgress: @escaping @Sendable (_ assetID: String, _ fraction: Double) async -> Void = { _, _ in },
+        onFinish: @escaping @Sendable (_ assetID: String) async -> Void = { _ in }
     ) async throws -> HashResult {
         try Task.checkCancellation()
         let start = Date()
         let resources = PhotoKitPhotoEnumerator.resourcesToHash(for: asset)
+        let assetID = asset.localIdentifier
 
         guard !resources.isEmpty else {
             return HashResult(
-                assetID: asset.localIdentifier,
+                assetID: assetID,
                 checksums: [],
                 modificationDate: asset.modificationDate,
                 elapsedMs: 0,
@@ -2098,15 +2143,17 @@ public final class PhotoKitPersistentChangeReconciler {
         // bound, short-circuit with `.aboveHardCeiling` so the caller
         // knows not to queue the asset.
         var downloadBytes: Int64 = 0
+        var totalResourceBytes: Int64 = 0
         for resource in resources {
             let local = PhotoKitPhotoEnumerator.resourceIsLocallyAvailable(resource) ?? false
-            if !local, let bytes = PhotoKitPhotoEnumerator.resourceFileSize(resource) {
-                downloadBytes += bytes
+            if let bytes = PhotoKitPhotoEnumerator.resourceFileSize(resource) {
+                totalResourceBytes += bytes
+                if !local { downloadBytes += bytes }
             }
         }
         if let hardCeilingBytes, downloadBytes > hardCeilingBytes {
             return HashResult(
-                assetID: asset.localIdentifier,
+                assetID: assetID,
                 checksums: [],
                 modificationDate: asset.modificationDate,
                 elapsedMs: Date().timeIntervalSince(start) * 1000,
@@ -2116,13 +2163,46 @@ public final class PhotoKitPersistentChangeReconciler {
         }
         if let softLimitBytes, downloadBytes > softLimitBytes {
             return HashResult(
-                assetID: asset.localIdentifier,
+                assetID: assetID,
                 checksums: [],
                 modificationDate: asset.modificationDate,
                 elapsedMs: Date().timeIntervalSince(start) * 1000,
                 resourceCount: resources.count,
                 deferReason: .tooLarge(bytes: downloadBytes)
             )
+        }
+
+        // Announce start now that pre-checks have cleared. Pre-check
+        // bail-outs (above-ceiling / too-large) skip the lifecycle —
+        // they never actually start hashing, so `onStart` / `onFinish`
+        // would just create transient flicker in the UI dict.
+        let displayName = resources.first?.originalFilename ?? assetID
+        await onStart(assetID, displayName, totalResourceBytes)
+        defer {
+            // Fire-and-forget the finish event. Detached so the defer
+            // doesn't strand a continuation when the outer Task is
+            // cancelled mid-hash — the host gets at-most-once finish
+            // per onStart and tolerates the rare late arrival.
+            Task { await onFinish(assetID) }
+        }
+
+        // Throttled progress bridge. PhotoKit can fire the handler
+        // ~10–30×/sec during a fast iCloud download; we coalesce to
+        // ≤4/sec so MainActor re-renders don't pile up. The closure
+        // captures a mutable box because PhotoKit's progressHandler
+        // is a `@Sendable` synchronous callback — no async / no self.
+        final class ProgressGate: @unchecked Sendable {
+            var lastEmit: Date = .distantPast
+        }
+        let gate = ProgressGate()
+        let progressBridge: @Sendable (Double) -> Void = { fraction in
+            let now = Date()
+            // Always allow the terminal "1.0" through so the UI gets a
+            // clean "complete" tick even if it falls inside the gate
+            // window.
+            if fraction < 1.0 && now.timeIntervalSince(gate.lastEmit) < 0.25 { return }
+            gate.lastEmit = now
+            Task { await onDownloadProgress(assetID, fraction) }
         }
 
         // Race the hashing against the per-asset timeout — but only
@@ -2141,7 +2221,8 @@ public final class PhotoKitPersistentChangeReconciler {
                         group.addTask {
                             try await PhotoKitPhotoEnumerator.hash(
                                 resource: resource,
-                                assetLocalIdentifier: asset.localIdentifier
+                                assetLocalIdentifier: assetID,
+                                progressHandler: progressBridge
                             )
                         }
                         group.addTask {
@@ -2159,7 +2240,8 @@ public final class PhotoKitPersistentChangeReconciler {
                     // into "fetch as long as needed" (drain mode).
                     checksum = try await PhotoKitPhotoEnumerator.hash(
                         resource: resource,
-                        assetLocalIdentifier: asset.localIdentifier
+                        assetLocalIdentifier: assetID,
+                        progressHandler: progressBridge
                     )
                 }
                 checksums.insert(checksum)
@@ -2181,7 +2263,7 @@ public final class PhotoKitPersistentChangeReconciler {
         let elapsed = Date().timeIntervalSince(start) * 1000
         if timedOut {
             return HashResult(
-                assetID: asset.localIdentifier,
+                assetID: assetID,
                 checksums: [],
                 modificationDate: asset.modificationDate,
                 elapsedMs: elapsed,
@@ -2190,7 +2272,7 @@ public final class PhotoKitPersistentChangeReconciler {
             )
         }
         return HashResult(
-            assetID: asset.localIdentifier,
+            assetID: assetID,
             checksums: checksums,
             modificationDate: asset.modificationDate,
             elapsedMs: elapsed,

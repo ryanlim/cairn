@@ -237,6 +237,30 @@ final class AppDependencies {
                         detail: "\(phaseName) · \(elapsedMs.formatted(.number))ms"
                     ))
                 }
+            },
+            onHashStarted: { [weak self] assetID, filename, sizeBytes in
+                guard let self else { return }
+                await MainActor.run {
+                    let item = CairnAppModel.HashingItem(
+                        assetID: assetID,
+                        filename: filename,
+                        sizeBytes: sizeBytes,
+                        startedAt: Date()
+                    )
+                    self.model.applyHashEvent(.started(item))
+                }
+            },
+            onHashDownloadProgress: { [weak self] assetID, fraction in
+                guard let self else { return }
+                await MainActor.run {
+                    self.model.applyHashEvent(.downloadProgress(assetID: assetID, fraction: fraction))
+                }
+            },
+            onHashFinished: { [weak self] assetID in
+                guard let self else { return }
+                await MainActor.run {
+                    self.model.applyHashEvent(.finished(assetID: assetID))
+                }
             }
         )
     }

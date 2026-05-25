@@ -24,6 +24,10 @@ public struct SyncDetailSheet: View {
     public let progress: (hashed: Int, total: Int)?
     public let timeline: [CairnAppModel.PhaseEntry]
     public let activity: [CairnAppModel.SyncActivity]
+    /// Longest-running in-flight hash, surfaced as a sub-row under
+    /// the current-phase card during the Hashing phase. `nil` outside
+    /// that phase or when nothing is currently hashing.
+    public let spotlightedHash: CairnAppModel.HashingItem?
     public let onCancel: () -> Void
     public let onClose: () -> Void
 
@@ -36,6 +40,7 @@ public struct SyncDetailSheet: View {
         progress: (hashed: Int, total: Int)?,
         timeline: [CairnAppModel.PhaseEntry],
         activity: [CairnAppModel.SyncActivity],
+        spotlightedHash: CairnAppModel.HashingItem? = nil,
         onCancel: @escaping () -> Void = {},
         onClose: @escaping () -> Void = {}
     ) {
@@ -45,6 +50,7 @@ public struct SyncDetailSheet: View {
         self.progress = progress
         self.timeline = timeline
         self.activity = activity
+        self.spotlightedHash = spotlightedHash
         self.onCancel = onCancel
         self.onClose = onClose
     }
@@ -142,11 +148,76 @@ public struct SyncDetailSheet: View {
                             .font(.cairnScaled(size: 12, design: .monospaced))
                             .foregroundStyle(t.textMuted)
                     }
+                    if isSyncing && phase == .hashing, let item = spotlightedHash {
+                        spotlightedHashRow(item, at: context.date)
+                    }
                 }
                 .padding(16)
             }
         }
         .padding(.top, 12)
+    }
+
+    /// Render the longest-running in-flight hash: filename + size,
+    /// elapsed (once ≥3s — quick local hashes don't need a label that
+    /// flashes for 80ms), and an iCloud download bar when the
+    /// resource reports progress. Hidden by the call site when not in
+    /// hashing phase or when nothing's in flight.
+    @ViewBuilder
+    private func spotlightedHashRow(_ item: CairnAppModel.HashingItem, at now: Date) -> some View {
+        let elapsed = now.timeIntervalSince(item.startedAt)
+        VStack(alignment: .leading, spacing: 6) {
+            Rectangle()
+                .fill(t.divider)
+                .frame(height: 0.5)
+                .padding(.vertical, 2)
+            HStack(spacing: 8) {
+                Image(systemName: "doc")
+                    .font(.cairnScaled(size: 11))
+                    .foregroundStyle(t.textHint)
+                Text(item.filename)
+                    .font(.cairnScaled(size: 12, design: .monospaced))
+                    .foregroundStyle(t.text)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 6)
+                if item.sizeBytes > 0 {
+                    Text(byteFormatter.string(fromByteCount: item.sizeBytes))
+                        .font(.cairnScaled(size: 11, design: .monospaced))
+                        .foregroundStyle(t.textMuted)
+                }
+            }
+            if elapsed >= 3 {
+                HStack(spacing: 8) {
+                    Text("Elapsed \(elapsedShort(elapsed))")
+                        .font(.cairnScaled(size: 11, design: .monospaced))
+                        .foregroundStyle(t.textMuted)
+                    if let fraction = item.downloadFraction {
+                        Spacer(minLength: 6)
+                        Text("Downloading \(Int(fraction * 100))%")
+                            .font(.cairnScaled(size: 11, design: .monospaced))
+                            .foregroundStyle(t.textMuted)
+                    }
+                }
+            }
+            if let fraction = item.downloadFraction {
+                progressBar(fraction: fraction)
+            }
+        }
+    }
+
+    private var byteFormatter: ByteCountFormatter {
+        let f = ByteCountFormatter()
+        f.countStyle = .file
+        f.allowedUnits = [.useKB, .useMB, .useGB]
+        return f
+    }
+
+    private func elapsedShort(_ seconds: TimeInterval) -> String {
+        if seconds < 60 { return String(format: "%.0fs", seconds) }
+        let minutes = Int(seconds / 60)
+        let remainder = Int(seconds) % 60
+        return "\(minutes)m \(remainder)s"
     }
 
     private func elapsedLabel(at now: Date) -> String {

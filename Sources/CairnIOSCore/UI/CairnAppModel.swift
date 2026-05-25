@@ -479,6 +479,34 @@ public final class CairnAppModel {
     public func resetSyncNarration() {
         syncActivity.removeAll(keepingCapacity: true)
         syncTimeline.removeAll(keepingCapacity: true)
+        inFlightHashes.removeAll(keepingCapacity: true)
+    }
+
+    /// Apply a per-asset hash event from the reconciler. `started`
+    /// inserts a row; `downloadProgress` updates the fraction on an
+    /// existing row (no-op if the key is absent — the asset already
+    /// finished); `finished` removes the row. Idempotent on re-entry.
+    public func applyHashEvent(_ event: HashEvent) {
+        switch event {
+        case .started(let item):
+            inFlightHashes[item.assetID] = item
+        case .downloadProgress(let assetID, let fraction):
+            if var existing = inFlightHashes[assetID] {
+                existing.downloadFraction = fraction
+                inFlightHashes[assetID] = existing
+            }
+        case .finished(let assetID):
+            inFlightHashes.removeValue(forKey: assetID)
+        }
+    }
+
+    /// Per-asset event surfaced from the reconciler. Routed through
+    /// `applyHashEvent` so the model owns the in-flight dict's
+    /// invariants (no orphans, no late-arrival writes after finish).
+    public enum HashEvent: Sendable, Equatable {
+        case started(HashingItem)
+        case downloadProgress(assetID: String, fraction: Double)
+        case finished(assetID: String)
     }
 
     /// Per-phase elapsed plus order. Cleared on each sync start;
@@ -555,6 +583,47 @@ public final class CairnAppModel {
     /// full-enumeration path (first-run, token expired) populates this;
     /// incremental syncs skip it since they're already fast.
     public var syncProgress: SyncProgress?
+
+    /// Per-asset hashing state for assets currently in flight (up to
+    /// `maxConcurrentHashes`, typically 4). Keyed by assetID so the
+    /// reconciler's `started` / `downloadProgress` / `finished` events
+    /// can update the matching entry without races. Cleared on each
+    /// sync start. `SyncDetailSheet` reads this to render the
+    /// longest-running entry under the Hashing timeline row — that's
+    /// the one most likely to be a multi-second iCloud download where
+    /// the user benefits from seeing progress.
+    public var inFlightHashes: [String: HashingItem] = [:]
+
+    /// One per-asset hashing record. `downloadFraction` is nil for
+    /// locally-available resources (no iCloud fetch) and updates from
+    /// PhotoKit's `PHAssetResourceRequestOptions.progressHandler`
+    /// during the download phase for iCloud-only resources.
+    public struct HashingItem: Sendable, Equatable, Hashable, Identifiable {
+        public let assetID: String
+        public let filename: String
+        public let sizeBytes: Int64
+        public let startedAt: Date
+        public var downloadFraction: Double?
+
+        public var id: String { assetID }
+
+        public init(assetID: String, filename: String, sizeBytes: Int64, startedAt: Date, downloadFraction: Double? = nil) {
+            self.assetID = assetID
+            self.filename = filename
+            self.sizeBytes = sizeBytes
+            self.startedAt = startedAt
+            self.downloadFraction = downloadFraction
+        }
+    }
+
+    /// The entry from `inFlightHashes` with the earliest `startedAt` —
+    /// the one that's been hashing longest, and therefore the most
+    /// interesting to surface (iCloud fetches on big videos can take
+    /// many seconds while the other 3 concurrent slots churn through
+    /// local files in <100ms). `nil` when no hashes are in flight.
+    public var spotlightedHash: HashingItem? {
+        inFlightHashes.values.min(by: { $0.startedAt < $1.startedAt })
+    }
 
     /// Latched `true` once the auto-sync on first landing has been
     /// triggered for this app session. Kept on the model (not as a

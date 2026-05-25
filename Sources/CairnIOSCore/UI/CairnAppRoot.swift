@@ -775,6 +775,7 @@ public struct CairnAppRoot: View {
                 progress: model.syncProgress.map { (hashed: $0.hashed, total: $0.total) },
                 timeline: model.syncTimeline,
                 activity: model.syncActivity,
+                spotlightedHash: model.spotlightedHash,
                 onCancel: {
                     cancelActiveSync()
                     model.presentedSheet = nil

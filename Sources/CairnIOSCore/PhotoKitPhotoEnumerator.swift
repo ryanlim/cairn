@@ -156,7 +156,11 @@ public struct PhotoKitPhotoEnumerator: PhotoEnumerator {
     /// download on demand. Completion errors that reduce to
     /// `NSUserCancelledError` surface as `CancellationError` so the
     /// Swift concurrency runtime routes them naturally.
-    static func hash(resource: PHAssetResource, assetLocalIdentifier: String) async throws -> Checksum {
+    static func hash(
+        resource: PHAssetResource,
+        assetLocalIdentifier: String,
+        progressHandler: (@Sendable (Double) -> Void)? = nil
+    ) async throws -> Checksum {
         // Cancellation plumbing: the request ID returned synchronously
         // from `requestData` is what PhotoKit wants back for cancellation.
         // Stash it in a class box so `onCancel` can read it regardless
@@ -174,6 +178,14 @@ public struct PhotoKitPhotoEnumerator: PhotoEnumerator {
                 // request. The host app should ideally pre-warm via a
                 // PHCachingImageManager, but we tolerate slow paths.
                 options.isNetworkAccessAllowed = true
+                // PhotoKit only invokes this for iCloud fetches — locally-
+                // available resources skip the download phase entirely so
+                // the handler stays silent. Fraction is 0…1.
+                if let progressHandler {
+                    options.progressHandler = { progress in
+                        progressHandler(progress)
+                    }
+                }
 
                 // Hasher is mutated only inside the data-received callback,
                 // which PhotoKit serializes per request. Wrap in a class to
