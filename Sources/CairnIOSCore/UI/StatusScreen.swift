@@ -199,7 +199,7 @@ public struct StatusScreen: View {
     /// Long-press on a journal row stashes its entry here; the sheet
     /// is presented while the value is non-nil. Pretty-printed JSON
     /// of the underlying `JournalEntry` is in `entry.rawJSON`.
-    @State private var journalRawJSONEntry: CairnFixtures.JournalTailEntry? = nil
+    @State private var journalRunDetailContext: JournalRunDetailContext? = nil
     /// Set true the moment the user taps Cancel during sync. The
     /// underlying cancellation can take a moment (orchestrators
     /// finish the current step before honoring it), so the UI
@@ -475,8 +475,8 @@ public struct StatusScreen: View {
             }
         }
         .background(t.bg)
-        .sheet(item: $journalRawJSONEntry) { entry in
-            JournalRowDetailSheet(entry: entry)
+        .sheet(item: $journalRunDetailContext) { context in
+            JournalRunDetailSheet(context: context)
         }
         .onChange(of: isSyncing) { _, syncing in
             // Reset the "Cancelling…" affordance whenever sync state
@@ -1572,10 +1572,10 @@ public struct StatusScreen: View {
                                                     if isTrashRun {
                                                         onJournalRowTap(entry.runId)
                                                     } else {
-                                                        journalRawJSONEntry = entry
+                                                        journalRunDetailContext = journalRunContext(anchor: entry)
                                                     }
                                                 },
-                                                onLongPress: { journalRawJSONEntry = entry }
+                                                onLongPress: { journalRunDetailContext = journalRunContext(anchor: entry) }
                                             )
                                         }
                                     }
@@ -1624,10 +1624,10 @@ public struct StatusScreen: View {
                                                                 if isTrashRun {
                                                                     onJournalRowTap(entry.runId)
                                                                 } else {
-                                                                    journalRawJSONEntry = entry
+                                                                    journalRunDetailContext = journalRunContext(anchor: entry)
                                                                 }
                                                             },
-                                                            onLongPress: { journalRawJSONEntry = entry }
+                                                            onLongPress: { journalRunDetailContext = journalRunContext(anchor: entry) }
                                                         )
                                                     }
                                                 }
@@ -1901,6 +1901,25 @@ public struct StatusScreen: View {
     /// non-empty `runId`. Empty-runId rows inherit the current band so
     /// stray singletons (routine `sync` events with no run association)
     /// don't visually break the surrounding group.
+    /// Build the run-scoped context for an anchor entry — collects
+    /// every visible journal-tail entry sharing the anchor's runId.
+    /// Empty-runId rows (rare; fixture-only) collapse to a single-
+    /// entry context. journalTail is bounded by the host, so this is
+    /// limited to whatever's currently rendered on Status — older
+    /// out-of-window run entries don't show up. Acceptable for v1;
+    /// adding "drill into a historical run not in the tail" is a
+    /// follow-up.
+    private func journalRunContext(anchor: CairnFixtures.JournalTailEntry) -> JournalRunDetailContext {
+        guard !anchor.runId.isEmpty else {
+            return JournalRunDetailContext(anchor: anchor, entries: [anchor])
+        }
+        let siblings = journalTail.filter { $0.runId == anchor.runId }
+        return JournalRunDetailContext(
+            anchor: anchor,
+            entries: siblings.isEmpty ? [anchor] : siblings
+        )
+    }
+
     private static func journalBandTints(for entries: [CairnFixtures.JournalTailEntry]) -> [Bool] {
         var bands: [Bool] = []
         bands.reserveCapacity(entries.count)
@@ -2095,35 +2114,46 @@ private struct PlayfulSyncIcon: View {
     }
 }
 
-// MARK: - Raw-JSON sheet
+// MARK: - Journal run detail sheet
 
 /// Detail view shown when the user taps (or long-presses) a journal
-/// row. Decodes the underlying `JournalEntry` and renders its fields
-/// as structured key-value rows so a user diagnosing odd cairn
-/// behavior doesn't have to read raw JSON. Raw JSON stays accessible
-/// in a collapsible section at the bottom for cases where the
-/// structured view doesn't carry enough information.
-private struct JournalRowDetailSheet: View {
-    let entry: CairnFixtures.JournalTailEntry
+/// row. Renders **every event in the same run** (entries sharing the
+/// tapped row's `runId`) in chronological order, each as a styled-JSON
+/// block. The premise: a run is the meaningful unit of activity. A
+/// single sync emits start + completed + transitions; a trash run
+/// emits started + planning + tags + trash + completed. Showing them
+/// together puts the full story in one view rather than forcing the
+/// user to tap each row individually.
+///
+/// Entries with an empty `runId` (rare — fixture-only rows) collapse
+/// to a single-entry view. The anchor (the row the user actually
+/// tapped) gets a subtle accent stripe so they can find it in a
+/// multi-event group.
+struct JournalRunDetailContext: Identifiable {
+    let anchor: CairnFixtures.JournalTailEntry
+    let entries: [CairnFixtures.JournalTailEntry]
+    var id: String { "\(anchor.runId)|\(anchor.id)" }
+}
+
+private struct JournalRunDetailSheet: View {
+    let context: JournalRunDetailContext
 
     @Environment(\.cairnTokens) private var t
     @Environment(\.dismiss) private var dismiss
-    @State private var showRaw: Bool = false
 
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    summary
-                    if !structuredFields.isEmpty {
-                        fieldsBlock
+                VStack(alignment: .leading, spacing: 14) {
+                    runHeader
+                    ForEach(orderedEntries) { entry in
+                        eventBlock(for: entry)
                     }
-                    rawJSONBlock
                 }
                 .padding(16)
             }
             .background(t.bg)
-            .navigationTitle(entry.event)
+            .navigationTitle(navigationTitleText)
             #if canImport(UIKit)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -2131,12 +2161,13 @@ private struct JournalRowDetailSheet: View {
                     Button("Done") { dismiss() }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    if let json = entry.rawJSON {
+                    if let consolidated = consolidatedRawJSON {
                         Button {
-                            UIPasteboard.general.string = json
+                            UIPasteboard.general.string = consolidated
                         } label: {
                             Label("Copy", systemImage: "doc.on.doc")
                         }
+                        .accessibilityLabel("Copy all events as JSON")
                     }
                 }
             }
@@ -2144,179 +2175,264 @@ private struct JournalRowDetailSheet: View {
         }
     }
 
-    // MARK: - Sections
+    // MARK: - Derived
 
-    private var summary: some View {
+    /// Render oldest-first within the run so the user reads top-to-
+    /// bottom as the run progressed. journalTail upstream is
+    /// newest-first, so reverse here.
+    private var orderedEntries: [CairnFixtures.JournalTailEntry] {
+        context.entries.reversed()
+    }
+
+    private var navigationTitleText: String {
+        if context.anchor.runId.isEmpty { return context.anchor.event }
+        let count = context.entries.count
+        return count == 1 ? "Run · 1 event" : "Run · \(count) events"
+    }
+
+    /// All entries concatenated as one JSON array, for the "Copy"
+    /// toolbar button. Lets the user share the entire run's payload
+    /// in a single paste.
+    private var consolidatedRawJSON: String? {
+        let payloads = orderedEntries.compactMap(\.rawJSON)
+        guard !payloads.isEmpty else { return nil }
+        if payloads.count == 1 { return payloads[0] }
+        return "[\n" + payloads.joined(separator: ",\n") + "\n]"
+    }
+
+    // MARK: - Run header
+
+    private var runHeader: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(entry.time)
-                .font(.cairnScaled(size: 13, weight: .medium))
-                .foregroundStyle(t.textBody)
-            Text(entry.message)
-                .font(.cairnScaled(size: 13))
-                .foregroundStyle(t.textMuted)
-                .fixedSize(horizontal: false, vertical: true)
-            if !entry.runId.isEmpty {
-                Text("Run id: \(entry.runId)")
+            if !context.anchor.runId.isEmpty {
+                Text("Run id: \(context.anchor.runId)")
                     .font(.cairnScaled(size: 11, design: .monospaced))
                     .foregroundStyle(t.textHint)
                     .textSelection(.enabled)
             }
+            if let span = timeSpan {
+                Text(span)
+                    .font(.cairnScaled(size: 12))
+                    .foregroundStyle(t.textMuted)
+            }
         }
     }
 
-    private var fieldsBlock: some View {
-        CairnCard {
-            VStack(spacing: 0) {
-                ForEach(Array(structuredFields.enumerated()), id: \.offset) { idx, field in
-                    HStack(alignment: .top, spacing: 12) {
-                        Text(field.label)
-                            .font(.cairnScaled(size: 13, weight: .medium))
-                            .foregroundStyle(t.textBody)
-                            .frame(width: 140, alignment: .leading)
-                        Text(field.value)
-                            .font(.cairnScaled(size: 13, design: field.monospaced ? .monospaced : .default))
-                            .foregroundStyle(t.text)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .textSelection(.enabled)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    if idx < structuredFields.count - 1 {
-                        RowDivider()
-                    }
-                }
+    private var timeSpan: String? {
+        let times = orderedEntries.map(\.time)
+        guard let first = times.first, let last = times.last else { return nil }
+        if first == last { return first }
+        return "\(first) → \(last)"
+    }
+
+    // MARK: - Event block
+
+    @ViewBuilder
+    private func eventBlock(for entry: CairnFixtures.JournalTailEntry) -> some View {
+        let isAnchor = entry.id == context.anchor.id
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(entry.time)
+                    .font(.cairnScaled(size: 12, design: .monospaced))
+                    .foregroundStyle(t.textHint)
+                Text(entry.event)
+                    .font(.cairnScaled(size: 13, weight: .semibold))
+                    .foregroundStyle(t.text)
+                Spacer(minLength: 0)
+            }
+            payloadBlock(for: entry)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(t.surface)
+        .overlay(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .strokeBorder(t.divider, lineWidth: 0.5)
+        )
+        .overlay(alignment: .leading) {
+            // Anchor stripe: 3pt left border on the row the user
+            // actually tapped. Lets them find their entry point in
+            // a multi-event group without prose explaining it.
+            if isAnchor {
+                Rectangle()
+                    .fill(t.accent)
+                    .frame(width: 3)
+                    .clipShape(
+                        UnevenRoundedRectangle(
+                            cornerRadii: .init(topLeading: 9, bottomLeading: 9),
+                            style: .continuous
+                        )
+                    )
             }
         }
     }
 
     @ViewBuilder
-    private var rawJSONBlock: some View {
-        if let json = entry.rawJSON {
-            VStack(alignment: .leading, spacing: 8) {
-                Button {
-                    withAnimation(.easeInOut(duration: 0.16)) { showRaw.toggle() }
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: showRaw ? "chevron.down" : "chevron.right")
-                            .font(.cairnScaled(size: 11, weight: .semibold))
-                            .foregroundStyle(t.textHint)
-                        Text(showRaw ? "Hide raw JSON" : "Show raw JSON")
-                            .font(.cairnScaled(size: 13, weight: .medium))
-                            .foregroundStyle(t.textBody)
-                        Spacer(minLength: 0)
-                    }
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                if showRaw {
-                    Text(json)
-                        .font(.cairnScaled(size: 11, design: .monospaced))
-                        .foregroundStyle(t.textBody)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .textSelection(.enabled)
-                        .padding(12)
-                        .background(t.surface)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                .strokeBorder(t.divider, lineWidth: 0.5)
-                        )
-                }
-            }
+    private func payloadBlock(for entry: CairnFixtures.JournalTailEntry) -> some View {
+        if let json = entry.rawJSON,
+           let data = json.data(using: .utf8),
+           let parsed = try? JSONSerialization.jsonObject(with: data) {
+            // Strip the outer `event: { caseName: { ... } }` wrapper
+            // when present — we already render the event name in the
+            // header above, so showing it again as a key is noise.
+            // Falls through to the full parsed value when the shape
+            // doesn't match (defensive against future JournalEntry
+            // wire-format changes).
+            let displayed = Self.unwrap(parsed)
+            JSONTreeView(value: displayed)
+        } else if let json = entry.rawJSON {
+            // Parse failure — show raw text as a fallback.
+            Text(json)
+                .font(.cairnScaled(size: 12, design: .monospaced))
+                .foregroundStyle(t.textBody)
+                .textSelection(.enabled)
+        } else {
+            Text(entry.message)
+                .font(.cairnScaled(size: 12))
+                .foregroundStyle(t.textMuted)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
-    // MARK: - Field extraction
+    /// JournalEntry encodes as `{event: {caseName: {...payload...}}, runId, timestamp}`.
+    /// For the per-event JSON tree, strip the outer scaffolding and
+    /// render just the payload (since the header above already names
+    /// the event and the run header carries runId + timestamp).
+    private static func unwrap(_ parsed: Any) -> Any {
+        guard let top = parsed as? [String: Any] else { return parsed }
+        if let eventDict = top["event"] as? [String: Any],
+           let caseName = eventDict.keys.first,
+           let payload = eventDict[caseName] {
+            return payload
+        }
+        return parsed
+    }
+}
 
-    private struct DetailField {
-        let label: String
-        let value: String
-        let monospaced: Bool
+// MARK: - Styled JSON tree
 
-        init(_ label: String, _ value: String, monospaced: Bool = false) {
-            self.label = label
-            self.value = value
-            self.monospaced = monospaced
+/// Renders a parsed JSON value (Any from `JSONSerialization`) as a
+/// SwiftUI view tree with light syntax styling — keys semibold,
+/// strings / numbers / bools / nulls in distinct token colors,
+/// nested objects/arrays indented one level per depth. Read-only,
+/// text-selectable for copy/paste of individual values.
+private struct JSONTreeView: View {
+    let value: Any
+    var depth: Int = 0
+
+    @Environment(\.cairnTokens) private var t
+
+    var body: some View {
+        if let dict = value as? [String: Any] {
+            objectBody(dict)
+        } else if let array = value as? [Any] {
+            arrayBody(array)
+        } else {
+            JSONScalar(value: value)
+                .textSelection(.enabled)
         }
     }
 
-    private var structuredFields: [DetailField] {
-        guard let json = entry.rawJSON, let data = json.data(using: .utf8) else { return [] }
-        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return []
+    private func objectBody(_ dict: [String: Any]) -> some View {
+        // Stable key order — dictionaries from JSONSerialization are
+        // unordered. Sorting alphabetically gives the user a
+        // predictable read so they can land in the same place across
+        // two different sheets opened from similar events.
+        let sortedKeys = dict.keys.sorted()
+        return VStack(alignment: .leading, spacing: 6) {
+            ForEach(sortedKeys, id: \.self) { key in
+                row(key: key, value: dict[key] ?? NSNull())
+            }
         }
-        guard let event = obj["event"] as? [String: Any], let payload = event.values.first as? [String: Any] else {
-            return []
-        }
-        return Self.fields(from: payload, eventName: event.keys.first ?? "")
+        .padding(.leading, depth == 0 ? 0 : 12)
     }
 
-    /// Per-event-case field formatters. Each case extracts known
-    /// fields from the JSON payload into labeled rows. Unknown
-    /// fields fall through to the raw JSON section.
-    private static func fields(from payload: [String: Any], eventName: String) -> [DetailField] {
-        switch eventName {
-        case "syncStarted":
-            return [
-                DetailField("Trigger", String(describing: payload["trigger"] ?? "—"))
-            ]
-        case "syncCompleted":
-            var out: [DetailField] = []
-            if let v = payload["indexed"] as? Int { out.append(.init("Indexed", "\(v)")) }
-            if let v = payload["candidates"] as? Int { out.append(.init("Candidates", "\(v)")) }
-            if let v = payload["pendingReview"] as? Int { out.append(.init("Pending review", "\(v)")) }
-            if let v = payload["deferredLarge"] as? Int, v > 0 {
-                let bytes = payload["deferredLargeBytes"] as? Int64 ?? 0
-                out.append(.init("Deferred (large)", "\(v) (\(CairnTimeHelpers.formatBytes(Int(bytes))))"))
+    private func arrayBody(_ array: [Any]) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(Array(array.enumerated()), id: \.offset) { idx, item in
+                row(key: "[\(idx)]", value: item, isArrayIndex: true)
             }
-            if let v = payload["deferredTimeout"] as? Int, v > 0 { out.append(.init("Deferred (timeout)", "\(v)")) }
-            if let v = payload["elapsedMs"] as? Int {
-                out.append(.init("Elapsed", String(format: "%.2fs", Double(v) / 1000)))
+        }
+        .padding(.leading, depth == 0 ? 0 : 12)
+    }
+
+    @ViewBuilder
+    private func row(key: String, value: Any, isArrayIndex: Bool = false) -> some View {
+        if let dict = value as? [String: Any], !dict.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(key)
+                    .font(.cairnScaled(size: 13, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(isArrayIndex ? t.textHint : t.textBody)
+                    .textSelection(.enabled)
+                JSONTreeView(value: dict, depth: depth + 1)
             }
-            return out
-        case "syncTransitions":
-            return [
-                DetailField("Edits protected", "\(payload["editsProtected"] as? Int ?? 0)"),
-                DetailField("Edits quarantined", "\(payload["editsQuarantined"] as? Int ?? 0)"),
-                DetailField("Confirmed (change log)", "\(payload["confirmedFromPhotoKit"] as? Int ?? 0)"),
-                DetailField("Confirmed (orphan sweep)", "\(payload["confirmedFromOrphanSweep"] as? Int ?? 0)"),
-            ]
-        case "runStarted":
-            return [
-                DetailField("Assets in purview", "\(payload["assetsInPurview"] as? Int ?? 0)"),
-                DetailField("Candidates", "\(payload["candidateCount"] as? Int ?? 0)"),
-                DetailField("Dry run", String(describing: payload["dryRun"] ?? false))
-            ]
-        case "planningTrash":
-            let targets = (payload["targets"] as? [[String: Any]]) ?? []
-            return [DetailField("Targets", "\(targets.count) asset\(targets.count == 1 ? "" : "s")")]
-        case "tagsCreated", "tagApplied":
-            var out: [DetailField] = []
-            if let id = payload["tagId"] as? String { out.append(.init("Tag id", id, monospaced: true)) }
-            if let value = payload["tagValue"] as? String { out.append(.init("Tag value", value, monospaced: true)) }
-            if let assetIds = payload["assetIds"] as? [String] { out.append(.init("Assets", "\(assetIds.count)")) }
-            if let ms = payload["durationMs"] as? Int { out.append(.init("Elapsed", "\(ms) ms")) }
-            return out
-        case "trashSucceeded", "restoreSucceeded":
-            var out: [DetailField] = []
-            if let ids = payload["assetIds"] as? [String] { out.append(.init("Assets", "\(ids.count)")) }
-            if let fromRun = payload["fromRunId"] as? String { out.append(.init("From run", fromRun, monospaced: true)) }
-            if let ms = payload["durationMs"] as? Int { out.append(.init("Elapsed", "\(ms) ms")) }
-            return out
-        case "trashFailed", "restoreFailed":
-            var out: [DetailField] = []
-            if let ids = payload["assetIds"] as? [String] { out.append(.init("Assets", "\(ids.count)")) }
-            if let fromRun = payload["fromRunId"] as? String { out.append(.init("From run", fromRun, monospaced: true)) }
-            if let msg = payload["message"] as? String { out.append(.init("Error", msg)) }
-            if let status = payload["httpStatus"] as? Int { out.append(.init("HTTP", "\(status)")) }
-            return out
-        case "runCompleted":
-            var out: [DetailField] = []
-            if let status = payload["status"] as? String { out.append(.init("Status", status)) }
-            if let trashed = payload["trashedCount"] as? Int { out.append(.init("Trashed", "\(trashed)")) }
-            return out
+        } else if let array = value as? [Any], !array.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("\(key)  (\(array.count))")
+                    .font(.cairnScaled(size: 13, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(isArrayIndex ? t.textHint : t.textBody)
+                    .textSelection(.enabled)
+                JSONTreeView(value: array, depth: depth + 1)
+            }
+        } else {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(key)
+                    .font(.cairnScaled(size: 13, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(isArrayIndex ? t.textHint : t.textBody)
+                JSONScalar(value: value)
+                    .textSelection(.enabled)
+            }
+        }
+    }
+}
+
+/// Single scalar value (string, number, bool, null, or empty
+/// container) rendered with a type-appropriate token color. Strings
+/// get a slight quote treatment to distinguish them from bare
+/// identifiers; numbers / bools / nulls each get their own color
+/// for at-a-glance scanning.
+private struct JSONScalar: View {
+    let value: Any
+
+    @Environment(\.cairnTokens) private var t
+
+    var body: some View {
+        switch value {
+        case is NSNull:
+            Text("null")
+                .font(.cairnScaled(size: 13, design: .monospaced))
+                .foregroundStyle(t.textHint)
+        case let s as String:
+            Text("\"\(s)\"")
+                .font(.cairnScaled(size: 13, design: .monospaced))
+                .foregroundStyle(t.accentInk)
+                .fixedSize(horizontal: false, vertical: true)
+        case let n as NSNumber:
+            // Bool comes through as NSNumber on iOS. The objCType
+            // discriminator is the only reliable way to tell them
+            // apart — `is Bool` matches both.
+            if CFGetTypeID(n) == CFBooleanGetTypeID() {
+                Text(n.boolValue ? "true" : "false")
+                    .font(.cairnScaled(size: 13, design: .monospaced))
+                    .foregroundStyle(t.infoInk)
+            } else {
+                Text(n.stringValue)
+                    .font(.cairnScaled(size: 13, design: .monospaced))
+                    .foregroundStyle(t.verifiedInk)
+            }
+        case let arr as [Any] where arr.isEmpty:
+            Text("[]")
+                .font(.cairnScaled(size: 13, design: .monospaced))
+                .foregroundStyle(t.textHint)
+        case let dict as [String: Any] where dict.isEmpty:
+            Text("{}")
+                .font(.cairnScaled(size: 13, design: .monospaced))
+                .foregroundStyle(t.textHint)
         default:
-            return []
+            Text(String(describing: value))
+                .font(.cairnScaled(size: 13, design: .monospaced))
+                .foregroundStyle(t.text)
         }
     }
 }
