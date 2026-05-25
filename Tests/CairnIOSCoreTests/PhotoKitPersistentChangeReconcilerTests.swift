@@ -289,6 +289,124 @@ struct PhotoKitPersistentChangeReconcilerTests {
             #expect(DeferredHashEntry.DeferReason(rawValue: reason.rawValue) == reason)
         }
     }
+
+    // MARK: - filterStaleUpdates: modDate-only suppression
+
+    private static let t0 = Date(timeIntervalSince1970: 1_700_000_000)
+    private static let t1 = Date(timeIntervalSince1970: 1_700_086_400) // +1 day
+
+    @Test("modDate match → not stale (the cheap exit)")
+    func filterStaleUpdates_modDateMatch_skipped() {
+        let decision = PhotoKitPersistentChangeReconciler.filterStaleUpdates(
+            updatedIds: ["A"],
+            currentModDates: ["A": Self.t0],
+            currentSizes: ["A": 5_000_000],
+            cachedModDates: ["A": Self.t0],
+            cachedSizes: ["A": 5_000_000],
+            cachedHasEntry: ["A"]
+        )
+        #expect(decision.stale.isEmpty)
+        #expect(decision.suppressed == 0)
+    }
+
+    @Test("modDate diverged + size unchanged + hash cached → suppressed (the view bug)")
+    func filterStaleUpdates_modDateOnly_suppressed() {
+        // The reported pattern: user views an iCloud-optimized photo in
+        // Photos.app, iOS bumps modDate but the file size is unchanged.
+        // Before the fix this round-tripped through a re-hash that
+        // timed out at 60s; now it's skipped entirely.
+        let decision = PhotoKitPersistentChangeReconciler.filterStaleUpdates(
+            updatedIds: ["A"],
+            currentModDates: ["A": Self.t1],
+            currentSizes: ["A": 5_000_000],
+            cachedModDates: ["A": Self.t0],
+            cachedSizes: ["A": 5_000_000],
+            cachedHasEntry: ["A"]
+        )
+        #expect(decision.stale.isEmpty)
+        #expect(decision.suppressed == 1)
+    }
+
+    @Test("modDate diverged + size diverged → stale (the edit case)")
+    func filterStaleUpdates_sizeDiverged_stale() {
+        // An edit adds a .fullSizePhoto adjustment resource — primary
+        // selection shifts and the file size differs. This must
+        // re-hash so the new SHA1 lands in LocalHashStore.
+        let decision = PhotoKitPersistentChangeReconciler.filterStaleUpdates(
+            updatedIds: ["A"],
+            currentModDates: ["A": Self.t1],
+            currentSizes: ["A": 5_400_000], // edit produced a bigger primary
+            cachedModDates: ["A": Self.t0],
+            cachedSizes: ["A": 5_000_000],
+            cachedHasEntry: ["A"]
+        )
+        #expect(decision.stale == ["A"])
+        #expect(decision.suppressed == 0)
+    }
+
+    @Test("modDate diverged but no cached hash → stale (first-ever hash)")
+    func filterStaleUpdates_noCachedHash_stale() {
+        // Asset has never been hashed (e.g. carried in from a prior
+        // session where it failed to hash). modDate divergence alone
+        // shouldn't gate the first hash — there's no SHA1 to trust.
+        let decision = PhotoKitPersistentChangeReconciler.filterStaleUpdates(
+            updatedIds: ["A"],
+            currentModDates: ["A": Self.t1],
+            currentSizes: ["A": 5_000_000],
+            cachedModDates: ["A": Self.t0], // legacy: modDate without a hash row
+            cachedSizes: ["A": 5_000_000],
+            cachedHasEntry: [] // no hash cached
+        )
+        #expect(decision.stale == ["A"])
+        #expect(decision.suppressed == 0)
+    }
+
+    @Test("modDate diverged + size unknown → stale (no metadataStore wired)")
+    func filterStaleUpdates_noCachedSize_falls_back_to_stale() {
+        // metadataStore absent: cachedSizes is empty. The suppression
+        // can't decide one way or the other, so we fall back to the
+        // pre-existing behavior (modDate-only filter → stale).
+        let decision = PhotoKitPersistentChangeReconciler.filterStaleUpdates(
+            updatedIds: ["A"],
+            currentModDates: ["A": Self.t1],
+            currentSizes: ["A": 5_000_000],
+            cachedModDates: ["A": Self.t0],
+            cachedSizes: [:],
+            cachedHasEntry: ["A"]
+        )
+        #expect(decision.stale == ["A"])
+        #expect(decision.suppressed == 0)
+    }
+
+    @Test("mixed batch: one suppressed, one stale, one matched")
+    func filterStaleUpdates_mixedBatch() {
+        let decision = PhotoKitPersistentChangeReconciler.filterStaleUpdates(
+            updatedIds: ["A", "B", "C"],
+            currentModDates: [
+                "A": Self.t1, // diverged, content stable → suppress
+                "B": Self.t1, // diverged, content changed → stale
+                "C": Self.t0, // unchanged → skip cheaply
+            ],
+            currentSizes: [
+                "A": 5_000_000,
+                "B": 5_400_000,
+                "C": 5_000_000,
+            ],
+            cachedModDates: [
+                "A": Self.t0,
+                "B": Self.t0,
+                "C": Self.t0,
+            ],
+            cachedSizes: [
+                "A": 5_000_000,
+                "B": 5_000_000,
+                "C": 5_000_000,
+            ],
+            cachedHasEntry: ["A", "B", "C"]
+        )
+        #expect(decision.stale == ["B"])
+        #expect(decision.suppressed == 1)
+    }
 }
 
 #endif

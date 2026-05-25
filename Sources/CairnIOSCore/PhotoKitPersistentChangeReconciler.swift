@@ -1743,8 +1743,10 @@ public final class PhotoKitPersistentChangeReconciler {
         let now = clock()
         var entries: [LocalAssetMetadata] = []
         var currentDates: [String: Date] = [:]
+        var currentSizes: [String: Int64] = [:]
         entries.reserveCapacity(fetch.count)
         currentDates.reserveCapacity(fetch.count)
+        currentSizes.reserveCapacity(fetch.count)
         fetch.enumerateObjects { asset, _, _ in
             let resources = PHAssetResource.assetResources(for: asset)
             let primary = PhotoKitPhotoEnumerator.selectPrimaryResource(from: resources)
@@ -1760,6 +1762,20 @@ public final class PhotoKitPersistentChangeReconciler {
             if let date = asset.modificationDate {
                 currentDates[asset.localIdentifier] = date
             }
+            if let size {
+                currentSizes[asset.localIdentifier] = size
+            }
+        }
+        // Snapshot cached metadata BEFORE writing the fresh observations
+        // — otherwise the size we read back is the one we just wrote, and
+        // the content-stability check below collapses to a tautology.
+        var cachedSizes: [String: Int64] = [:]
+        if let metadataStore, !updatedIds.isEmpty {
+            for id in updatedIds {
+                if let meta = try? await metadataStore.metadata(for: id), let size = meta.fileSize {
+                    cachedSizes[id] = size
+                }
+            }
         }
         if let metadataStore, !entries.isEmpty {
             try await metadataStore.record(entries)
@@ -1771,18 +1787,73 @@ public final class PhotoKitPersistentChangeReconciler {
         // antipattern that bit `hashAllCurrentAssets` (~65s prelude on
         // multi-thousand-asset libraries) and was batched there;
         // observeAndFilter missed the same fix until now.
-        var stale: Set<String> = []
-        stale.reserveCapacity(updatedIds.count)
         let cached = (try? await hashStore.entries(forIdentifiers: updatedIds)) ?? [:]
+        let cachedHasEntry = Set(cached.keys)
+        let cachedModDates = cached.compactMapValues { $0.modificationDate }
+        let decision = Self.filterStaleUpdates(
+            updatedIds: updatedIds,
+            currentModDates: currentDates,
+            currentSizes: currentSizes,
+            cachedModDates: cachedModDates,
+            cachedSizes: cachedSizes,
+            cachedHasEntry: cachedHasEntry
+        )
+        if decision.suppressed > 0 {
+            Self.reconLog.notice("[cairn.recon] observeAndFilter: suppressed \(decision.suppressed, privacy: .public) modDate-only updates (content size unchanged, cached SHA1 trusted)")
+        }
+        return ObservationResult(staleUpdates: decision.stale)
+    }
+
+    /// Decide which `updatedIds` actually need a re-hash. PhotoKit
+    /// bumps `modificationDate` for metadata-only churn (iCloud sync
+    /// after a view, album moves, favorite-toggle) without altering
+    /// pixel bytes; a re-hash in those cases costs a multi-second
+    /// iCloud download that can easily time out, and the resulting
+    /// SHA1 is identical to the cached one. So the predicate is:
+    ///
+    ///   1. modDate didn't actually move → not stale (cheap exit)
+    ///   2. modDate diverged but a hash is already cached AND the
+    ///      primary resource's file size is unchanged → not stale
+    ///      (metadata-only churn; trust the cached SHA1)
+    ///   3. anything else → stale (re-hash)
+    ///
+    /// Edits route through (3) because the editor adds a
+    /// `.fullSizePhoto` adjustment resource — the primary selection
+    /// shifts to the rendered edit and the file size differs from
+    /// the original.
+    ///
+    /// `cachedHasEntry` is the set of ids we have *any* hash for
+    /// (passed separately so `cachedSizes` can come from
+    /// `LocalAssetMetadataStore` even when the test/host hasn't wired
+    /// one — the suppression then degrades to "modDate-only filter,"
+    /// preserving current behavior).
+    nonisolated static func filterStaleUpdates(
+        updatedIds: Set<String>,
+        currentModDates: [String: Date],
+        currentSizes: [String: Int64],
+        cachedModDates: [String: Date],
+        cachedSizes: [String: Int64],
+        cachedHasEntry: Set<String>
+    ) -> (stale: Set<String>, suppressed: Int) {
+        var stale: Set<String> = []
+        var suppressed = 0
+        stale.reserveCapacity(updatedIds.count)
         for id in updatedIds {
-            let cachedDate = cached[id]?.modificationDate
-            let currentDate = currentDates[id]
+            let cachedDate = cachedModDates[id]
+            let currentDate = currentModDates[id]
             if let cachedDate, let currentDate, cachedDate == currentDate {
+                continue
+            }
+            if cachedHasEntry.contains(id),
+               let cachedSize = cachedSizes[id],
+               let currentSize = currentSizes[id],
+               cachedSize == currentSize {
+                suppressed += 1
                 continue
             }
             stale.insert(id)
         }
-        return ObservationResult(staleUpdates: stale)
+        return (stale, suppressed)
     }
 
 
