@@ -476,7 +476,7 @@ public struct StatusScreen: View {
         }
         .background(t.bg)
         .sheet(item: $journalRawJSONEntry) { entry in
-            JournalRawJSONSheet(entry: entry)
+            JournalRowDetailSheet(entry: entry)
         }
         .onChange(of: isSyncing) { _, syncing in
             // Reset the "Cancelling…" affordance whenever sync state
@@ -1555,13 +1555,26 @@ public struct StatusScreen: View {
                                             )
                                         }
                                         ForEach(group.entries) { entry in
+                                            // Tap routes to trash-run detail when there's an
+                                            // associated run; falls through to the row-detail
+                                            // sheet for sync rows that have no trash run.
+                                            // Long-press always opens row detail — gives the
+                                            // user a single discoverable path to the decoded
+                                            // event regardless of row type.
+                                            let isTrashRun = runIds.contains(entry.runId)
                                             JournalTailRow(
                                                 entry: entry,
                                                 eventInk: eventColor(entry.event),
-                                                isTappable: runIds.contains(entry.runId),
+                                                isTappable: true,
                                                 rowWidth: measuredWidth,
                                                 runIdSuffixColor: runIdSuffixColor(for: entry.runId, in: runOutcomeMap),
-                                                onTap: { onJournalRowTap(entry.runId) },
+                                                onTap: {
+                                                    if isTrashRun {
+                                                        onJournalRowTap(entry.runId)
+                                                    } else {
+                                                        journalRawJSONEntry = entry
+                                                    }
+                                                },
                                                 onLongPress: { journalRawJSONEntry = entry }
                                             )
                                         }
@@ -1600,13 +1613,20 @@ public struct StatusScreen: View {
                                                         )
                                                     }
                                                     ForEach(group.entries) { entry in
+                                                        let isTrashRun = runIds.contains(entry.runId)
                                                         JournalTailRow(
                                                             entry: entry,
                                                             eventInk: eventColor(entry.event),
-                                                            isTappable: runIds.contains(entry.runId),
+                                                            isTappable: true,
                                                             rowWidth: measuredWidth,
                                                             runIdSuffixColor: runIdSuffixColor(for: entry.runId, in: runOutcomeMap),
-                                                            onTap: { onJournalRowTap(entry.runId) },
+                                                            onTap: {
+                                                                if isTrashRun {
+                                                                    onJournalRowTap(entry.runId)
+                                                                } else {
+                                                                    journalRawJSONEntry = entry
+                                                                }
+                                                            },
                                                             onLongPress: { journalRawJSONEntry = entry }
                                                         )
                                                     }
@@ -2077,28 +2097,33 @@ private struct PlayfulSyncIcon: View {
 
 // MARK: - Raw-JSON sheet
 
-/// Diagnostic view shown when the user long-presses a journal row.
-/// Renders the row's underlying `JournalEntry` as pretty-printed JSON
-/// — useful for debugging on-device without a log-tail tool. Single
-/// scrolling monospace block plus a "Copy" affordance; nothing else.
-private struct JournalRawJSONSheet: View {
+/// Detail view shown when the user taps (or long-presses) a journal
+/// row. Decodes the underlying `JournalEntry` and renders its fields
+/// as structured key-value rows so a user diagnosing odd cairn
+/// behavior doesn't have to read raw JSON. Raw JSON stays accessible
+/// in a collapsible section at the bottom for cases where the
+/// structured view doesn't carry enough information.
+private struct JournalRowDetailSheet: View {
     let entry: CairnFixtures.JournalTailEntry
 
     @Environment(\.cairnTokens) private var t
     @Environment(\.dismiss) private var dismiss
+    @State private var showRaw: Bool = false
 
     var body: some View {
         NavigationStack {
             ScrollView {
-                Text(entry.rawJSON ?? "(no raw payload — fixture row)")
-                    .font(.cairnScaled(size: 12, design: .monospaced))
-                    .foregroundStyle(t.textBody)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
-                    .padding(16)
+                VStack(alignment: .leading, spacing: 16) {
+                    summary
+                    if !structuredFields.isEmpty {
+                        fieldsBlock
+                    }
+                    rawJSONBlock
+                }
+                .padding(16)
             }
             .background(t.bg)
-            .navigationTitle("\(entry.event) · \(entry.time)")
+            .navigationTitle(entry.event)
             #if canImport(UIKit)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -2116,6 +2141,182 @@ private struct JournalRawJSONSheet: View {
                 }
             }
             #endif
+        }
+    }
+
+    // MARK: - Sections
+
+    private var summary: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(entry.time)
+                .font(.cairnScaled(size: 13, weight: .medium))
+                .foregroundStyle(t.textBody)
+            Text(entry.message)
+                .font(.cairnScaled(size: 13))
+                .foregroundStyle(t.textMuted)
+                .fixedSize(horizontal: false, vertical: true)
+            if !entry.runId.isEmpty {
+                Text("Run id: \(entry.runId)")
+                    .font(.cairnScaled(size: 11, design: .monospaced))
+                    .foregroundStyle(t.textHint)
+                    .textSelection(.enabled)
+            }
+        }
+    }
+
+    private var fieldsBlock: some View {
+        CairnCard {
+            VStack(spacing: 0) {
+                ForEach(Array(structuredFields.enumerated()), id: \.offset) { idx, field in
+                    HStack(alignment: .top, spacing: 12) {
+                        Text(field.label)
+                            .font(.cairnScaled(size: 13, weight: .medium))
+                            .foregroundStyle(t.textBody)
+                            .frame(width: 140, alignment: .leading)
+                        Text(field.value)
+                            .font(.cairnScaled(size: 13, design: field.monospaced ? .monospaced : .default))
+                            .foregroundStyle(t.text)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    if idx < structuredFields.count - 1 {
+                        RowDivider()
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var rawJSONBlock: some View {
+        if let json = entry.rawJSON {
+            VStack(alignment: .leading, spacing: 8) {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.16)) { showRaw.toggle() }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: showRaw ? "chevron.down" : "chevron.right")
+                            .font(.cairnScaled(size: 11, weight: .semibold))
+                            .foregroundStyle(t.textHint)
+                        Text(showRaw ? "Hide raw JSON" : "Show raw JSON")
+                            .font(.cairnScaled(size: 13, weight: .medium))
+                            .foregroundStyle(t.textBody)
+                        Spacer(minLength: 0)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                if showRaw {
+                    Text(json)
+                        .font(.cairnScaled(size: 11, design: .monospaced))
+                        .foregroundStyle(t.textBody)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                        .padding(12)
+                        .background(t.surface)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                .strokeBorder(t.divider, lineWidth: 0.5)
+                        )
+                }
+            }
+        }
+    }
+
+    // MARK: - Field extraction
+
+    private struct DetailField {
+        let label: String
+        let value: String
+        let monospaced: Bool
+
+        init(_ label: String, _ value: String, monospaced: Bool = false) {
+            self.label = label
+            self.value = value
+            self.monospaced = monospaced
+        }
+    }
+
+    private var structuredFields: [DetailField] {
+        guard let json = entry.rawJSON, let data = json.data(using: .utf8) else { return [] }
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return []
+        }
+        guard let event = obj["event"] as? [String: Any], let payload = event.values.first as? [String: Any] else {
+            return []
+        }
+        return Self.fields(from: payload, eventName: event.keys.first ?? "")
+    }
+
+    /// Per-event-case field formatters. Each case extracts known
+    /// fields from the JSON payload into labeled rows. Unknown
+    /// fields fall through to the raw JSON section.
+    private static func fields(from payload: [String: Any], eventName: String) -> [DetailField] {
+        switch eventName {
+        case "syncStarted":
+            return [
+                DetailField("Trigger", String(describing: payload["trigger"] ?? "—"))
+            ]
+        case "syncCompleted":
+            var out: [DetailField] = []
+            if let v = payload["indexed"] as? Int { out.append(.init("Indexed", "\(v)")) }
+            if let v = payload["candidates"] as? Int { out.append(.init("Candidates", "\(v)")) }
+            if let v = payload["pendingReview"] as? Int { out.append(.init("Pending review", "\(v)")) }
+            if let v = payload["deferredLarge"] as? Int, v > 0 {
+                let bytes = payload["deferredLargeBytes"] as? Int64 ?? 0
+                out.append(.init("Deferred (large)", "\(v) (\(CairnTimeHelpers.formatBytes(Int(bytes))))"))
+            }
+            if let v = payload["deferredTimeout"] as? Int, v > 0 { out.append(.init("Deferred (timeout)", "\(v)")) }
+            if let v = payload["elapsedMs"] as? Int {
+                out.append(.init("Elapsed", String(format: "%.2fs", Double(v) / 1000)))
+            }
+            return out
+        case "syncTransitions":
+            return [
+                DetailField("Edits protected", "\(payload["editsProtected"] as? Int ?? 0)"),
+                DetailField("Edits quarantined", "\(payload["editsQuarantined"] as? Int ?? 0)"),
+                DetailField("Confirmed (change log)", "\(payload["confirmedFromPhotoKit"] as? Int ?? 0)"),
+                DetailField("Confirmed (orphan sweep)", "\(payload["confirmedFromOrphanSweep"] as? Int ?? 0)"),
+            ]
+        case "runStarted":
+            return [
+                DetailField("Assets in purview", "\(payload["assetsInPurview"] as? Int ?? 0)"),
+                DetailField("Candidates", "\(payload["candidateCount"] as? Int ?? 0)"),
+                DetailField("Dry run", String(describing: payload["dryRun"] ?? false))
+            ]
+        case "planningTrash":
+            let targets = (payload["targets"] as? [[String: Any]]) ?? []
+            return [DetailField("Targets", "\(targets.count) asset\(targets.count == 1 ? "" : "s")")]
+        case "tagsCreated", "tagApplied":
+            var out: [DetailField] = []
+            if let id = payload["tagId"] as? String { out.append(.init("Tag id", id, monospaced: true)) }
+            if let value = payload["tagValue"] as? String { out.append(.init("Tag value", value, monospaced: true)) }
+            if let assetIds = payload["assetIds"] as? [String] { out.append(.init("Assets", "\(assetIds.count)")) }
+            if let ms = payload["durationMs"] as? Int { out.append(.init("Elapsed", "\(ms) ms")) }
+            return out
+        case "trashSucceeded", "restoreSucceeded":
+            var out: [DetailField] = []
+            if let ids = payload["assetIds"] as? [String] { out.append(.init("Assets", "\(ids.count)")) }
+            if let fromRun = payload["fromRunId"] as? String { out.append(.init("From run", fromRun, monospaced: true)) }
+            if let ms = payload["durationMs"] as? Int { out.append(.init("Elapsed", "\(ms) ms")) }
+            return out
+        case "trashFailed", "restoreFailed":
+            var out: [DetailField] = []
+            if let ids = payload["assetIds"] as? [String] { out.append(.init("Assets", "\(ids.count)")) }
+            if let fromRun = payload["fromRunId"] as? String { out.append(.init("From run", fromRun, monospaced: true)) }
+            if let msg = payload["message"] as? String { out.append(.init("Error", msg)) }
+            if let status = payload["httpStatus"] as? Int { out.append(.init("HTTP", "\(status)")) }
+            return out
+        case "runCompleted":
+            var out: [DetailField] = []
+            if let status = payload["status"] as? String { out.append(.init("Status", status)) }
+            if let trashed = payload["trashedCount"] as? Int { out.append(.init("Trashed", "\(trashed)")) }
+            return out
+        default:
+            return []
         }
     }
 }
