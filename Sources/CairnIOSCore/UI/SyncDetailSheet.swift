@@ -191,6 +191,13 @@ public struct SyncDetailSheet: View {
         let phase: CairnAppModel.SyncPhase
         let durationMs: Int?
         let isLive: Bool
+        /// True when this phase has no timeline entry AND the sync
+        /// has already moved past it (or completed). Differs from
+        /// "pending" (the sync hasn't reached this phase yet) — a
+        /// skipped phase deserves a distinct glyph so the user
+        /// doesn't read a single empty circle in the middle of a row
+        /// of checkmarks as "broken."
+        let isSkipped: Bool
     }
 
     private var timelineRows: [TimelineRow] {
@@ -201,12 +208,26 @@ public struct SyncDetailSheet: View {
         let order: [CairnAppModel.SyncPhase] = [
             .preparing, .fetchingServer, .hashing, .reconciling, .finalizing,
         ]
-        return order.map { p in
+        // Phases that have already started (have a timeline entry).
+        // Used to mark earlier phases without an entry as "skipped"
+        // rather than just "pending."
+        let startedPhases: Set<CairnAppModel.SyncPhase> = Set(timeline.map(\.phase))
+        return order.enumerated().map { idx, p in
             let entry = timeline.first { $0.phase == p }
+            // A row counts as skipped when the sync has visibly
+            // advanced past it: either the current phase is later in
+            // the canonical order, OR sync has completed and any
+            // later phase has an entry. `.hashing` is the typical
+            // skip (incremental sync with no new bytes to hash).
+            let isPending = entry == nil
+            let isLater = !isSyncing && order.dropFirst(idx + 1).contains(where: { startedPhases.contains($0) })
+            let currentIdx = order.firstIndex(of: phase) ?? 0
+            let isPastCurrent = isSyncing && idx < currentIdx
             return TimelineRow(
                 phase: p,
                 durationMs: entry?.durationMs,
-                isLive: phase == p && isSyncing
+                isLive: phase == p && isSyncing,
+                isSkipped: isPending && (isLater || isPastCurrent)
             )
         }
     }
@@ -237,6 +258,15 @@ public struct SyncDetailSheet: View {
             Image(systemName: "checkmark.circle.fill")
                 .font(.cairnScaled(size: 14))
                 .foregroundStyle(t.verifiedInk)
+        } else if row.isSkipped {
+            // Dashed-line glyph reads as "phase wasn't applicable
+            // to this sync" — typical case is `.hashing` skipped on
+            // an incremental sync with no new bytes to compute.
+            // Distinct from the plain empty circle which means
+            // "phase pending, sync hasn't reached it yet."
+            Image(systemName: "minus.circle")
+                .font(.cairnScaled(size: 14))
+                .foregroundStyle(t.textHint)
         } else {
             Image(systemName: "circle")
                 .font(.cairnScaled(size: 14))
@@ -253,6 +283,7 @@ public struct SyncDetailSheet: View {
     private func rowDurationLabel(for row: TimelineRow) -> String {
         if let ms = row.durationMs { return Self.formatDuration(ms: ms) }
         if row.isLive { return "live" }
+        if row.isSkipped { return "skipped" }
         return "—"
     }
 

@@ -517,9 +517,22 @@ public final class CairnAppModel {
     /// don't duplicate timeline rows.
     public func transitionSyncPhase(to next: SyncPhase, at now: Date = Date()) {
         guard syncPhase != next else { return }
-        if let lastIdx = syncTimeline.indices.last, syncTimeline[lastIdx].durationMs == nil {
-            let started = syncTimeline[lastIdx].startedAt
-            syncTimeline[lastIdx].durationMs = max(0, Int(now.timeIntervalSince(started) * 1000))
+        // Close every still-open entry, not just the last one.
+        // `performLiveReconciliation` appends a synthetic
+        // `.fetchingServer` entry already-closed (its parallel task
+        // owns its own duration) BETWEEN an open phase (e.g. still
+        // `.preparing` because no hashing happened, or open `.hashing`
+        // because a callback raced) and the next sequential
+        // transition. The closed synthetic captures the lastIdx slot,
+        // so a single-element close skips the still-open earlier
+        // phase and leaves it perpetually unchecked in the timeline
+        // sheet. Looping over every nil-durationMs entry fixes the
+        // common case where exactly one earlier phase is stuck open;
+        // it also handles less common races where two open phases
+        // overlap.
+        for idx in syncTimeline.indices where syncTimeline[idx].durationMs == nil {
+            let started = syncTimeline[idx].startedAt
+            syncTimeline[idx].durationMs = max(0, Int(now.timeIntervalSince(started) * 1000))
         }
         syncPhase = next
         if next != .idle {
