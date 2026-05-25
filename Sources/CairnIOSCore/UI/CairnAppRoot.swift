@@ -541,6 +541,7 @@ public struct CairnAppRoot: View {
                 onOpenSyncDetail: {
                     model.presentedSheet = .syncDetail
                 },
+                hasLastSyncDetails: !model.syncTimeline.isEmpty,
                 onResumeSession: {
                     model.presentedSheet = .sessionSignIn
                 },

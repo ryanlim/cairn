@@ -174,6 +174,11 @@ public struct StatusScreen: View {
     /// syncCard MUST NOT read `model.syncActivity` or derivatives,
     /// or `@Observable` would re-render Status on every emit.
     public let onOpenSyncDetail: () -> Void
+    /// `true` when `model.syncTimeline` has entries from a completed
+    /// sync this session — i.e., the SyncDetailSheet has something
+    /// to render even when no sync is currently in flight. Drives the
+    /// post-sync "Last sync details" entry on the sync card.
+    public let hasLastSyncDetails: Bool
     /// Tapped by the `Degraded.sessionExpired` banner's "Sign in
     /// again" button. Host opens the session sign-in sheet; sheet
     /// dismissal on success flips `degraded` back to `.none`.
@@ -276,6 +281,7 @@ public struct StatusScreen: View {
         onOpenPendingTrashes: @escaping () -> Void = {},
         onRetryConnection: @escaping () -> Void = {},
         onOpenSyncDetail: @escaping () -> Void = {},
+        hasLastSyncDetails: Bool = false,
         onResumeSession: @escaping () -> Void = {},
         scrollResetToken: Int = 0
     ) {
@@ -322,6 +328,7 @@ public struct StatusScreen: View {
         self.onOpenPendingTrashes = onOpenPendingTrashes
         self.onRetryConnection = onRetryConnection
         self.onOpenSyncDetail = onOpenSyncDetail
+        self.hasLastSyncDetails = hasLastSyncDetails
         self.onResumeSession = onResumeSession
         self.scrollResetToken = scrollResetToken
     }
@@ -1111,18 +1118,22 @@ public struct StatusScreen: View {
                     expandedHeight: Self.checklistHeight,
                     reduceMotion: reduceMotion
                 )
-                // Drill-down entry to `SyncDetailSheet`. Only shown
-                // while a sync is in flight — when idle the user has
-                // no fresh narration to review (and the sheet's empty-
-                // state is uninteresting). Deliberately doesn't expose
-                // any activity-feed counts in the label — Status MUST
-                // NOT read `model.syncActivity` or `@Observable` would
-                // re-render the screen on every emit. Decision 4 of
-                // the sync-narration plan.
-                if isSyncing && checklistVisible {
+                // Drill-down entry to `SyncDetailSheet`. Shown during
+                // a sync (label "Show details") and after a sync
+                // completes when there's narration to review (label
+                // "Last sync details"). Hidden only when there's no
+                // sync ever run in this session — the sheet's empty
+                // state isn't worth the entry point. Deliberately
+                // doesn't expose any activity-feed counts in the label
+                // — Status MUST NOT read `model.syncActivity` or
+                // `@Observable` would re-render the screen on every
+                // emit. Decision 4 of the sync-narration plan.
+                let activeEntry = isSyncing && checklistVisible
+                let postSyncEntry = !isSyncing && hasLastSyncDetails
+                if activeEntry || postSyncEntry {
                     Button(action: onOpenSyncDetail) {
                         HStack(spacing: 4) {
-                            Text("Show details")
+                            Text(activeEntry ? "Show details" : "Last sync details")
                                 .font(.cairnScaled(size: 12, weight: .medium))
                             Image(systemName: "chevron.right")
                                 .font(.cairnScaled(size: 9, weight: .semibold))
@@ -1132,7 +1143,7 @@ public struct StatusScreen: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("Show sync details")
+                    .accessibilityLabel(activeEntry ? "Show sync details" : "Show last sync details")
                 }
                 // Renders whenever there's anything to review — items
                 // held by the quarantine clock OR unconfirmed
