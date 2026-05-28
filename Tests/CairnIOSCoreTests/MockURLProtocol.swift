@@ -1,33 +1,32 @@
 import Foundation
 
-/// iOS-test-target copy of the URL-intercept helper. Same shape as
-/// `Tests/CairnCoreTests/MockURLProtocol.swift`, but the
-/// `URLProtocol` subclass is renamed so the two test targets don't
-/// register a class with the same Objective-C name in the linked
-/// test bundle — which the Swift 6.x ObjC runtime treats as a fatal
-/// trap at process init (the symptom we hit was a SIGTRAP ~200ms
-/// after `swift test` started, with no per-test failure). Keeping
-/// the file local to each target (rather than promoting to a shared
-/// test-helper module) is the minimum change to fix the collision;
-/// reach for a shared module if a third test target needs the same
-/// helper later.
-///
-/// Set `IOSMockURLProtocol.handler` to a closure that inspects the
-/// inbound `URLRequest` and returns the canned `(HTTPURLResponse,
-/// Data)` pair. Global state means the suite using this must run
-/// serialized — see `@Suite("…", .serialized)` on the consumers.
+/// iOS-test-target twin of `Tests/CairnCoreTests/MockURLProtocol.swift`.
+/// Same per-session-dispatch design (see that file's docs); the
+/// `URLProtocol` subclass is named `IOSMockURLProtocol` so the two
+/// test targets don't register a class with the same Objective-C
+/// runtime name in the linked test bundle.
 final class IOSMockURLProtocol: URLProtocol, @unchecked Sendable {
-    nonisolated(unsafe) static var handler: (@Sendable (URLRequest) throws -> (HTTPURLResponse, Data))?
+    /// HTTP header used to dispatch a request to its owning session's
+    /// handler. Cheap to read off `URLRequest` and survives the
+    /// URLSession pipeline intact.
+    static let sessionHeader = "X-Mock-Session-Id"
 
-    override class func canInit(with request: URLRequest) -> Bool { true }
+    nonisolated(unsafe) private static var handlers: [String: @Sendable (URLRequest) throws -> (HTTPURLResponse, Data)] = [:]
+    nonisolated(unsafe) private static let handlersLock = NSLock()
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        request.value(forHTTPHeaderField: sessionHeader) != nil
+    }
+
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
-        guard let handler = Self.handler else {
+        guard let sessionId = request.value(forHTTPHeaderField: Self.sessionHeader),
+              let handler = Self.lookup(sessionId) else {
             client?.urlProtocol(self, didFailWithError: NSError(
                 domain: "IOSMockURLProtocol",
                 code: -1,
-                userInfo: [NSLocalizedDescriptionKey: "no handler configured"]
+                userInfo: [NSLocalizedDescriptionKey: "no handler configured for this session"]
             ))
             return
         }
@@ -43,10 +42,57 @@ final class IOSMockURLProtocol: URLProtocol, @unchecked Sendable {
 
     override func stopLoading() {}
 
-    static func session() -> URLSession {
+    // MARK: - Registry
+
+    static func register(_ handler: @escaping @Sendable (URLRequest) throws -> (HTTPURLResponse, Data), for sessionId: String) {
+        handlersLock.lock(); defer { handlersLock.unlock() }
+        handlers[sessionId] = handler
+    }
+
+    static func unregister(_ sessionId: String) {
+        handlersLock.lock(); defer { handlersLock.unlock() }
+        handlers.removeValue(forKey: sessionId)
+    }
+
+    private static func lookup(_ sessionId: String) -> (@Sendable (URLRequest) throws -> (HTTPURLResponse, Data))? {
+        handlersLock.lock(); defer { handlersLock.unlock() }
+        return handlers[sessionId]
+    }
+
+    // MARK: - Factory
+
+    static func session() -> IOSMockSession {
+        let id = UUID().uuidString
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [IOSMockURLProtocol.self]
-        return URLSession(configuration: config)
+        config.httpAdditionalHeaders = [sessionHeader: id]
+        return IOSMockSession(session: URLSession(configuration: config), sessionId: id)
+    }
+}
+
+/// Test-side handle that bundles a URLSession with its handler.
+final class IOSMockSession: @unchecked Sendable {
+    let session: URLSession
+    let sessionId: String
+
+    init(session: URLSession, sessionId: String) {
+        self.session = session
+        self.sessionId = sessionId
+    }
+
+    var handler: (@Sendable (URLRequest) throws -> (HTTPURLResponse, Data))? {
+        get { nil }
+        set {
+            if let newValue {
+                IOSMockURLProtocol.register(newValue, for: sessionId)
+            } else {
+                IOSMockURLProtocol.unregister(sessionId)
+            }
+        }
+    }
+
+    deinit {
+        IOSMockURLProtocol.unregister(sessionId)
     }
 }
 

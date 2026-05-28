@@ -5,12 +5,14 @@ import Testing
 @Suite("ImmichClient over mocked HTTP", .serialized)
 struct ImmichClientHTTPTests {
 
-    private func makeClient(baseURL: String = "https://photos.example.com") -> ImmichClient {
-        ImmichClient(
+    private func makeClient(baseURL: String = "https://photos.example.com") -> (client: ImmichClient, mock: MockSession) {
+        let mock = MockURLProtocol.session()
+        let client = ImmichClient(
             baseURL: URL(string: baseURL)!,
             apiKey: "TEST-KEY",
-            session: MockURLProtocol.session()
+            session: mock.session
         )
+        return (client, mock)
     }
 
     private let emptyAssetsBody = Data(#"{"assets":{"items":[],"nextPage":null}}"#.utf8)
@@ -19,9 +21,9 @@ struct ImmichClientHTTPTests {
 
     @Test("every request carries the x-api-key header")
     func sendsAPIKey() async throws {
-        let client = makeClient()
+        let (client, mock) = makeClient()
         let seenKeys = Ref<[String?]>([])
-        MockURLProtocol.handler = { req in
+        mock.handler = { req in
             seenKeys.mutate { $0.append(req.value(forHTTPHeaderField: "x-api-key")) }
             return (HTTPURLResponse(url: req.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
                     Data(#"{"assets":{"items":[],"nextPage":null}}"#.utf8))
@@ -32,9 +34,9 @@ struct ImmichClientHTTPTests {
 
     @Test("no Accept header is sent — would have caught the /server/ping 406 bug")
     func noAcceptHeader() async throws {
-        let client = makeClient()
+        let (client, mock) = makeClient()
         let seenAccept = Ref<String?>("sentinel")
-        MockURLProtocol.handler = { req in
+        mock.handler = { req in
             seenAccept.value = req.value(forHTTPHeaderField: "Accept")
             return (HTTPURLResponse(url: req.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
                     Data(#"{"assets":{"items":[],"nextPage":null}}"#.utf8))
@@ -45,9 +47,9 @@ struct ImmichClientHTTPTests {
 
     @Test("bare-host URL gets /api prefix applied at request time")
     func apiPrefixAppliedFromBareHost() async throws {
-        let client = makeClient(baseURL: "https://photos.example.com/")
+        let (client, mock) = makeClient(baseURL: "https://photos.example.com/")
         let seenURL = Ref<URL?>(nil)
-        MockURLProtocol.handler = { req in
+        mock.handler = { req in
             seenURL.value = req.url
             return (HTTPURLResponse(url: req.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
                     Data(#"{"assets":{"items":[],"nextPage":null}}"#.utf8))
@@ -60,9 +62,9 @@ struct ImmichClientHTTPTests {
 
     @Test("listAllAssets iterates nextPage and terminates when null")
     func paginationWalksPages() async throws {
-        let client = makeClient()
+        let (client, mock) = makeClient()
         let requestedPages = Ref<[Int]>([])
-        MockURLProtocol.handler = { req in
+        mock.handler = { req in
             let body = req.readBody()
             let json = try JSONSerialization.jsonObject(with: body) as! [String: Any]
             let page = json["page"] as! Int
@@ -91,9 +93,9 @@ struct ImmichClientHTTPTests {
 
     @Test("listAllAssets omits visibility filter by default and sets it when provided")
     func visibilityFilterPropagates() async throws {
-        let client = makeClient()
+        let (client, mock) = makeClient()
         let seenVisibilities = Ref<[String?]>([])
-        MockURLProtocol.handler = { req in
+        mock.handler = { req in
             let body = req.readBody()
             let json = try JSONSerialization.jsonObject(with: body) as! [String: Any]
             seenVisibilities.mutate { $0.append(json["visibility"] as? String) }
@@ -108,9 +110,9 @@ struct ImmichClientHTTPTests {
 
     @Test("listAllAssets requests `withDeleted: false` by default and `true` when asked")
     func withDeletedFlagPropagates() async throws {
-        let client = makeClient()
+        let (client, mock) = makeClient()
         let seenWithDeleted = Ref<[Bool]>([])
-        MockURLProtocol.handler = { req in
+        mock.handler = { req in
             let body = req.readBody()
             let json = try JSONSerialization.jsonObject(with: body) as! [String: Any]
             seenWithDeleted.mutate { $0.append(json["withDeleted"] as! Bool) }
@@ -126,8 +128,8 @@ struct ImmichClientHTTPTests {
 
     @Test("HTTP 4xx surfaces as ImmichClientError.httpStatus with status and body")
     func fourHundredSurfaces() async throws {
-        let client = makeClient()
-        MockURLProtocol.handler = { req in
+        let (client, mock) = makeClient()
+        mock.handler = { req in
             (HTTPURLResponse(url: req.url!, statusCode: 404, httpVersion: nil, headerFields: nil)!,
              Data(#"{"message":"not found"}"#.utf8))
         }
@@ -138,9 +140,9 @@ struct ImmichClientHTTPTests {
 
     @Test("HTTP 401 surfaces with code and body — drives 'rejected the API key' copy")
     func unauthorizedSurfaces() async throws {
-        let client = makeClient()
+        let (client, mock) = makeClient()
         let body = #"{"message":"Invalid API key"}"#
-        MockURLProtocol.handler = { req in
+        mock.handler = { req in
             (HTTPURLResponse(url: req.url!, statusCode: 401, httpVersion: nil, headerFields: nil)!,
              Data(body.utf8))
         }
@@ -154,9 +156,9 @@ struct ImmichClientHTTPTests {
 
     @Test("HTTP 403 surfaces with code and body — drives 'missing scopes' copy")
     func forbiddenSurfaces() async throws {
-        let client = makeClient()
+        let (client, mock) = makeClient()
         let body = #"{"message":"Missing required permission: asset.delete"}"#
-        MockURLProtocol.handler = { req in
+        mock.handler = { req in
             (HTTPURLResponse(url: req.url!, statusCode: 403, httpVersion: nil, headerFields: nil)!,
              Data(body.utf8))
         }
@@ -170,9 +172,9 @@ struct ImmichClientHTTPTests {
 
     @Test("HTTP 500 surfaces with code and body — drives 'server error, try again' copy")
     func internalServerErrorSurfaces() async throws {
-        let client = makeClient()
+        let (client, mock) = makeClient()
         let body = "Internal Server Error"
-        MockURLProtocol.handler = { req in
+        mock.handler = { req in
             (HTTPURLResponse(url: req.url!, statusCode: 500, httpVersion: nil, headerFields: nil)!,
              Data(body.utf8))
         }
@@ -186,9 +188,9 @@ struct ImmichClientHTTPTests {
 
     @Test("HTTP 503 surfaces with code and body — also routes to 'server error' copy (>=500)")
     func serviceUnavailableSurfaces() async throws {
-        let client = makeClient()
+        let (client, mock) = makeClient()
         let body = "Service Unavailable"
-        MockURLProtocol.handler = { req in
+        mock.handler = { req in
             (HTTPURLResponse(url: req.url!, statusCode: 503, httpVersion: nil, headerFields: nil)!,
              Data(body.utf8))
         }
@@ -204,9 +206,9 @@ struct ImmichClientHTTPTests {
 
     @Test("listAllAssets retries after a transient failure and returns the success result")
     func paginationRetrySucceeds() async throws {
-        let client = makeClient()
+        let (client, mock) = makeClient()
         let attemptCount = Ref<Int>(0)
-        MockURLProtocol.handler = { req in
+        mock.handler = { req in
             let n = attemptCount.value
             attemptCount.mutate { $0 += 1 }
             if n == 0 {
@@ -226,9 +228,9 @@ struct ImmichClientHTTPTests {
 
     @Test("listAllAssets surfaces the final error after exhausting maxRetries")
     func paginationRetryExhausts() async throws {
-        let client = makeClient()
+        let (client, mock) = makeClient()
         let attemptCount = Ref<Int>(0)
-        MockURLProtocol.handler = { req in
+        mock.handler = { req in
             attemptCount.mutate { $0 += 1 }
             return (HTTPURLResponse(url: req.url!, statusCode: 500, httpVersion: nil, headerFields: nil)!,
                     Data("still broken".utf8))
@@ -245,8 +247,8 @@ struct ImmichClientHTTPTests {
 
     @Test("malformed JSON on 200 response throws a decoding error")
     func malformedJSONOnOK() async throws {
-        let client = makeClient()
-        MockURLProtocol.handler = { req in
+        let (client, mock) = makeClient()
+        mock.handler = { req in
             (HTTPURLResponse(url: req.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
              Data("this is not json".utf8))
         }
@@ -259,11 +261,11 @@ struct ImmichClientHTTPTests {
 
     @Test("trashAssets sends DELETE /api/assets with force:false")
     func trashSendsCorrectBody() async throws {
-        let client = makeClient()
+        let (client, mock) = makeClient()
         let seenMethod = Ref<String?>(nil)
         let seenPath = Ref<String?>(nil)
         let seenBody = Ref<Data>(Data())
-        MockURLProtocol.handler = { req in
+        mock.handler = { req in
             seenMethod.value = req.httpMethod
             seenPath.value = req.url?.path
             seenBody.value = req.readBody()
@@ -280,11 +282,11 @@ struct ImmichClientHTTPTests {
 
     @Test("restoreAssets POSTs to /api/trash/restore/assets with ids only")
     func restoreSendsCorrectRequest() async throws {
-        let client = makeClient()
+        let (client, mock) = makeClient()
         let seenMethod = Ref<String?>(nil)
         let seenPath = Ref<String?>(nil)
         let seenBody = Ref<Data>(Data())
-        MockURLProtocol.handler = { req in
+        mock.handler = { req in
             seenMethod.value = req.httpMethod
             seenPath.value = req.url?.path
             seenBody.value = req.readBody()
@@ -300,8 +302,8 @@ struct ImmichClientHTTPTests {
 
     @Test("listTags GETs /api/tags and parses the response array")
     func listTagsParsesArray() async throws {
-        let client = makeClient()
-        MockURLProtocol.handler = { req in
+        let (client, mock) = makeClient()
+        mock.handler = { req in
             #expect(req.httpMethod == "GET")
             #expect(req.url?.path == "/api/tags")
             let json = """
@@ -323,9 +325,9 @@ struct ImmichClientHTTPTests {
 
     @Test("assetsForTag iterates timeline/archive/hidden and merges, passing tagIds and withDeleted:true in each request")
     func assetsForTagIteratesVisibilities() async throws {
-        let client = makeClient()
+        let (client, mock) = makeClient()
         let seenVisibilities = Ref<[String]>([])
-        MockURLProtocol.handler = { req in
+        mock.handler = { req in
             let body = req.readBody()
             let json = try JSONSerialization.jsonObject(with: body) as! [String: Any]
             #expect(json["tagIds"] as? [String] == ["T-123"])
@@ -340,8 +342,8 @@ struct ImmichClientHTTPTests {
 
     @Test("assetsForTag dedupes assets that appear under multiple visibility queries")
     func assetsForTagDedupes() async throws {
-        let client = makeClient()
-        MockURLProtocol.handler = { req in
+        let (client, mock) = makeClient()
+        mock.handler = { req in
             // Pretend the same asset shows up for every visibility class.
             let body = #"{"assets":{"items":[{"id":"dup","checksum":"ck","livePhotoVideoId":null,"isTrashed":false}],"nextPage":null}}"#
             return (HTTPURLResponse(url: req.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
@@ -353,9 +355,9 @@ struct ImmichClientHTTPTests {
 
     @Test("trashAssets and restoreAssets on empty id lists are no-ops (no network)")
     func emptyIdListsSkipNetwork() async throws {
-        let client = makeClient()
+        let (client, mock) = makeClient()
         let hitCount = Ref<Int>(0)
-        MockURLProtocol.handler = { req in
+        mock.handler = { req in
             hitCount.mutate { $0 += 1 }
             return (HTTPURLResponse(url: req.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data("{}".utf8))
         }
@@ -368,10 +370,10 @@ struct ImmichClientHTTPTests {
 
     @Test("apiKeyInfo GETs /api/api-keys/me and parses id, name, permissions")
     func apiKeyInfoSuccess() async throws {
-        let client = makeClient()
+        let (client, mock) = makeClient()
         let seenMethod = Ref<String?>(nil)
         let seenPath = Ref<String?>(nil)
-        MockURLProtocol.handler = { req in
+        mock.handler = { req in
             seenMethod.value = req.httpMethod
             seenPath.value = req.url?.path
             let json = """
@@ -394,8 +396,8 @@ struct ImmichClientHTTPTests {
 
     @Test("apiKeyInfo accepts an empty permissions array")
     func apiKeyInfoEmptyPermissions() async throws {
-        let client = makeClient()
-        MockURLProtocol.handler = { req in
+        let (client, mock) = makeClient()
+        mock.handler = { req in
             let json = #"{"id":"k","name":"unscoped","permissions":[]}"#
             return (HTTPURLResponse(url: req.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
                     Data(json.utf8))
@@ -406,8 +408,8 @@ struct ImmichClientHTTPTests {
 
     @Test("apiKeyInfo on HTTP 401 throws ImmichClientError.httpStatus(401, body:)")
     func apiKeyInfoUnauthorized() async throws {
-        let client = makeClient()
-        MockURLProtocol.handler = { req in
+        let (client, mock) = makeClient()
+        mock.handler = { req in
             (HTTPURLResponse(url: req.url!, statusCode: 401, httpVersion: nil, headerFields: nil)!,
              Data(#"{"message":"unauthorized"}"#.utf8))
         }
@@ -421,8 +423,8 @@ struct ImmichClientHTTPTests {
 
     @Test("apiKeyInfo on HTTP 403 throws ImmichClientError.httpStatus(403, body:)")
     func apiKeyInfoForbidden() async throws {
-        let client = makeClient()
-        MockURLProtocol.handler = { req in
+        let (client, mock) = makeClient()
+        mock.handler = { req in
             (HTTPURLResponse(url: req.url!, statusCode: 403, httpVersion: nil, headerFields: nil)!,
              Data(#"{"message":"forbidden"}"#.utf8))
         }
@@ -436,8 +438,8 @@ struct ImmichClientHTTPTests {
 
     @Test("apiKeyInfo on HTTP 500 throws ImmichClientError.httpStatus(500, body:)")
     func apiKeyInfoServerError() async throws {
-        let client = makeClient()
-        MockURLProtocol.handler = { req in
+        let (client, mock) = makeClient()
+        mock.handler = { req in
             (HTTPURLResponse(url: req.url!, statusCode: 500, httpVersion: nil, headerFields: nil)!,
              Data("internal server error".utf8))
         }
@@ -451,8 +453,8 @@ struct ImmichClientHTTPTests {
 
     @Test("apiKeyInfo on malformed JSON throws a decoding error")
     func apiKeyInfoMalformedJSON() async throws {
-        let client = makeClient()
-        MockURLProtocol.handler = { req in
+        let (client, mock) = makeClient()
+        mock.handler = { req in
             (HTTPURLResponse(url: req.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
              Data("<html>not json</html>".utf8))
         }
@@ -465,11 +467,11 @@ struct ImmichClientHTTPTests {
 
     @Test("assetStatistics GETs /api/assets/statistics with isTrashed query and parses counts")
     func assetStatisticsSuccess() async throws {
-        let client = makeClient()
+        let (client, mock) = makeClient()
         let seenMethod = Ref<String?>(nil)
         let seenPath = Ref<String?>(nil)
         let seenQuery = Ref<String?>(nil)
-        MockURLProtocol.handler = { req in
+        mock.handler = { req in
             seenMethod.value = req.httpMethod
             seenPath.value = req.url?.path
             seenQuery.value = req.url?.query
@@ -488,9 +490,9 @@ struct ImmichClientHTTPTests {
 
     @Test("assetStatistics(includeTrashed: true) sends isTrashed=true")
     func assetStatisticsIncludeTrashed() async throws {
-        let client = makeClient()
+        let (client, mock) = makeClient()
         let seenQuery = Ref<String?>(nil)
-        MockURLProtocol.handler = { req in
+        mock.handler = { req in
             seenQuery.value = req.url?.query
             return (HTTPURLResponse(url: req.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
                     Data(#"{"images":0,"videos":0,"total":0}"#.utf8))
@@ -501,9 +503,9 @@ struct ImmichClientHTTPTests {
 
     @Test("assetStatistics carries x-api-key header")
     func assetStatisticsSendsAPIKey() async throws {
-        let client = makeClient()
+        let (client, mock) = makeClient()
         let seenKey = Ref<String?>(nil)
-        MockURLProtocol.handler = { req in
+        mock.handler = { req in
             seenKey.value = req.value(forHTTPHeaderField: "x-api-key")
             return (HTTPURLResponse(url: req.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
                     Data(#"{"images":0,"videos":0,"total":0}"#.utf8))
@@ -514,8 +516,8 @@ struct ImmichClientHTTPTests {
 
     @Test("assetStatistics on HTTP 401 throws ImmichClientError.httpStatus(401, body:)")
     func assetStatisticsUnauthorized() async throws {
-        let client = makeClient()
-        MockURLProtocol.handler = { req in
+        let (client, mock) = makeClient()
+        mock.handler = { req in
             (HTTPURLResponse(url: req.url!, statusCode: 401, httpVersion: nil, headerFields: nil)!,
              Data(#"{"message":"unauthorized"}"#.utf8))
         }
@@ -529,8 +531,8 @@ struct ImmichClientHTTPTests {
 
     @Test("assetStatistics on HTTP 403 (missing asset.statistics scope) throws httpStatus(403)")
     func assetStatisticsForbidden() async throws {
-        let client = makeClient()
-        MockURLProtocol.handler = { req in
+        let (client, mock) = makeClient()
+        mock.handler = { req in
             (HTTPURLResponse(url: req.url!, statusCode: 403, httpVersion: nil, headerFields: nil)!,
              Data(#"{"message":"missing scope: asset.statistics"}"#.utf8))
         }
@@ -544,8 +546,8 @@ struct ImmichClientHTTPTests {
 
     @Test("assetStatistics on HTTP 500 throws ImmichClientError.httpStatus(500, body:)")
     func assetStatisticsServerError() async throws {
-        let client = makeClient()
-        MockURLProtocol.handler = { req in
+        let (client, mock) = makeClient()
+        mock.handler = { req in
             (HTTPURLResponse(url: req.url!, statusCode: 500, httpVersion: nil, headerFields: nil)!,
              Data("boom".utf8))
         }
@@ -559,8 +561,8 @@ struct ImmichClientHTTPTests {
 
     @Test("assetStatistics on malformed JSON throws a decoding error")
     func assetStatisticsMalformedJSON() async throws {
-        let client = makeClient()
-        MockURLProtocol.handler = { req in
+        let (client, mock) = makeClient()
+        mock.handler = { req in
             (HTTPURLResponse(url: req.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
              Data("not json at all".utf8))
         }

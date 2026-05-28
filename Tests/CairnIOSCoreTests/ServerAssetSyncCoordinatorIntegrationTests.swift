@@ -19,12 +19,14 @@ struct ServerAssetSyncCoordinatorIntegrationTests {
         try CairnSwiftDataContainer.make(inMemory: true)
     }
 
-    private func makeClient() -> ImmichClient {
-        ImmichClient(
+    private func makeClient() -> (client: ImmichClient, mock: IOSMockSession) {
+        let mock = IOSMockURLProtocol.session()
+        let client = ImmichClient(
             baseURL: URL(string: "https://photos.example.com")!,
             apiKey: "TEST-KEY",
-            session: IOSMockURLProtocol.session()
+            session: mock.session
         )
+        return (client, mock)
     }
 
     private func assetLine(id: String, ck: String, deletedAt: Date? = nil, visibility: String = "timeline") -> String {
@@ -63,9 +65,9 @@ struct ServerAssetSyncCoordinatorIntegrationTests {
         #"{"type":"SyncCompleteV1","data":{},"ack":"\#(ack)"}"#
     }
 
-    private func arrangeMockServer(streamLines: [String]) {
+    private func arrangeMockServer(_ mock: IOSMockSession, streamLines: [String]) {
         let body = Data((streamLines.joined(separator: "\n") + "\n").utf8)
-        IOSMockURLProtocol.handler = { req in
+        mock.handler = { req in
             if req.url?.path == "/api/sync/stream" {
                 return (
                     HTTPURLResponse(url: req.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
@@ -92,8 +94,9 @@ struct ServerAssetSyncCoordinatorIntegrationTests {
         let container = try makeContainer()
         let cache = SwiftDataServerAssetCacheStore(container: container)
         let acks = SwiftDataSyncAckStore(container: container)
+        let (client, mock) = makeClient()
         let coordinator = ServerAssetSyncCoordinator(
-            client: makeClient(),
+            client: client,
             cache: cache,
             ackStore: acks
         )
@@ -104,7 +107,7 @@ struct ServerAssetSyncCoordinatorIntegrationTests {
             assetLine(id: "a3", ck: "CCCC"),
             completeLine("complete"),
         ]
-        arrangeMockServer(streamLines: lines)
+        arrangeMockServer(mock, streamLines: lines)
 
         let summary = try await coordinator.syncToCache()
         #expect(summary.mode == .bootstrap)
@@ -125,15 +128,16 @@ struct ServerAssetSyncCoordinatorIntegrationTests {
         let container = try makeContainer()
         let cache = SwiftDataServerAssetCacheStore(container: container)
         let acks = SwiftDataSyncAckStore(container: container)
+        let (client, mock) = makeClient()
         let coordinator = ServerAssetSyncCoordinator(
-            client: makeClient(),
+            client: client,
             cache: cache,
             ackStore: acks
         )
 
         // Seed with 5 pre-existing assets to force incremental mode.
         let seedLines = (0..<5).map { i in assetLine(id: "seed\(i)", ck: "ck\(i)") } + [completeLine("seed-done")]
-        arrangeMockServer(streamLines: seedLines)
+        arrangeMockServer(mock, streamLines: seedLines)
         _ = try await coordinator.syncToCache()
         #expect(try await cache.size() == 5)
 
@@ -146,7 +150,7 @@ struct ServerAssetSyncCoordinatorIntegrationTests {
             deleteLine("seed3", ack: "del-seed3"),
             completeLine("delta-done"),
         ]
-        arrangeMockServer(streamLines: deltaLines)
+        arrangeMockServer(mock, streamLines: deltaLines)
 
         let summary = try await coordinator.syncToCache()
         #expect(summary.mode == .incremental)
@@ -163,8 +167,9 @@ struct ServerAssetSyncCoordinatorIntegrationTests {
         let container = try makeContainer()
         let cache = SwiftDataServerAssetCacheStore(container: container)
         let acks = SwiftDataSyncAckStore(container: container)
+        let (client, mock) = makeClient()
         let coordinator = ServerAssetSyncCoordinator(
-            client: makeClient(),
+            client: client,
             cache: cache,
             ackStore: acks
         )
@@ -177,7 +182,7 @@ struct ServerAssetSyncCoordinatorIntegrationTests {
             assetLine(id: "trashed-asset", ck: "TR", deletedAt: Date(timeIntervalSince1970: 1_700_000_000)),
             completeLine("done"),
         ]
-        arrangeMockServer(streamLines: lines)
+        arrangeMockServer(mock, streamLines: lines)
 
         _ = try await coordinator.syncToCache()
         // size() counts every row regardless of visibility/trash.
@@ -195,8 +200,9 @@ struct ServerAssetSyncCoordinatorIntegrationTests {
         let container = try makeContainer()
         let cache = SwiftDataServerAssetCacheStore(container: container)
         let acks = SwiftDataSyncAckStore(container: container)
+        let (client, mock) = makeClient()
         let coordinator = ServerAssetSyncCoordinator(
-            client: makeClient(),
+            client: client,
             cache: cache,
             ackStore: acks
         )
@@ -207,7 +213,7 @@ struct ServerAssetSyncCoordinatorIntegrationTests {
             completeLine("done"),
         ]
         let body = Data((lines.joined(separator: "\n") + "\n").utf8)
-        IOSMockURLProtocol.handler = { req in
+        mock.handler = { req in
             if req.url?.path == "/api/sync/stream" {
                 return (
                     HTTPURLResponse(url: req.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
@@ -253,8 +259,9 @@ struct ServerAssetSyncCoordinatorIntegrationTests {
         do {
             let cache = SwiftDataServerAssetCacheStore(container: container)
             let acks = SwiftDataSyncAckStore(container: container)
+            let (client, mock) = makeClient()
             let coordinator = ServerAssetSyncCoordinator(
-                client: makeClient(),
+                client: client,
                 cache: cache,
                 ackStore: acks
             )
@@ -262,7 +269,7 @@ struct ServerAssetSyncCoordinatorIntegrationTests {
                 assetLine(id: "persistent-1", ck: "P1"),
                 completeLine("done"),
             ]
-            arrangeMockServer(streamLines: lines)
+            arrangeMockServer(mock, streamLines: lines)
             _ = try await coordinator.syncToCache()
         }
 

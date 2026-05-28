@@ -1,24 +1,54 @@
 import Foundation
 
-/// Lightweight URLProtocol subclass that lets tests intercept every request
-/// made on an `URLSession` configured with `protocolClasses = [MockURLProtocol.self]`.
+/// URLProtocol subclass that intercepts HTTP requests for tests.
 ///
-/// Set `MockURLProtocol.handler` to a closure that inspects the inbound
-/// `URLRequest` and returns the canned `(HTTPURLResponse, Data)` pair.
-/// Global state means the suite using this must run serialized — see
-/// `@Suite("…", .serialized)` on the consumers.
+/// **Per-session dispatch.** Each call to `MockURLProtocol.session()`
+/// returns a `MockSession` bound to a unique session id and injects
+/// that id into every outgoing request via the
+/// `X-Mock-Session-Id` header. `startLoading` looks the handler up by
+/// id from a process-wide registry. Multiple `MockSession`s can
+/// coexist without colliding — the global static handler we used
+/// previously turned into a cross-suite race when swift-testing ran
+/// `@Suite(.serialized)` suites in parallel with each other, and the
+/// fix was to scope the handler to the session that owns the
+/// request.
+///
+/// **Usage**:
+/// ```
+/// let mock = MockURLProtocol.session()
+/// mock.handler = { req in (HTTPURLResponse(...), Data(...)) }
+/// let client = ImmichClient(..., session: mock.session)
+/// // mock.handler can be reassigned between phases of the same test
+/// ```
+///
+/// The handler is automatically removed from the registry when
+/// `MockSession` deinits — tests don't need to clean up manually.
 final class MockURLProtocol: URLProtocol, @unchecked Sendable {
-    nonisolated(unsafe) static var handler: (@Sendable (URLRequest) throws -> (HTTPURLResponse, Data))?
+    /// HTTP header used to dispatch a request to its owning session's
+    /// handler. Cheap to read off `URLRequest` and survives the
+    /// URLSession pipeline intact.
+    static let sessionHeader = "X-Mock-Session-Id"
 
-    override class func canInit(with request: URLRequest) -> Bool { true }
+    nonisolated(unsafe) private static var handlers: [String: @Sendable (URLRequest) throws -> (HTTPURLResponse, Data)] = [:]
+    nonisolated(unsafe) private static let handlersLock = NSLock()
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        // Only intercept requests that carry our session header.
+        // Anything else falls through to the default URLSession path,
+        // which keeps stray system calls (e.g. App Transport Security
+        // pre-flights on first launch) out of our handlers.
+        request.value(forHTTPHeaderField: sessionHeader) != nil
+    }
+
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
-        guard let handler = Self.handler else {
+        guard let sessionId = request.value(forHTTPHeaderField: Self.sessionHeader),
+              let handler = Self.lookup(sessionId) else {
             client?.urlProtocol(self, didFailWithError: NSError(
                 domain: "MockURLProtocol",
                 code: -1,
-                userInfo: [NSLocalizedDescriptionKey: "no handler configured"]
+                userInfo: [NSLocalizedDescriptionKey: "no handler configured for this session"]
             ))
             return
         }
@@ -34,10 +64,66 @@ final class MockURLProtocol: URLProtocol, @unchecked Sendable {
 
     override func stopLoading() {}
 
-    static func session() -> URLSession {
+    // MARK: - Registry
+
+    static func register(_ handler: @escaping @Sendable (URLRequest) throws -> (HTTPURLResponse, Data), for sessionId: String) {
+        handlersLock.lock(); defer { handlersLock.unlock() }
+        handlers[sessionId] = handler
+    }
+
+    static func unregister(_ sessionId: String) {
+        handlersLock.lock(); defer { handlersLock.unlock() }
+        handlers.removeValue(forKey: sessionId)
+    }
+
+    private static func lookup(_ sessionId: String) -> (@Sendable (URLRequest) throws -> (HTTPURLResponse, Data))? {
+        handlersLock.lock(); defer { handlersLock.unlock() }
+        return handlers[sessionId]
+    }
+
+    // MARK: - Factory
+
+    /// Create a fresh `MockSession` with a unique id. The returned
+    /// session's `URLSession` is wired to route its requests through
+    /// `MockURLProtocol` and only this session's handler will be
+    /// invoked for them.
+    static func session() -> MockSession {
+        let id = UUID().uuidString
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [MockURLProtocol.self]
-        return URLSession(configuration: config)
+        // Inject the session-id header so requests carry their
+        // routing key all the way to `startLoading`.
+        config.httpAdditionalHeaders = [sessionHeader: id]
+        return MockSession(session: URLSession(configuration: config), sessionId: id)
+    }
+}
+
+/// Test-side handle that bundles a URLSession with its handler.
+/// Setting `handler` updates `MockURLProtocol`'s registry under this
+/// session's id; nil-ing it (or letting the `MockSession` deinit)
+/// removes the entry.
+final class MockSession: @unchecked Sendable {
+    let session: URLSession
+    let sessionId: String
+
+    init(session: URLSession, sessionId: String) {
+        self.session = session
+        self.sessionId = sessionId
+    }
+
+    var handler: (@Sendable (URLRequest) throws -> (HTTPURLResponse, Data))? {
+        get { nil }
+        set {
+            if let newValue {
+                MockURLProtocol.register(newValue, for: sessionId)
+            } else {
+                MockURLProtocol.unregister(sessionId)
+            }
+        }
+    }
+
+    deinit {
+        MockURLProtocol.unregister(sessionId)
     }
 }
 

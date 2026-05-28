@@ -5,12 +5,14 @@ import Testing
 @Suite("ImmichClient sync/stream + ack", .serialized)
 struct ImmichClientSyncStreamTests {
 
-    private func makeClient(baseURL: String = "https://photos.example.com") -> ImmichClient {
-        ImmichClient(
+    private func makeClient(baseURL: String = "https://photos.example.com") -> (client: ImmichClient, mock: MockSession) {
+        let mock = MockURLProtocol.session()
+        let client = ImmichClient(
             baseURL: URL(string: baseURL)!,
             apiKey: "TEST-KEY",
-            session: MockURLProtocol.session()
+            session: mock.session
         )
+        return (client, mock)
     }
 
     /// Build the response body for `sync/stream` from a list of JSONL
@@ -25,7 +27,7 @@ struct ImmichClientSyncStreamTests {
 
     @Test("syncStream yields decoded events for a multi-event batch")
     func streamsMultipleEvents() async throws {
-        let client = makeClient()
+        let (client, mock) = makeClient()
         let body = jsonl([
             #"{"type":"AssetV1","data":{"id":"a1","ownerId":"u1","originalFileName":"IMG_1.HEIC","thumbhash":null,"checksum":"AAAA","fileCreatedAt":null,"fileModifiedAt":null,"localDateTime":null,"duration":null,"type":"image","deletedAt":null,"isFavorite":false,"visibility":"timeline","livePhotoVideoId":null,"stackId":null,"libraryId":null,"width":null,"height":null,"isEdited":false},"ack":"a1-ack"}"#,
             #"{"type":"AssetV1","data":{"id":"a2","ownerId":"u1","originalFileName":"IMG_2.HEIC","thumbhash":null,"checksum":"BBBB","fileCreatedAt":null,"fileModifiedAt":null,"localDateTime":null,"duration":null,"type":"image","deletedAt":null,"isFavorite":false,"visibility":"timeline","livePhotoVideoId":null,"stackId":null,"libraryId":null,"width":null,"height":null,"isEdited":false},"ack":"a2-ack"}"#,
@@ -33,7 +35,7 @@ struct ImmichClientSyncStreamTests {
             #"{"type":"SyncCompleteV1","data":{},"ack":"complete-ack"}"#,
         ])
 
-        MockURLProtocol.handler = { req in
+        mock.handler = { req in
             #expect(req.url?.path == "/api/sync/stream")
             #expect(req.httpMethod == "POST")
             return (
@@ -72,10 +74,10 @@ struct ImmichClientSyncStreamTests {
 
     @Test("syncStream POSTs the SyncStreamRequest body with the requested types")
     func sendsExpectedRequestBody() async throws {
-        let client = makeClient()
+        let (client, mock) = makeClient()
         let bodySink = Ref<Data?>(nil)
 
-        MockURLProtocol.handler = { req in
+        mock.handler = { req in
             bodySink.value = req.readBody()
             return (
                 HTTPURLResponse(url: req.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
@@ -99,10 +101,10 @@ struct ImmichClientSyncStreamTests {
 
     @Test("syncStream includes reset:true when explicitly requested")
     func sendsResetTrue() async throws {
-        let client = makeClient()
+        let (client, mock) = makeClient()
         let bodySink = Ref<Data?>(nil)
 
-        MockURLProtocol.handler = { req in
+        mock.handler = { req in
             bodySink.value = req.readBody()
             return (
                 HTTPURLResponse(url: req.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
@@ -119,8 +121,8 @@ struct ImmichClientSyncStreamTests {
 
     @Test("syncStream surfaces 403 as .missingScope([sync.stream])")
     func surfaces403AsMissingScope() async {
-        let client = makeClient()
-        MockURLProtocol.handler = { req in
+        let (client, mock) = makeClient()
+        mock.handler = { req in
             return (
                 HTTPURLResponse(url: req.url!, statusCode: 403, httpVersion: nil, headerFields: nil)!,
                 Data()
@@ -148,8 +150,8 @@ struct ImmichClientSyncStreamTests {
 
     @Test("syncStream surfaces 500 with body as .httpStatus")
     func surfaces500AsHttpStatus() async {
-        let client = makeClient()
-        MockURLProtocol.handler = { req in
+        let (client, mock) = makeClient()
+        mock.handler = { req in
             return (
                 HTTPURLResponse(url: req.url!, statusCode: 500, httpVersion: nil, headerFields: nil)!,
                 Data(#"{"error":"broken"}"#.utf8)
@@ -176,12 +178,12 @@ struct ImmichClientSyncStreamTests {
         // than silently skip events the cache should have applied.
         // Caller's ack only happens after a successful apply, so the
         // cache stays consistent.
-        let client = makeClient()
+        let (client, mock) = makeClient()
         let body = jsonl([
             #"{"type":"AssetV1","data":{"id":"a1","ownerId":"u1","originalFileName":"x","thumbhash":null,"checksum":"AAAA","fileCreatedAt":null,"fileModifiedAt":null,"localDateTime":null,"duration":null,"type":"image","deletedAt":null,"isFavorite":false,"visibility":"timeline","livePhotoVideoId":null,"stackId":null,"libraryId":null,"width":null,"height":null,"isEdited":false},"ack":"a1"}"#,
             #"{not valid json"#,
         ])
-        MockURLProtocol.handler = { req in
+        mock.handler = { req in
             return (
                 HTTPURLResponse(url: req.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
                 body
@@ -202,8 +204,8 @@ struct ImmichClientSyncStreamTests {
 
     @Test("empty stream (no events, just close) finishes cleanly")
     func emptyStream() async throws {
-        let client = makeClient()
-        MockURLProtocol.handler = { req in
+        let (client, mock) = makeClient()
+        mock.handler = { req in
             return (
                 HTTPURLResponse(url: req.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
                 Data()
@@ -218,14 +220,14 @@ struct ImmichClientSyncStreamTests {
 
     @Test("blank lines between events are skipped, valid events still yield")
     func blankLinesAreSkipped() async throws {
-        let client = makeClient()
+        let (client, mock) = makeClient()
         let body = jsonl([
             #"{"type":"AssetV1","data":{"id":"a1","ownerId":"u1","originalFileName":"x","thumbhash":null,"checksum":"AAAA","fileCreatedAt":null,"fileModifiedAt":null,"localDateTime":null,"duration":null,"type":"image","deletedAt":null,"isFavorite":false,"visibility":"timeline","livePhotoVideoId":null,"stackId":null,"libraryId":null,"width":null,"height":null,"isEdited":false},"ack":"a1"}"#,
             "",
             "   ",
             #"{"type":"AssetDeleteV1","data":{"assetId":"a99"},"ack":"d99"}"#,
         ])
-        MockURLProtocol.handler = { req in
+        mock.handler = { req in
             return (
                 HTTPURLResponse(url: req.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
                 body
@@ -242,9 +244,9 @@ struct ImmichClientSyncStreamTests {
 
     @Test("ackSync POSTs the ack array")
     func ackSyncPostsAcks() async throws {
-        let client = makeClient()
+        let (client, mock) = makeClient()
         let bodySink = Ref<Data?>(nil)
-        MockURLProtocol.handler = { req in
+        mock.handler = { req in
             #expect(req.url?.path == "/api/sync/ack")
             #expect(req.httpMethod == "POST")
             bodySink.value = req.readBody()
@@ -261,9 +263,9 @@ struct ImmichClientSyncStreamTests {
 
     @Test("ackSync with empty input is a no-op (no request)")
     func ackSyncEmptyIsNoOp() async throws {
-        let client = makeClient()
+        let (client, mock) = makeClient()
         let sawRequest = Ref(false)
-        MockURLProtocol.handler = { req in
+        mock.handler = { req in
             sawRequest.value = true
             return (
                 HTTPURLResponse(url: req.url!, statusCode: 204, httpVersion: nil, headerFields: nil)!,
@@ -276,8 +278,8 @@ struct ImmichClientSyncStreamTests {
 
     @Test("ackSync 403 surfaces as .missingScope([sync.checkpoint.update])")
     func ackSyncMissingScope() async {
-        let client = makeClient()
-        MockURLProtocol.handler = { req in
+        let (client, mock) = makeClient()
+        mock.handler = { req in
             return (
                 HTTPURLResponse(url: req.url!, statusCode: 403, httpVersion: nil, headerFields: nil)!,
                 Data()
@@ -299,8 +301,8 @@ struct ImmichClientSyncStreamTests {
 
     @Test("currentSyncAcks decodes the GET /sync/ack response")
     func currentSyncAcksDecodes() async throws {
-        let client = makeClient()
-        MockURLProtocol.handler = { req in
+        let (client, mock) = makeClient()
+        mock.handler = { req in
             #expect(req.url?.path == "/api/sync/ack")
             #expect(req.httpMethod == "GET")
             let body = Data(#"[{"type":"AssetV1","ack":"a-cursor"},{"type":"AssetDeleteV1","ack":"d-cursor"}]"#.utf8)
@@ -317,8 +319,8 @@ struct ImmichClientSyncStreamTests {
 
     @Test("currentSyncAcks 403 surfaces as .missingScope([sync.checkpoint.read])")
     func currentSyncAcks403() async {
-        let client = makeClient()
-        MockURLProtocol.handler = { req in
+        let (client, mock) = makeClient()
+        mock.handler = { req in
             return (
                 HTTPURLResponse(url: req.url!, statusCode: 403, httpVersion: nil, headerFields: nil)!,
                 Data()
@@ -340,10 +342,10 @@ struct ImmichClientSyncStreamTests {
 
     @Test("clearSyncAcks sends DELETE without body when types is nil")
     func clearSyncAcksWithoutTypes() async throws {
-        let client = makeClient()
+        let (client, mock) = makeClient()
         let bodySink = Ref<Data?>(nil)
         let methodSink = Ref<String?>(nil)
-        MockURLProtocol.handler = { req in
+        mock.handler = { req in
             methodSink.value = req.httpMethod
             bodySink.value = req.readBody()
             return (
@@ -358,9 +360,9 @@ struct ImmichClientSyncStreamTests {
 
     @Test("clearSyncAcks(types:) includes the types in the body")
     func clearSyncAcksWithTypes() async throws {
-        let client = makeClient()
+        let (client, mock) = makeClient()
         let bodySink = Ref<Data?>(nil)
-        MockURLProtocol.handler = { req in
+        mock.handler = { req in
             bodySink.value = req.readBody()
             return (
                 HTTPURLResponse(url: req.url!, statusCode: 204, httpVersion: nil, headerFields: nil)!,
@@ -378,9 +380,9 @@ struct ImmichClientSyncStreamTests {
 
     @Test("syncStream sends the x-api-key header")
     func streamSendsAPIKey() async throws {
-        let client = makeClient()
+        let (client, mock) = makeClient()
         let keySink = Ref<String?>(nil)
-        MockURLProtocol.handler = { req in
+        mock.handler = { req in
             keySink.value = req.value(forHTTPHeaderField: "x-api-key")
             return (
                 HTTPURLResponse(url: req.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
@@ -393,9 +395,9 @@ struct ImmichClientSyncStreamTests {
 
     @Test("ackSync sends the x-api-key header")
     func ackSendsAPIKey() async throws {
-        let client = makeClient()
+        let (client, mock) = makeClient()
         let keySink = Ref<String?>(nil)
-        MockURLProtocol.handler = { req in
+        mock.handler = { req in
             keySink.value = req.value(forHTTPHeaderField: "x-api-key")
             return (
                 HTTPURLResponse(url: req.url!, statusCode: 204, httpVersion: nil, headerFields: nil)!,
@@ -410,11 +412,11 @@ struct ImmichClientSyncStreamTests {
 
     @Test("syncStream sends Authorization: Bearer when sessionToken is set, no x-api-key")
     func syncStreamUsesBearerWhenSessionPresent() async throws {
-        let baseClient = makeClient()
+        let (baseClient, mock) = makeClient()
         let client = baseClient.withSessionToken("session-XYZ")
         let authSink = Ref<String?>(nil)
         let apiKeySink = Ref<String?>(nil)
-        MockURLProtocol.handler = { req in
+        mock.handler = { req in
             if req.url?.path == "/api/sync/stream" {
                 authSink.value = req.value(forHTTPHeaderField: "Authorization")
                 apiKeySink.value = req.value(forHTTPHeaderField: "x-api-key")
@@ -435,10 +437,10 @@ struct ImmichClientSyncStreamTests {
 
     @Test("ackSync sends Authorization: Bearer when sessionToken is set")
     func ackSyncUsesBearerWhenSessionPresent() async throws {
-        let baseClient = makeClient()
+        let (baseClient, mock) = makeClient()
         let client = baseClient.withSessionToken("session-XYZ")
         let authSink = Ref<String?>(nil)
-        MockURLProtocol.handler = { req in
+        mock.handler = { req in
             authSink.value = req.value(forHTTPHeaderField: "Authorization")
             return (
                 HTTPURLResponse(url: req.url!, statusCode: 204, httpVersion: nil, headerFields: nil)!,
@@ -451,9 +453,9 @@ struct ImmichClientSyncStreamTests {
 
     @Test("login POSTs credentials to /api/auth/login and decodes the access token")
     func loginRoundTrip() async throws {
-        let client = makeClient()
+        let (client, mock) = makeClient()
         let bodySink = Ref<Data?>(nil)
-        MockURLProtocol.handler = { req in
+        mock.handler = { req in
             #expect(req.url?.path == "/api/auth/login")
             #expect(req.httpMethod == "POST")
             bodySink.value = req.readBody()
@@ -477,8 +479,8 @@ struct ImmichClientSyncStreamTests {
 
     @Test("login surfaces 401 from wrong-credentials as ImmichClientError.httpStatus(401)")
     func loginRejectsBadCredentials() async {
-        let client = makeClient()
-        MockURLProtocol.handler = { req in
+        let (client, mock) = makeClient()
+        mock.handler = { req in
             return (
                 HTTPURLResponse(url: req.url!, statusCode: 401, httpVersion: nil, headerFields: nil)!,
                 Data(#"{"message":"Invalid credentials","statusCode":401}"#.utf8)
@@ -503,7 +505,7 @@ struct ImmichClientSyncStreamTests {
         let original = ImmichClient(
             baseURL: URL(string: "https://photos.example.com")!,
             apiKey: "TEST-KEY",
-            session: MockURLProtocol.session()
+            session: MockURLProtocol.session().session
         )
         #expect(original.sessionToken == nil)
         let session = original.withSessionToken("xyz")
@@ -518,11 +520,11 @@ struct ImmichClientSyncStreamTests {
         // The session token only applies to /sync/*. listAllAssets and
         // friends should keep using the API key — otherwise turning on
         // session auth would accidentally break every other endpoint.
-        let baseClient = makeClient()
+        let (baseClient, mock) = makeClient()
         let client = baseClient.withSessionToken("session-XYZ")
         let apiKeySink = Ref<String?>(nil)
         let authSink = Ref<String?>(nil)
-        MockURLProtocol.handler = { req in
+        mock.handler = { req in
             apiKeySink.value = req.value(forHTTPHeaderField: "x-api-key")
             authSink.value = req.value(forHTTPHeaderField: "Authorization")
             return (

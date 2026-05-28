@@ -81,12 +81,14 @@ struct ServerAssetSyncCoordinatorTests {
 
     // MARK: - Helpers
 
-    private func makeClient() -> ImmichClient {
-        ImmichClient(
+    private func makeClient() -> (client: ImmichClient, mock: MockSession) {
+        let mock = MockURLProtocol.session()
+        let client = ImmichClient(
             baseURL: URL(string: "https://photos.example.com")!,
             apiKey: "TEST-KEY",
-            session: MockURLProtocol.session()
+            session: mock.session
         )
+        return (client, mock)
     }
 
     private func asset(_ id: String, ck: String, deletedAt: Date? = nil) -> SyncAssetV1 {
@@ -147,11 +149,12 @@ struct ServerAssetSyncCoordinatorTests {
     /// and /sync/ack accepts any POST. Optionally record the ack bodies
     /// for assertion. Returns a Ref the test can inspect.
     private func arrangeHappyPath(
+        mock: MockSession,
         streamLines: [String],
         ackBodies: Ref<[Data]> = Ref([])
     ) -> Ref<[Data]> {
         let body = Data((streamLines.joined(separator: "\n") + "\n").utf8)
-        MockURLProtocol.handler = { req in
+        mock.handler = { req in
             if req.url?.path == "/api/sync/stream" {
                 return (
                     HTTPURLResponse(url: req.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
@@ -177,13 +180,13 @@ struct ServerAssetSyncCoordinatorTests {
 
     @Test("empty cache → bootstrap mode, sets reset:true on the stream request")
     func bootstrapModeSetsReset() async throws {
-        let client = makeClient()
+        let (client, mock) = makeClient()
         let cache = FakeCache()
         let ackStore = FakeAckStore()
         let coordinator = ServerAssetSyncCoordinator(client: client, cache: cache, ackStore: ackStore)
 
         let streamBodies = Ref<[Data]>([])
-        MockURLProtocol.handler = { req in
+        mock.handler = { req in
             if req.url?.path == "/api/sync/stream" {
                 streamBodies.mutate { $0.append(req.readBody()) }
                 let body = Data((self.completeLine("done-ack") + "\n").utf8)
@@ -209,14 +212,14 @@ struct ServerAssetSyncCoordinatorTests {
 
     @Test("non-empty cache → incremental mode, reset omitted")
     func incrementalModeOmitsReset() async throws {
-        let client = makeClient()
+        let (client, mock) = makeClient()
         let cache = FakeCache()
         await cache.seed([asset("preexisting", ck: "ZZZZ")])
         let ackStore = FakeAckStore()
         let coordinator = ServerAssetSyncCoordinator(client: client, cache: cache, ackStore: ackStore)
 
         let streamBodies = Ref<[Data]>([])
-        MockURLProtocol.handler = { req in
+        mock.handler = { req in
             if req.url?.path == "/api/sync/stream" {
                 streamBodies.mutate { $0.append(req.readBody()) }
                 let body = Data((self.completeLine("done-ack") + "\n").utf8)
@@ -243,7 +246,7 @@ struct ServerAssetSyncCoordinatorTests {
 
     @Test("scripted stream of asset events ends up in the cache")
     func bootstrapPopulatesCache() async throws {
-        let client = makeClient()
+        let (client, mock) = makeClient()
         let cache = FakeCache()
         let ackStore = FakeAckStore()
         let coordinator = ServerAssetSyncCoordinator(client: client, cache: cache, ackStore: ackStore)
@@ -254,7 +257,7 @@ struct ServerAssetSyncCoordinatorTests {
             assetLine(asset("a3", ck: "CCCC"), ack: "ack-3"),
             completeLine("complete-ack"),
         ]
-        _ = arrangeHappyPath(streamLines: lines)
+        _ = arrangeHappyPath(mock: mock, streamLines: lines)
 
         let summary = try await coordinator.syncToCache()
         #expect(summary.upserted == 3)
@@ -265,7 +268,7 @@ struct ServerAssetSyncCoordinatorTests {
 
     @Test("inserts + deletes apply and the cache reflects the net state")
     func appliesInsertsAndDeletes() async throws {
-        let client = makeClient()
+        let (client, mock) = makeClient()
         let cache = FakeCache()
         await cache.seed([asset("preexisting", ck: "PRE")])
         let ackStore = FakeAckStore()
@@ -277,7 +280,7 @@ struct ServerAssetSyncCoordinatorTests {
             deleteLine("preexisting", ack: "ack-d1"),
             completeLine("complete-ack"),
         ]
-        _ = arrangeHappyPath(streamLines: lines)
+        _ = arrangeHappyPath(mock: mock, streamLines: lines)
 
         let summary = try await coordinator.syncToCache()
         #expect(summary.upserted == 2)
@@ -292,7 +295,7 @@ struct ServerAssetSyncCoordinatorTests {
 
     @Test("acks every received event to the server")
     func acksEveryEvent() async throws {
-        let client = makeClient()
+        let (client, mock) = makeClient()
         let cache = FakeCache()
         let ackStore = FakeAckStore()
         let coordinator = ServerAssetSyncCoordinator(client: client, cache: cache, ackStore: ackStore)
@@ -302,7 +305,7 @@ struct ServerAssetSyncCoordinatorTests {
             assetLine(asset("a2", ck: "BBBB"), ack: "ack-2"),
             completeLine("complete-ack"),
         ]
-        let ackBodies = arrangeHappyPath(streamLines: lines)
+        let ackBodies = arrangeHappyPath(mock: mock, streamLines: lines)
         _ = try await coordinator.syncToCache()
 
         // We POSTed at least one ack request; flatten every ack array.
@@ -318,7 +321,7 @@ struct ServerAssetSyncCoordinatorTests {
 
     @Test("persists the highest-per-type ack to the local SyncAckStore")
     func persistsHighestPerTypeAck() async throws {
-        let client = makeClient()
+        let (client, mock) = makeClient()
         let cache = FakeCache()
         let ackStore = FakeAckStore()
         let coordinator = ServerAssetSyncCoordinator(client: client, cache: cache, ackStore: ackStore)
@@ -330,7 +333,7 @@ struct ServerAssetSyncCoordinatorTests {
             deleteLine("a1", ack: "delete-ack-1"),
             completeLine("complete-ack"),
         ]
-        _ = arrangeHappyPath(streamLines: lines)
+        _ = arrangeHappyPath(mock: mock, streamLines: lines)
         _ = try await coordinator.syncToCache()
 
         // Last asset ack received should be the persisted cursor for AssetV1;
@@ -344,7 +347,7 @@ struct ServerAssetSyncCoordinatorTests {
 
     @Test("batchSize controls flush cadence — large stream chunks into multiple cache applies")
     func batchSizeFlushesPeriodically() async throws {
-        let client = makeClient()
+        let (client, mock) = makeClient()
         let cache = FakeCache()
         let ackStore = FakeAckStore()
         let coordinator = ServerAssetSyncCoordinator(client: client, cache: cache, ackStore: ackStore)
@@ -354,7 +357,7 @@ struct ServerAssetSyncCoordinatorTests {
             lines.append(assetLine(asset("a\(i)", ck: "ck\(i)"), ack: "ack-\(i)"))
         }
         lines.append(completeLine("done"))
-        _ = arrangeHappyPath(streamLines: lines)
+        _ = arrangeHappyPath(mock: mock, streamLines: lines)
 
         let summary = try await coordinator.syncToCache(batchSize: 10)
         #expect(summary.upserted == 25)
@@ -366,12 +369,12 @@ struct ServerAssetSyncCoordinatorTests {
 
     @Test("empty stream still finishes cleanly with .empty summary")
     func emptyStreamSummary() async throws {
-        let client = makeClient()
+        let (client, mock) = makeClient()
         let cache = FakeCache()
         let ackStore = FakeAckStore()
         let coordinator = ServerAssetSyncCoordinator(client: client, cache: cache, ackStore: ackStore)
 
-        MockURLProtocol.handler = { req in
+        mock.handler = { req in
             if req.url?.path == "/api/sync/stream" {
                 return (
                     HTTPURLResponse(url: req.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
@@ -393,12 +396,12 @@ struct ServerAssetSyncCoordinatorTests {
 
     @Test("403 on sync/stream propagates .missingScope from the coordinator")
     func missingScopeOnStreamPropagates() async {
-        let client = makeClient()
+        let (client, mock) = makeClient()
         let cache = FakeCache()
         let ackStore = FakeAckStore()
         let coordinator = ServerAssetSyncCoordinator(client: client, cache: cache, ackStore: ackStore)
 
-        MockURLProtocol.handler = { req in
+        mock.handler = { req in
             return (
                 HTTPURLResponse(url: req.url!, statusCode: 403, httpVersion: nil, headerFields: nil)!,
                 Data()
@@ -421,7 +424,7 @@ struct ServerAssetSyncCoordinatorTests {
 
     @Test("403 on sync/ack mid-batch propagates .missingScope but applied events stay in cache")
     func missingScopeOnAckPreservesAppliedEvents() async throws {
-        let client = makeClient()
+        let (client, mock) = makeClient()
         let cache = FakeCache()
         let ackStore = FakeAckStore()
         let coordinator = ServerAssetSyncCoordinator(client: client, cache: cache, ackStore: ackStore)
@@ -433,7 +436,7 @@ struct ServerAssetSyncCoordinatorTests {
         ]
         let body = Data((lines.joined(separator: "\n") + "\n").utf8)
 
-        MockURLProtocol.handler = { req in
+        mock.handler = { req in
             if req.url?.path == "/api/sync/stream" {
                 return (
                     HTTPURLResponse(url: req.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
@@ -474,12 +477,12 @@ struct ServerAssetSyncCoordinatorTests {
 
     @Test("500 on sync/stream surfaces as .httpStatus, not .missingScope")
     func nonAuthErrorPropagates() async {
-        let client = makeClient()
+        let (client, mock) = makeClient()
         let cache = FakeCache()
         let ackStore = FakeAckStore()
         let coordinator = ServerAssetSyncCoordinator(client: client, cache: cache, ackStore: ackStore)
 
-        MockURLProtocol.handler = { req in
+        mock.handler = { req in
             return (
                 HTTPURLResponse(url: req.url!, statusCode: 500, httpVersion: nil, headerFields: nil)!,
                 Data("internal server error".utf8)
