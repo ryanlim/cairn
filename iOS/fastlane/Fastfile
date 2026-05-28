@@ -243,6 +243,87 @@ platform :ios do
     end
   end
 
+  desc "Tag the commit that corresponds to the App Store's live release"
+  lane :tag_live_release do |options|
+    # Queries App Store Connect for the version currently in the
+    # READY_FOR_SALE state, reads its build number + uploaded date,
+    # then locates the git commit that was HEAD at that upload time
+    # and creates an annotated tag `v<marketing-version>` against it.
+    #
+    # Why uploaded date rather than `Bump to build N` commit subjects:
+    # `fastlane beta` internally bumps CFBundleVersion before each
+    # upload (via `build_ipa` → `bump_build`), and re-runs of the
+    # lane silently auto-bump without committing. So a build number
+    # on TestFlight has no guaranteed matching git commit — but the
+    # upload's wall-clock timestamp does map to a single git HEAD,
+    # which is the truthful "code state at the moment of upload."
+    #
+    # The lane is idempotent on the tag name: if `v<version>` already
+    # exists it logs and exits without re-tagging. Pass `push:true`
+    # to also push the tag to origin (default false — pushing is
+    # visible to others and worth a confirmation step).
+    push_tag = options[:push] == true || options[:push] == "true"
+
+    app_store_connect_api_key(
+      key_id:       ENV["APP_STORE_CONNECT_API_KEY_KEY_ID"],
+      issuer_id:    ENV["APP_STORE_CONNECT_API_KEY_ISSUER_ID"],
+      key_filepath: ENV["APP_STORE_CONNECT_API_KEY_KEY_FILEPATH"]
+    )
+    app = Spaceship::ConnectAPI::App.all.find { |a| a.bundle_id == APP_IDENTIFIER }
+    UI.user_error!("App #{APP_IDENTIFIER} not visible to API key") unless app
+
+    # `sort` isn't accepted by this endpoint; rely on the
+    # READY_FOR_SALE filter and grab the unique live version (Apple
+    # only marks one App Store row READY_FOR_SALE at a time).
+    versions = app.get_app_store_versions(
+      includes: "build",
+      limit: 10
+    )
+    live = versions.find { |v| v.app_store_state == "READY_FOR_SALE" }
+    unless live
+      states = versions.map { |v| "#{v.version_string}=#{v.app_store_state}" }.join(", ")
+      UI.user_error!("No App Store version in READY_FOR_SALE state. Recent: #{states}")
+    end
+
+    marketing = live.version_string
+    build_obj = live.build
+    UI.user_error!("Live version #{marketing} has no selected build") unless build_obj
+    build_number = build_obj.version
+    upload_iso = build_obj.uploaded_date
+    UI.user_error!("Live build #{build_number} has no uploaded_date — can't time-correlate") unless upload_iso
+    tag_name = "v#{marketing}"
+
+    UI.message "Live App Store version: #{marketing} (build #{build_number}, uploaded #{upload_iso})"
+
+    # Existing-tag short circuit. `git rev-parse --verify` exits non-
+    # zero when the tag is missing — we capture without raising.
+    # `^{commit}` peels through the tag object to its underlying
+    # commit so the displayed SHA matches what `git log` would show.
+    existing = `git rev-parse --verify --quiet #{tag_name}^{commit}`.strip
+    if !existing.empty?
+      UI.message "Tag #{tag_name} already exists at #{existing[0..7]} — skipping."
+      next
+    end
+
+    # Find the commit that was HEAD at the moment of upload. `--before`
+    # accepts ISO-8601, which is what Spaceship hands back. `-1`
+    # caps the listing at the single closest predecessor.
+    sha = `git log --all --before='#{upload_iso}' --format='%H' -1`.strip
+    UI.user_error!("Couldn't locate a commit before #{upload_iso}.") if sha.empty?
+
+    summary = `git log -1 --format='%h %s' #{sha}`.strip
+    UI.message "Tagging #{tag_name} at #{sha[0..7]} — #{summary}"
+    sh("git tag -a #{tag_name} -m 'App Store release #{marketing} (build #{build_number}, uploaded #{upload_iso})' #{sha}")
+    UI.success "🏷  Tagged #{tag_name} locally"
+
+    if push_tag
+      sh("git push origin #{tag_name}")
+      UI.success "📤 Pushed #{tag_name} to origin"
+    else
+      UI.important "Run `git push origin #{tag_name}` to publish the tag (or re-run with push:true)."
+    end
+  end
+
   desc "Push App Store listing metadata + screenshots without rebuilding"
   lane :metadata do
     # Pushes everything in fastlane/metadata/ + the curated screenshot

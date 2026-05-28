@@ -85,7 +85,7 @@ checkpointed `beta_changelog.txt` between two refs into a draft.
 Typical use when prepping a release:
 
 ```sh
-iOS/scripts/release-notes.sh v0.3.0 | tee release-draft.md
+iOS/scripts/release-notes.sh v0.3.1 | tee release-draft.md
 # Hand-edit / group by theme.
 # Paste the cleaned-up version into iOS/fastlane/metadata/en-US/release_notes.txt
 ```
@@ -93,6 +93,31 @@ iOS/scripts/release-notes.sh v0.3.0 | tee release-draft.md
 The script tolerates both subject conventions in the history —
 `Bump to build N` (current) and `Bump build to N` (pre-build-56).
 Marketing-version bumps are deliberately excluded.
+
+### Tagging App Store releases
+
+`fastlane tag_live_release` queries App Store Connect for the
+version currently in `READY_FOR_SALE`, reads its build number +
+uploaded timestamp, and tags the commit that was HEAD at that
+timestamp as `v<marketing-version>`. Time-correlation (not commit-
+subject matching) is the reliable signal because `fastlane beta`
+auto-bumps CFBundleVersion via its internal `build_ipa` →
+`bump_build` chain — re-runs of the lane can silently increment
+without committing, so a TestFlight build number has no guaranteed
+matching git commit, but its upload wall-clock time always maps to
+one git HEAD.
+
+Idempotent on the tag name. Pass `push:true` to also push to
+origin:
+
+```sh
+cd iOS && bundle exec fastlane tag_live_release         # local tag only
+cd iOS && bundle exec fastlane tag_live_release push:true
+```
+
+Run this once after each App Store version is approved + released
+— the tag then serves as the baseline for the next
+`release-notes.sh` run.
 
 ## Memory and other forms of persistence
 
