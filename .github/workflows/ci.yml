@@ -20,7 +20,9 @@ jobs:
     # pick whichever Xcode 26+ is bundled at job time.
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      # v5 is on Node 24. v4 is Node 20 and GitHub Actions will force-
+      # migrate it to Node 24 on June 2, 2026; pinning ahead of that.
+      - uses: actions/checkout@v5
 
       - name: Select Xcode
         uses: maxim-lobanov/setup-xcode@v1
@@ -35,19 +37,25 @@ jobs:
       - name: swift build
         run: swift build
 
-      # swift test is disabled until a SwiftData test-fixture issue
-      # is resolved. The swiftpm-testing-helper SIGTRAPs ~200ms after
-      # the runner starts, BEFORE any test reports a result —
-      # confirmed identically on Swift 6.3/Xcode 26.5 (local) and
-      # Swift 6.2/Xcode 26.3 (this CI runner), in both parallel and
-      # serial modes. Every test reported as "started" before the
-      # crash is in the SwiftData-backed cluster, suggesting a shared
-      # container init somewhere fatalErrors at swift-testing setup
-      # time.
+      # swift test still disabled, but for a different reason than
+      # the pre-e451546 SIGTRAP (that was fixed). 17 assertion-level
+      # failures remain when the full suite runs:
       #
-      # Subsets run fine via `swift test --filter <SuiteName>` — so
-      # `swift build` (above) still catches compile-time regressions
-      # and the test suite still works locally for the subsets we
-      # care about. Bringing the full CI test step back is a TODO.
+      # - Cross-suite global-state leak on MockURLProtocol.handler.
+      #   `@Suite(.serialized)` only serializes within a suite, not
+      #   across suites, so ImmichClientHTTPTests and
+      #   ImmichClientSyncStreamTests can interleave their handler
+      #   writes. Tests pass individually; fail in combination
+      #   (`«unknown» test` issues are the tell-tale concurrent
+      #   handler clobber).
+      # - SyncEvent fixtures missing the new required `type` key
+      #   (decoder enforces it, fixtures predate the constraint).
+      # - ImmichClient scope checks (sync.stream, sync.checkpoint.*)
+      #   reject calls from tests that don't seed their API key
+      #   with the required scopes.
+      #
+      # Each is real test debt. Re-enable this step once they're
+      # resolved. `swift build` still catches compile-time
+      # regressions on every push.
       # - name: swift test
       #   run: swift test
