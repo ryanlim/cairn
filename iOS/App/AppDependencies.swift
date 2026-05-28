@@ -492,36 +492,46 @@ final class AppDependencies {
         // dominates — see comments on `model.persistedSyncRate`.
         model.persistedSyncRate = Self.loadPersistedSyncRate()
 
-        // Keychain reads can fail in two structurally-different ways
-        // that the old `try?` flattened together:
+        // Keychain reads can fail in three structurally-different ways
+        // that an unguarded `try?` flattens together:
         //
-        //   1. SecretStoreError.missing — the user has never saved
-        //      credentials, or signed out. Correct to route to
-        //      onboarding.
+        //   1. SecretStoreError.missing on every attempt — the user
+        //      has never saved credentials, or signed out. Correct to
+        //      route to onboarding.
         //
-        //   2. Any other Keychain OSStatus error — most often
+        //   2. SecretStoreError.missing on the very first attempt,
+        //      then present on the next — iOS occasionally returns
+        //      errSecItemNotFound for items that exist during the
+        //      brief post-launch window before the per-app Keychain
+        //      cache is hot. Force-quit-and-relaunch races and the
+        //      first-after-unlock window are the common triggers.
+        //      Routing to onboarding here is the "brief onboarding
+        //      flash → fixed after relaunch" pattern.
+        //
+        //   3. Any other Keychain OSStatus error — most often
         //      errSecInteractionNotAllowed (device just unlocked /
         //      app resumed during the locked window) or transient
         //      errSecAuthFailed. The credentials are intact; we just
-        //      can't read them right now. Routing to onboarding here
-        //      blows away the user's session over a millisecond hiccup
-        //      — confirmed in the field as the "black screen → brief
-        //      onboarding flash → fixed after relaunch" pattern.
+        //      can't read them right now.
         //
-        // Strategy: retry up to 5x with a small delay before giving
-        // up on a transient error. If after retries either field is
-        // genuinely missing, go to onboarding. If both fields had
-        // transient errors throughout, surface an error and DON'T
-        // flip needsOnboarding (preserves the user's session).
+        // Strategy: retry up to 5x with a small delay. For the first
+        // `missingRetryWindow` attempts, treat `.missing` as
+        // potentially transient — only after the cache should be hot
+        // do we accept it as authoritative. OSStatus failures retry
+        // for the full 5x. Truly-missing credentials still route to
+        // onboarding, just after a ~400ms delay instead of instantly.
         var url: URL? = nil
         var apiKey: String? = nil
         var transientFailure = false
+        let missingRetryWindow = 2
         for attempt in 0..<5 {
             transientFailure = false
+            var observedMissing = false
             do {
                 url = try secretStore.serverURL()
             } catch SecretStoreError.missing {
                 url = nil
+                observedMissing = true
             } catch {
                 transientFailure = true
                 if attempt == 4 {
@@ -532,14 +542,26 @@ final class AppDependencies {
                 apiKey = try secretStore.apiKey()
             } catch SecretStoreError.missing {
                 apiKey = nil
+                observedMissing = true
             } catch {
                 transientFailure = true
                 if attempt == 4 {
                     syncLog.error("[cairn.boot] keychain apiKey read failed after 5 attempts: \(String(describing: error), privacy: .public)")
                 }
             }
-            if !transientFailure { break }
+            // Clean read of both fields, neither missing — done.
+            if !transientFailure && !observedMissing { break }
+            // Observed missing past the retry window with no OSStatus
+            // churn — accept as authoritative and stop retrying.
+            if !transientFailure && observedMissing && attempt >= missingRetryWindow { break }
             try? await Task.sleep(for: .milliseconds(200))
+        }
+        if (url != nil) != (apiKey != nil) {
+            // Exited the loop with exactly one field present — note
+            // this so the field record shows whether we ever saw the
+            // missing field present during retries (if not, it really
+            // is gone).
+            syncLog.notice("[cairn.boot] mixed credential state after retries — url present=\(url != nil, privacy: .public), apiKey present=\(apiKey != nil, privacy: .public)")
         }
 
         #if DEBUG
