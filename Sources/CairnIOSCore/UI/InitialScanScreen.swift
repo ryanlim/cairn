@@ -342,11 +342,22 @@ public struct InitialScanScreen: View {
     static func coefficientOfVariation(of samples: [TimeInterval], minSamples: Int) -> Double? {
         guard samples.count >= minSamples else { return nil }
         let n = Double(samples.count)
-        let mean = samples.reduce(0, +) / n
+        // Imperative loops rather than `samples.reduce(...)` with a
+        // capturing closure — the closure form crashed
+        // swiftpm-testing-helper with SIGTRAP during test execution
+        // on Swift 6.2.4 / 6.3.2 (the trampoline that wraps
+        // captured `mean` for the `acc + ((x - mean) * (x - mean))`
+        // body seems to fault). Same semantics, no captures.
+        var sum: Double = 0
+        for s in samples { sum += s }
+        let mean = sum / n
         guard mean > 0 else { return nil }
-        let variance = samples.reduce(0.0) { acc, x in
-            acc + ((x - mean) * (x - mean))
-        } / n
+        var variance: Double = 0
+        for s in samples {
+            let diff = s - mean
+            variance += diff * diff
+        }
+        variance /= n
         return variance.squareRoot() / mean
     }
 

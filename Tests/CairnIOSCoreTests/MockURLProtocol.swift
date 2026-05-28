@@ -1,13 +1,22 @@
 import Foundation
 
-/// Lightweight URLProtocol subclass that lets tests intercept every request
-/// made on an `URLSession` configured with `protocolClasses = [MockURLProtocol.self]`.
+/// iOS-test-target copy of the URL-intercept helper. Same shape as
+/// `Tests/CairnCoreTests/MockURLProtocol.swift`, but the
+/// `URLProtocol` subclass is renamed so the two test targets don't
+/// register a class with the same Objective-C name in the linked
+/// test bundle — which the Swift 6.x ObjC runtime treats as a fatal
+/// trap at process init (the symptom we hit was a SIGTRAP ~200ms
+/// after `swift test` started, with no per-test failure). Keeping
+/// the file local to each target (rather than promoting to a shared
+/// test-helper module) is the minimum change to fix the collision;
+/// reach for a shared module if a third test target needs the same
+/// helper later.
 ///
-/// Set `MockURLProtocol.handler` to a closure that inspects the inbound
-/// `URLRequest` and returns the canned `(HTTPURLResponse, Data)` pair.
-/// Global state means the suite using this must run serialized — see
-/// `@Suite("…", .serialized)` on the consumers.
-final class MockURLProtocol: URLProtocol, @unchecked Sendable {
+/// Set `IOSMockURLProtocol.handler` to a closure that inspects the
+/// inbound `URLRequest` and returns the canned `(HTTPURLResponse,
+/// Data)` pair. Global state means the suite using this must run
+/// serialized — see `@Suite("…", .serialized)` on the consumers.
+final class IOSMockURLProtocol: URLProtocol, @unchecked Sendable {
     nonisolated(unsafe) static var handler: (@Sendable (URLRequest) throws -> (HTTPURLResponse, Data))?
 
     override class func canInit(with request: URLRequest) -> Bool { true }
@@ -16,7 +25,7 @@ final class MockURLProtocol: URLProtocol, @unchecked Sendable {
     override func startLoading() {
         guard let handler = Self.handler else {
             client?.urlProtocol(self, didFailWithError: NSError(
-                domain: "MockURLProtocol",
+                domain: "IOSMockURLProtocol",
                 code: -1,
                 userInfo: [NSLocalizedDescriptionKey: "no handler configured"]
             ))
@@ -36,12 +45,16 @@ final class MockURLProtocol: URLProtocol, @unchecked Sendable {
 
     static func session() -> URLSession {
         let config = URLSessionConfiguration.ephemeral
-        config.protocolClasses = [MockURLProtocol.self]
+        config.protocolClasses = [IOSMockURLProtocol.self]
         return URLSession(configuration: config)
     }
 }
 
-/// Thread-safe mutable box for test observations captured by `@Sendable` closures.
+/// Thread-safe mutable box for test observations captured by
+/// `@Sendable` closures. Pure Swift — no ObjC bridging — so the
+/// duplicate-class-name concern that drove the `IOSMockURLProtocol`
+/// rename doesn't apply here; this stays identical to the
+/// CairnCoreTests copy.
 final class Ref<T: Sendable>: @unchecked Sendable {
     private let lock = NSLock()
     private var _value: T

@@ -5,7 +5,7 @@ import CairnCore
 @testable import CairnIOSCore
 
 /// End-to-end tests: real SwiftData-backed cache + ack store +
-/// ServerAssetSyncCoordinator + MockURLProtocol-mocked ImmichClient.
+/// ServerAssetSyncCoordinator + IOSIOSMockURLProtocol-mocked ImmichClient.
 /// Distinct from `ServerAssetSyncCoordinatorTests` in CairnCoreTests
 /// which uses in-memory protocol fakes — this one exists to catch
 /// integration bugs between the coordinator's actor isolation and
@@ -23,7 +23,7 @@ struct ServerAssetSyncCoordinatorIntegrationTests {
         ImmichClient(
             baseURL: URL(string: "https://photos.example.com")!,
             apiKey: "TEST-KEY",
-            session: MockURLProtocol.session()
+            session: IOSMockURLProtocol.session()
         )
     }
 
@@ -65,7 +65,7 @@ struct ServerAssetSyncCoordinatorIntegrationTests {
 
     private func arrangeMockServer(streamLines: [String]) {
         let body = Data((streamLines.joined(separator: "\n") + "\n").utf8)
-        MockURLProtocol.handler = { req in
+        IOSMockURLProtocol.handler = { req in
             if req.url?.path == "/api/sync/stream" {
                 return (
                     HTTPURLResponse(url: req.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
@@ -207,7 +207,7 @@ struct ServerAssetSyncCoordinatorIntegrationTests {
             completeLine("done"),
         ]
         let body = Data((lines.joined(separator: "\n") + "\n").utf8)
-        MockURLProtocol.handler = { req in
+        IOSMockURLProtocol.handler = { req in
             if req.url?.path == "/api/sync/stream" {
                 return (
                     HTTPURLResponse(url: req.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
