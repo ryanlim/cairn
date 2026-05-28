@@ -1015,7 +1015,7 @@ private struct CairnSwipeDismissModifier: ViewModifier {
     func body(content: Content) -> some View {
         content
             .offset(x: dragOffset)
-            .opacity(1 - min(1, abs(dragOffset) / 200))
+            .opacity(1.0 - min(1.0, abs(dragOffset) / 200.0))
             .gesture(
                 DragGesture(minimumDistance: 10, coordinateSpace: .local)
                     .onChanged { value in
