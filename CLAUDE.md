@@ -62,6 +62,38 @@ In rough priority order:
    when a scan causes the backlog to cross the threshold
    (edge-trigger).
 
+## Release notes workflow
+
+Two layers, with different audiences and different freshness:
+
+- **Per-build TestFlight changelog** —
+  `iOS/fastlane/beta_changelog.txt`. One paragraph describing
+  what's new in *this build*. Overwritten on every bump. Goes to
+  TestFlight testers via the fastlane `beta` lane. Convention: the
+  bump commit (`Bump to build N (...)`) stages the new content, so
+  `git show <bump-sha>:iOS/fastlane/beta_changelog.txt` resurrects
+  the per-build copy.
+
+- **Per-version App Store release notes** —
+  `iOS/fastlane/metadata/en-US/release_notes.txt`. Cross-build
+  prose describing what's new since the last App Store release.
+  Goes to App Store reviewers + users via Apple's "What's New"
+  field. Written when prepping a marketing-version push.
+
+`iOS/scripts/release-notes.sh <from-ref> [to-ref]` aggregates every
+checkpointed `beta_changelog.txt` between two refs into a draft.
+Typical use when prepping a release:
+
+```sh
+iOS/scripts/release-notes.sh v0.3.0 | tee release-draft.md
+# Hand-edit / group by theme.
+# Paste the cleaned-up version into iOS/fastlane/metadata/en-US/release_notes.txt
+```
+
+The script tolerates both subject conventions in the history —
+`Bump to build N` (current) and `Bump build to N` (pre-build-56).
+Marketing-version bumps are deliberately excluded.
+
 ## Memory and other forms of persistence
 
 Memory is one of several persistence mechanisms available to AI
