@@ -20,9 +20,14 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Select Xcode
-        # The runner image bundles multiple Xcode versions; select the one
-        # that maps to Swift 6. Update when GitHub retires 16.x.
-        run: sudo xcode-select -switch /Applications/Xcode_16.app
+        # `maxim-lobanov/setup-xcode` discovers the right path on the
+        # runner image regardless of GitHub's drift (e.g. Xcode_16.app
+        # vs Xcode_16.4.app vs Xcode_16.5.app). Pinned to the latest
+        # 16.x major so a future runner image update to Xcode 17 doesn't
+        # silently bump our Swift toolchain.
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: "16"
 
       - name: Show toolchain
         run: |
