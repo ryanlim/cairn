@@ -573,22 +573,27 @@ struct JournalTailTimeFormatTests {
 
     private typealias Tail = CairnFixtures.JournalTailEntry
 
-    @Test("same-day timestamps render as HH:mm")
+    @Test("same-day timestamps render as HH:mm under .h24")
     func sameDay() {
         let now = Date()
         // Build a date earlier today by subtracting a few hours.
         let earlier = Calendar.current.date(byAdding: .minute, value: -125, to: now) ?? now
-        let formatted = Tail.formatTime(earlier, now: now)
-        // `HH:mm` is exactly 5 characters, with a colon.
+        let formatted = Tail.formatTime(earlier, now: now, format: .h24)
+        // `HH:mm` is exactly 5 characters, with a colon. Pinned to
+        // `.h24` rather than `.system` because the `j` skeleton in
+        // .system resolves to the host locale's hour cycle — en_US
+        // gives `h:mm a` (7 chars), making the assertion locale-
+        // dependent. The journal-tail format under .h24 is the
+        // contract being pinned here.
         #expect(formatted.count == 5)
         #expect(formatted.contains(":"))
     }
 
-    @Test("past-day timestamps render as MMM d HH:mm")
+    @Test("past-day timestamps render as MMM d HH:mm under .h24")
     func pastDay() {
         let now = Date()
         let yesterday = Calendar.current.date(byAdding: .day, value: -1, to: now) ?? now
-        let formatted = Tail.formatTime(yesterday, now: now)
+        let formatted = Tail.formatTime(yesterday, now: now, format: .h24)
         // Past-day form contains a colon (HH:mm) AND a space (between
         // the date and time fragments). Same-day form has no space.
         #expect(formatted.contains(":"))
