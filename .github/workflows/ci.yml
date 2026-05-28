@@ -36,6 +36,9 @@ jobs:
         run: swift build
 
       - name: swift test
-        # --parallel speeds the SPM test suite up; there's no test that
-        # depends on shared mutable state on disk at the package level.
-        run: swift test --parallel
+        # Serial. swift-testing in parallel mode SIGTRAPs the runner
+        # before any test completes — looks like a race in the
+        # SwiftData test fixtures' container creation. Serial mode
+        # works locally and on CI; the speed hit is small (~1m vs
+        # ~30s) on a suite this size.
+        run: swift test
