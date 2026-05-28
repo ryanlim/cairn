@@ -88,6 +88,14 @@ Upload to TestFlight
 
 List recent TestFlight builds and their processing state
 
+### ios tag_live_release
+
+```sh
+[bundle exec] fastlane ios tag_live_release
+```
+
+Tag the commit that corresponds to the App Store's live release
+
 ### ios metadata
 
 ```sh
