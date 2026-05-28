@@ -37,25 +37,17 @@ jobs:
       - name: swift build
         run: swift build
 
-      # swift test still disabled, but for a different reason than
-      # the pre-e451546 SIGTRAP (that was fixed). 17 assertion-level
-      # failures remain when the full suite runs:
-      #
-      # - Cross-suite global-state leak on MockURLProtocol.handler.
-      #   `@Suite(.serialized)` only serializes within a suite, not
-      #   across suites, so ImmichClientHTTPTests and
-      #   ImmichClientSyncStreamTests can interleave their handler
-      #   writes. Tests pass individually; fail in combination
-      #   (`«unknown» test` issues are the tell-tale concurrent
-      #   handler clobber).
-      # - SyncEvent fixtures missing the new required `type` key
-      #   (decoder enforces it, fixtures predate the constraint).
-      # - ImmichClient scope checks (sync.stream, sync.checkpoint.*)
-      #   reject calls from tests that don't seed their API key
-      #   with the required scopes.
-      #
-      # Each is real test debt. Re-enable this step once they're
-      # resolved. `swift build` still catches compile-time
-      # regressions on every push.
-      # - name: swift test
-      #   run: swift test
+      - name: swift test
+        # --no-parallel because MockURLProtocol's handler is a
+        # process-wide static and `@Suite(.serialized)` only serializes
+        # within a suite, not across them. Parallel cross-suite runs
+        # of ImmichClient{HTTP,SyncStream}Tests +
+        # ServerAssetSyncCoordinatorTests stomp on each other's handler
+        # registration; the symptom is ~17 spurious assertion failures
+        # and "«unknown» test" issues attributed to handler clobber.
+        # Serial sidesteps the design issue. Proper fix is to dispatch
+        # the mock handler per-URLSessionConfiguration (e.g. via a
+        # session-id HTTP header) so concurrent sessions don't share
+        # state — bigger refactor, deferred. Speed cost is small
+        # (~9s vs parallel on the current 637-test suite).
+        run: swift test --no-parallel
