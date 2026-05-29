@@ -89,12 +89,26 @@ final class StoredLocalHashEntry {
     var localIdentifier: String
     var base64: String
     var modificationDate: Date?
+    /// `true` when this checksum was imputed from the server via the
+    /// fast-initial-scan path (`server.deviceAssetId` join) rather than
+    /// computed locally. Verify-on-touch will re-hash before propagating
+    /// any deletion that resolves through an imputed row. Defaulted to
+    /// `false` so legacy rows (predating this field) decode as verified
+    /// — the existing population path is always locally-hashed.
+    /// See `docs/active-design/fast-initial-scan-plan.md`.
+    var imputed: Bool = false
 
-    init(localIdentifier: String, base64: String, modificationDate: Date?) {
+    init(
+        localIdentifier: String,
+        base64: String,
+        modificationDate: Date?,
+        imputed: Bool = false
+    ) {
         self.compoundKey = "\(localIdentifier)|\(base64)"
         self.localIdentifier = localIdentifier
         self.base64 = base64
         self.modificationDate = modificationDate
+        self.imputed = imputed
     }
 }
 
@@ -323,6 +337,11 @@ final class StoredServerAsset {
     var fileModifiedAt: Date?
     var width: Int?
     var height: Int?
+    /// Originating-device per-asset id (PHAsset.localIdentifier on
+    /// iOS) stamped by the Immich mobile uploader. Joining on this
+    /// gives a precise phone→server mapping without re-hashing —
+    /// see docs/active-design/fast-initial-scan-plan.md.
+    var deviceAssetId: String?
     /// When cairn last wrote this row from a SyncEvent. Diagnostic
     /// only; not used in reconciliation.
     var lastUpdatedAt: Date
@@ -341,6 +360,7 @@ final class StoredServerAsset {
         fileModifiedAt: Date?,
         width: Int?,
         height: Int?,
+        deviceAssetId: String? = nil,
         lastUpdatedAt: Date
     ) {
         self.serverAssetId = serverAssetId
@@ -356,6 +376,7 @@ final class StoredServerAsset {
         self.fileModifiedAt = fileModifiedAt
         self.width = width
         self.height = height
+        self.deviceAssetId = deviceAssetId
         self.lastUpdatedAt = lastUpdatedAt
     }
 }
@@ -1006,6 +1027,59 @@ public actor SwiftDataLocalHashStore: LocalHashStore {
         )
         descriptor.fetchLimit = 1
         return try context.fetch(descriptor).first?.modificationDate
+    }
+
+    public func setImputed(_ checksum: Checksum, for localIdentifier: String, modificationDate: Date?) async throws {
+        // Same replace-all-prior-rows semantics as `set`, but stamps
+        // `imputed = true` so the verify-on-touch path knows to re-hash
+        // before propagating any deletion that resolves through it.
+        let staleDescriptor = FetchDescriptor<StoredLocalHashEntry>(
+            predicate: #Predicate<StoredLocalHashEntry> { $0.localIdentifier == localIdentifier }
+        )
+        for row in try context.fetch(staleDescriptor) {
+            context.delete(row)
+        }
+        context.insert(StoredLocalHashEntry(
+            localIdentifier: localIdentifier,
+            base64: checksum.base64,
+            modificationDate: modificationDate,
+            imputed: true
+        ))
+        try context.save()
+    }
+
+    public func isImputed(for localIdentifier: String) async throws -> Bool {
+        var descriptor = FetchDescriptor<StoredLocalHashEntry>(
+            predicate: #Predicate<StoredLocalHashEntry> { $0.localIdentifier == localIdentifier }
+        )
+        descriptor.fetchLimit = 1
+        return try context.fetch(descriptor).first?.imputed ?? false
+    }
+
+    public func imputedCount() async throws -> Int {
+        let descriptor = FetchDescriptor<StoredLocalHashEntry>(
+            predicate: #Predicate<StoredLocalHashEntry> { $0.imputed == true }
+        )
+        let rows = try context.fetch(descriptor)
+        var seen = Set<String>()
+        seen.reserveCapacity(rows.count)
+        for row in rows {
+            seen.insert(row.localIdentifier)
+        }
+        return seen.count
+    }
+
+    public func imputedIdentifiers() async throws -> Set<String> {
+        let descriptor = FetchDescriptor<StoredLocalHashEntry>(
+            predicate: #Predicate<StoredLocalHashEntry> { $0.imputed == true }
+        )
+        let rows = try context.fetch(descriptor)
+        var ids = Set<String>()
+        ids.reserveCapacity(rows.count)
+        for row in rows {
+            ids.insert(row.localIdentifier)
+        }
+        return ids
     }
 
     public func removeAll(for localIdentifiers: Set<String>) async throws {
@@ -1758,7 +1832,8 @@ public actor SwiftDataServerAssetCacheStore: ServerAssetCacheStore {
             isTrashed: isTrashed,
             originalFileName: row.originalFileName,
             fileCreatedAt: row.fileCreatedAt,
-            thumbhash: row.thumbhash
+            thumbhash: row.thumbhash,
+            deviceAssetId: row.deviceAssetId
         )
     }
 
@@ -1777,6 +1852,7 @@ public actor SwiftDataServerAssetCacheStore: ServerAssetCacheStore {
             fileModifiedAt: payload.fileModifiedAt,
             width: payload.width,
             height: payload.height,
+            deviceAssetId: payload.deviceAssetId,
             lastUpdatedAt: now
         )
     }
@@ -1794,6 +1870,7 @@ public actor SwiftDataServerAssetCacheStore: ServerAssetCacheStore {
         row.fileModifiedAt = payload.fileModifiedAt
         row.width = payload.width
         row.height = payload.height
+        row.deviceAssetId = payload.deviceAssetId
         row.lastUpdatedAt = now
     }
 }

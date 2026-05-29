@@ -344,6 +344,7 @@ public final class CairnAppModel {
     /// `PhotoKitPersistentChangeReconciler` and `performLiveReconciliation`,
     /// so the in-app narration matches the Console timing logs. Order:
     /// `idle` → `preparing` → (`fetchingServer` runs concurrently) →
+    /// (`imputingFromServer` if `fastInitialScan` is on) →
     /// `hashing` → `reconciling` → `finalizing` → `idle`.
     public enum SyncPhase: Sendable, Equatable {
         /// No sync in flight.
@@ -358,6 +359,12 @@ public final class CairnAppModel {
         /// pre-hash work, but surfaces as a phase here so the activity
         /// feed has a row per page.
         case fetchingServer
+        /// Fast-initial-scan trust-seed: joining `phone.localId` with
+        /// `server.deviceAssetId` and recording imputed checksums in
+        /// `LocalHashStore` without hashing locally. Skipped entirely
+        /// when `CairnSettings.fastInitialScan` is off. See
+        /// `docs/active-design/fast-initial-scan-plan.md`.
+        case imputingFromServer
         /// SHA1 work — the existing progress bar covers this.
         case hashing
         /// Engine compute + orphan match.
@@ -373,6 +380,7 @@ public final class CairnAppModel {
             case .idle: "Idle"
             case .preparing: "Preparing"
             case .fetchingServer: "Fetching server"
+            case .imputingFromServer: "Matching from server"
             case .hashing: "Hashing"
             case .reconciling: "Reconciling"
             case .finalizing: "Finalizing"
@@ -766,11 +774,20 @@ public final class CairnAppModel {
         /// optimistic. Defaults to `0` for fresh syncs / call sites
         /// that don't track baselines.
         public let initialHashed: Int
+        /// Count of assets trust-seeded from the Immich server via the
+        /// fast-initial-scan path (matched on `deviceAssetId`) in the
+        /// current scan. These skipped local hashing entirely. Surfaced
+        /// in `InitialScanScreen`'s stats strip alongside the hashed
+        /// counter so the user can see what was verified locally vs
+        /// what was imputed. `0` when fast-initial-scan is off or no
+        /// matches were found.
+        public let imputed: Int
 
-        public init(hashed: Int, total: Int, initialHashed: Int = 0) {
+        public init(hashed: Int, total: Int, initialHashed: Int = 0, imputed: Int = 0) {
             self.hashed = hashed
             self.total = total
             self.initialHashed = initialHashed
+            self.imputed = imputed
         }
     }
 

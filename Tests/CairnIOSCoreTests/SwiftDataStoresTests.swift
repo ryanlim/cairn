@@ -518,6 +518,77 @@ struct SwiftDataLocalHashStoreTests {
         let result = try await store.entries(forIdentifiers: [])
         #expect(result.isEmpty)
     }
+
+    // MARK: - Fast initial scan (imputed flag)
+
+    @Test("setImputed marks the entry as imputed")
+    func setImputedMarksImputed() async throws {
+        let container = try makeContainer()
+        let store = SwiftDataLocalHashStore(container: container)
+
+        try await store.setImputed(Checksum(base64: "A"), for: "id-1", modificationDate: nil)
+        #expect(try await store.isImputed(for: "id-1") == true)
+        // Cached checksum reads back identically — imputed entries
+        // participate in the normal lookup path.
+        #expect(try await store.checksums(for: "id-1") == cks("A"))
+    }
+
+    @Test("set clears the imputed flag (verify-on-touch contract)")
+    func setClearsImputedFlag() async throws {
+        let container = try makeContainer()
+        let store = SwiftDataLocalHashStore(container: container)
+
+        try await store.setImputed(Checksum(base64: "A"), for: "id-1", modificationDate: nil)
+        #expect(try await store.isImputed(for: "id-1") == true)
+
+        // The hashing path (set) is treated as "this value was just
+        // computed locally" — imputed flag must drop to false.
+        try await store.set(cks("A"), for: "id-1", modificationDate: nil)
+        #expect(try await store.isImputed(for: "id-1") == false)
+    }
+
+    @Test("set on a fresh id leaves imputed false")
+    func setOnFreshIdNotImputed() async throws {
+        let container = try makeContainer()
+        let store = SwiftDataLocalHashStore(container: container)
+
+        try await store.set(cks("A"), for: "id-1", modificationDate: nil)
+        #expect(try await store.isImputed(for: "id-1") == false)
+    }
+
+    @Test("isImputed returns false for unknown identifiers")
+    func isImputedForUnknownIdIsFalse() async throws {
+        let container = try makeContainer()
+        let store = SwiftDataLocalHashStore(container: container)
+        #expect(try await store.isImputed(for: "ghost") == false)
+    }
+
+    @Test("imputedCount and imputedIdentifiers reflect imputed entries only")
+    func imputedCountAndIdentifiersFilterCorrectly() async throws {
+        let container = try makeContainer()
+        let store = SwiftDataLocalHashStore(container: container)
+
+        try await store.setImputed(Checksum(base64: "A"), for: "id-1", modificationDate: nil)
+        try await store.setImputed(Checksum(base64: "B"), for: "id-2", modificationDate: nil)
+        try await store.set(cks("C"), for: "id-3", modificationDate: nil)
+
+        #expect(try await store.imputedCount() == 2)
+        let imputed = try await store.imputedIdentifiers()
+        #expect(imputed == ["id-1", "id-2"])
+    }
+
+    @Test("setImputed replaces any prior entries for the identifier")
+    func setImputedReplacesPriorEntries() async throws {
+        let container = try makeContainer()
+        let store = SwiftDataLocalHashStore(container: container)
+
+        try await store.set(cks("A", "B"), for: "id-1", modificationDate: nil)
+        try await store.setImputed(Checksum(base64: "C"), for: "id-1", modificationDate: nil)
+
+        // Old A and B gone; only the imputed C remains.
+        #expect(try await store.checksums(for: "id-1") == cks("C"))
+        #expect(try await store.isImputed(for: "id-1") == true)
+    }
 }
 
 // MARK: - SwiftDataPersistentChangeTokenStore

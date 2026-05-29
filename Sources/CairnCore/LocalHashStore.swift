@@ -72,7 +72,48 @@ public protocol LocalHashStore: Sendable {
     /// re-hashing those is waste). `modificationDate: nil` means the
     /// caller doesn't know; the cache stays usable but the skip-
     /// heuristic can't engage.
+    ///
+    /// **Imputation contract:** `set` always marks the resulting
+    /// entries as **verified** (imputed = false). Callers using the
+    /// fast-initial-scan trust path must call `setImputed` instead.
+    /// When `set` is invoked on a localIdentifier whose prior entries
+    /// were imputed, the imputed flag is cleared — this is the
+    /// verify-on-touch path's "I just hashed it locally, the value is
+    /// trustworthy" signal.
     func set(_ checksums: Set<Checksum>, for localIdentifier: String, modificationDate: Date?) async throws
+
+    /// Record a single checksum **imputed from server-side trust** —
+    /// not computed locally. Used by the fast-initial-scan path when
+    /// `phone.localId == server.deviceAssetId` lets us trust the
+    /// server's SHA1 without re-hashing locally. Marks the entry as
+    /// `imputed = true`; the verify-on-touch path will re-hash before
+    /// propagating any deletion that resolves through this entry.
+    ///
+    /// Replaces any prior entries for the identifier (same shape as
+    /// `set`). `modificationDate` should be the phone-side asset's
+    /// `modificationDate` so the skip-rehash heuristic still works
+    /// for incremental scans.
+    ///
+    /// See `docs/active-design/fast-initial-scan-plan.md`.
+    func setImputed(_ checksum: Checksum, for localIdentifier: String, modificationDate: Date?) async throws
+
+    /// Whether the cached entries for `localIdentifier` were imputed
+    /// (trusted from the server) rather than locally hashed. Used by
+    /// the verify-on-touch path before propagating a deletion. Returns
+    /// `false` for unknown identifiers and for stores that don't track
+    /// the flag.
+    func isImputed(for localIdentifier: String) async throws -> Bool
+
+    /// Count of distinct localIdentifiers whose entries are currently
+    /// marked imputed. Used by the diagnostics surface and to gate the
+    /// "Verify cached checksums" action. Default impl returns 0 for
+    /// stores that don't track the flag.
+    func imputedCount() async throws -> Int
+
+    /// All localIdentifiers whose entries are currently marked imputed.
+    /// Used by the background verifier to enumerate work. Default impl
+    /// returns the empty set.
+    func imputedIdentifiers() async throws -> Set<String>
 
     /// Modification date paired with the cached checksums for an asset,
     /// or `nil` if no entry exists (or the entry predates modification-
@@ -140,4 +181,21 @@ public extension LocalHashStore {
         }
         return out
     }
+
+    /// Fallback for stores that don't track imputation (CLI fixtures,
+    /// JSON-file stores used by tests). Records the checksum via the
+    /// regular `set` path with no imputed flag — these stores don't
+    /// participate in the fast-initial-scan optimization.
+    func setImputed(_ checksum: Checksum, for localIdentifier: String, modificationDate: Date?) async throws {
+        try await set([checksum], for: localIdentifier, modificationDate: modificationDate)
+    }
+
+    /// Fallback for stores that don't track imputation. Always false.
+    func isImputed(for localIdentifier: String) async throws -> Bool { false }
+
+    /// Fallback for stores that don't track imputation. Always 0.
+    func imputedCount() async throws -> Int { 0 }
+
+    /// Fallback for stores that don't track imputation. Always empty.
+    func imputedIdentifiers() async throws -> Set<String> { [] }
 }

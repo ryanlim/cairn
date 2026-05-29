@@ -177,6 +177,40 @@ struct CairnSettingsTests {
         }
     }
 
+    @Test("fastInitialScan defaults to false (opt-in via onboarding)")
+    func fastInitialScanDefaultsFalse() {
+        // The optimization is a meaningful tradeoff (faster setup vs
+        // cairn-verified checksums everywhere); the user picks at
+        // onboarding rather than getting it silently. Default off
+        // keeps existing installs on the well-understood path.
+        #expect(CairnSettings.defaults.fastInitialScan == false)
+    }
+
+    @Test("legacy JSON without fastInitialScan decodes as false (opt-in)")
+    func legacyJSONMissingFastInitialScanDefaultsFalse() throws {
+        let legacyJSON = """
+        {
+            "maxDeletePercent": 1.0,
+            "minDeleteFloor": 5,
+            "notifyOnAbort": true,
+            "verboseLogging": false,
+            "deletionStrictness": "trusting"
+        }
+        """
+        let decoded = try JSONDecoder().decode(CairnSettings.self, from: Data(legacyJSON.utf8))
+        #expect(decoded.fastInitialScan == false)
+    }
+
+    @Test("fastInitialScan round-trips both true and false")
+    func fastInitialScanRoundTrips() throws {
+        for value in [true, false] {
+            let original = CairnSettings(fastInitialScan: value)
+            let data = try JSONEncoder().encode(original)
+            let decoded = try JSONDecoder().decode(CairnSettings.self, from: data)
+            #expect(decoded.fastInitialScan == value)
+        }
+    }
+
     @Test("legacy JSON without indexingScope decodes as .fullLibrary")
     func legacyJSONMissingIndexingScopeUsesFullLibrary() throws {
         let legacyJSON = """

@@ -191,6 +191,30 @@ public struct CairnSettings: Sendable, Codable, Equatable {
     /// of beta soak-testing surfaces no regressions.
     public var useIncrementalServerSync: Bool
 
+    /// Fast initial scan: trust Immich's server-computed checksum for
+    /// any phone asset where `phone.localId == server.deviceAssetId`
+    /// (set by the Immich mobile uploader at upload time) and seed
+    /// the local hash cache from the server instead of re-hashing
+    /// locally. On iCloud-Optimized libraries this can drop initial
+    /// scan from hours to seconds, since matched assets skip the
+    /// original-resource download.
+    ///
+    /// Only the matched subset is imputed; everything else (web
+    /// uploads, photos from other devices, fresh-phone restore case)
+    /// still hashes locally. Imputed entries are flagged in the cache;
+    /// the modDate-skip path automatically re-hashes any imputed asset
+    /// whose pixel bytes later change. Deletions resolved through
+    /// imputed entries are logged for telemetry.
+    ///
+    /// Default **off** — the user opts in at onboarding (or later in
+    /// Settings) after seeing both paths explained. The tradeoff is
+    /// non-trivial (much faster setup vs every checksum computed by
+    /// cairn itself), so the choice is presented neutrally rather than
+    /// taken silently.
+    ///
+    /// Design: `docs/active-design/fast-initial-scan-plan.md`.
+    public var fastInitialScan: Bool
+
     public init(
         maxDeletePercent: Double = 1.0,
         minDeleteFloor: Int = 5,
@@ -207,7 +231,8 @@ public struct CairnSettings: Sendable, Codable, Equatable {
         indexingScope: IndexingScope = .fullLibrary,
         maxRetryAttempts: Int = 5,
         timeDisplayFormat: TimeDisplayFormat = .system,
-        useIncrementalServerSync: Bool = false
+        useIncrementalServerSync: Bool = false,
+        fastInitialScan: Bool = false
     ) {
         self.maxDeletePercent = maxDeletePercent
         self.minDeleteFloor = minDeleteFloor
@@ -225,6 +250,7 @@ public struct CairnSettings: Sendable, Codable, Equatable {
         self.maxRetryAttempts = maxRetryAttempts
         self.timeDisplayFormat = timeDisplayFormat
         self.useIncrementalServerSync = useIncrementalServerSync
+        self.fastInitialScan = fastInitialScan
     }
 
     /// The factory defaults. Kept as a single constant so tests and the
@@ -244,6 +270,7 @@ public struct CairnSettings: Sendable, Codable, Equatable {
         case maxRetryAttempts
         case timeDisplayFormat
         case useIncrementalServerSync
+        case fastInitialScan
     }
 
     public init(from decoder: Decoder) throws {
@@ -265,6 +292,7 @@ public struct CairnSettings: Sendable, Codable, Equatable {
         self.maxRetryAttempts = try c.decodeIfPresent(Int.self, forKey: .maxRetryAttempts) ?? d.maxRetryAttempts
         self.timeDisplayFormat = try c.decodeIfPresent(TimeDisplayFormat.self, forKey: .timeDisplayFormat) ?? d.timeDisplayFormat
         self.useIncrementalServerSync = try c.decodeIfPresent(Bool.self, forKey: .useIncrementalServerSync) ?? d.useIncrementalServerSync
+        self.fastInitialScan = try c.decodeIfPresent(Bool.self, forKey: .fastInitialScan) ?? d.fastInitialScan
     }
 }
 
