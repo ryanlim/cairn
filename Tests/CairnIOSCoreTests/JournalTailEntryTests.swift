@@ -573,16 +573,31 @@ struct JournalTailTimeFormatTests {
 
     private typealias Tail = CairnFixtures.JournalTailEntry
 
+    /// Anchor at a known mid-day so subtracting hours stays in the
+    /// same calendar day regardless of when CI fires. Previous
+    /// `Date()`-based version flaked when the run started near
+    /// midnight UTC — `-125 minutes` from 00:33 UTC crossed back
+    /// into the prior day and the test landed on the past-day
+    /// rendering branch (12 chars instead of 5).
+    private static let referenceNow: Date = {
+        var components = DateComponents()
+        components.year = 2026
+        components.month = 1
+        components.day = 15
+        components.hour = 12
+        components.minute = 0
+        return Calendar.current.date(from: components)!
+    }()
+
     @Test("same-day timestamps render as HH:mm under .h24")
     func sameDay() {
-        let now = Date()
-        // Build a date earlier today by subtracting a few hours.
+        let now = Self.referenceNow
         let earlier = Calendar.current.date(byAdding: .minute, value: -125, to: now) ?? now
         let formatted = Tail.formatTime(earlier, now: now, format: .h24)
         // `HH:mm` is exactly 5 characters, with a colon. Pinned to
         // `.h24` rather than `.system` because the `j` skeleton in
-        // .system resolves to the host locale's hour cycle — en_US
-        // gives `h:mm a` (7 chars), making the assertion locale-
+        // .system resolves to the host locale's hour cycle (en_US
+        // gives `h:mm a` at 7 chars), making the assertion locale-
         // dependent. The journal-tail format under .h24 is the
         // contract being pinned here.
         #expect(formatted.count == 5)
@@ -591,7 +606,7 @@ struct JournalTailTimeFormatTests {
 
     @Test("past-day timestamps render as MMM d HH:mm under .h24")
     func pastDay() {
-        let now = Date()
+        let now = Self.referenceNow
         let yesterday = Calendar.current.date(byAdding: .day, value: -1, to: now) ?? now
         let formatted = Tail.formatTime(yesterday, now: now, format: .h24)
         // Past-day form contains a colon (HH:mm) AND a space (between
