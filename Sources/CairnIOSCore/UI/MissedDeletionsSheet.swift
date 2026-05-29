@@ -200,6 +200,7 @@ public struct MissedDeletionsSheet: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
+            .tint(t.verified)
             CairnChip(
                 "Start scan",
                 accessibilityLabel: "Start scan",
@@ -229,6 +230,7 @@ public struct MissedDeletionsSheet: View {
                         .foregroundStyle(t.textBody)
                 }
                 .labelsHidden()
+                .tint(t.verified)
                 if minBoundEnabled {
                     DatePicker(
                         "From",
@@ -251,6 +253,7 @@ public struct MissedDeletionsSheet: View {
                         .foregroundStyle(t.textBody)
                 }
                 .labelsHidden()
+                .tint(t.verified)
                 if maxBoundEnabled {
                     DatePicker(
                         "To",

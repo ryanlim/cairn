@@ -656,6 +656,14 @@ public struct ToggleRow: View {
             Spacer(minLength: 0)
             Toggle("", isOn: $value)
                 .labelsHidden()
+                // Palette-sourced green for the on-state. Without
+                // `.tint(...)` SwiftUI falls back to iOS's default
+                // systemGreen, which is fine visually but mixes the
+                // palette with the platform default. Standardising on
+                // `t.verified` (cairn's seaweed-green) keeps every
+                // toggle in the app sourcing its on-state from the
+                // same token, in both color schemes.
+                .tint(t.verified)
                 .accessibilityLabel(label)
                 .accessibilityHint(sub ?? "")
         }

@@ -810,17 +810,41 @@ private struct InitialScanHardCeilingRow: View {
     @Binding var mb: Int?
     @Environment(\.cairnTokens) private var t
 
+    /// Remembers the last enabled value so toggling off and back on
+    /// restores what the user had set, not the cold-start default.
+    /// See `HardCeilingRow` in SettingsScreen for the same pattern's
+    /// rationale.
+    @State private var rememberedValue: Int
+
+    init(mb: Binding<Int?>) {
+        self._mb = mb
+        self._rememberedValue = State(initialValue: mb.wrappedValue ?? 1024)
+    }
+
     private var isEnabled: Binding<Bool> {
         Binding(
             get: { mb != nil },
-            set: { newValue in mb = newValue ? (mb ?? 1024) : nil }
+            set: { newValue in
+                if newValue {
+                    mb = rememberedValue
+                } else {
+                    if let current = mb {
+                        rememberedValue = current
+                    }
+                    mb = nil
+                }
+            }
         )
     }
 
     private var doubleBinding: Binding<Double> {
         Binding(
             get: { Double(mb ?? CairnSettings.iCloudMaxEverBytesMBRange.lowerBound) },
-            set: { mb = Int($0.rounded()) }
+            set: { newValue in
+                let rounded = Int(newValue.rounded())
+                mb = rounded
+                rememberedValue = rounded
+            }
         )
     }
 

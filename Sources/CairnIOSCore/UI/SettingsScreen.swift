@@ -1451,16 +1451,32 @@ private struct HardCeilingRow: View {
     @Binding var mb: Int?
     @Environment(\.cairnTokens) private var t
 
+    /// Remembers the last enabled value so toggling off and back on
+    /// restores what the user had set, not the cold-start default.
+    /// Seeded from the current `mb` at view construction. Lives across
+    /// off/on cycles within the view's lifetime; resets to 1 GB on
+    /// fresh launches where the user had previously toggled the
+    /// ceiling off (persisting the remembered value across launches
+    /// would need a separate field on CairnSettings).
+    @State private var rememberedValue: Int
+
+    init(mb: Binding<Int?>) {
+        self._mb = mb
+        // 1 GB default — cleanly above the soft-limit default of
+        // 100 MB so the two thresholds don't collapse into each other.
+        self._rememberedValue = State(initialValue: mb.wrappedValue ?? 1024)
+    }
+
     private var isEnabled: Binding<Bool> {
         Binding(
             get: { mb != nil },
             set: { newValue in
                 if newValue {
-                    // Default to 1 GB when enabling — cleanly above
-                    // the soft-limit default of 100 MB so the two
-                    // thresholds don't collapse into each other.
-                    mb = mb ?? 1024
+                    mb = rememberedValue
                 } else {
+                    if let current = mb {
+                        rememberedValue = current
+                    }
                     mb = nil
                 }
             }
@@ -1470,7 +1486,14 @@ private struct HardCeilingRow: View {
     private var doubleBinding: Binding<Double> {
         Binding(
             get: { Double(mb ?? CairnSettings.iCloudMaxEverBytesMBRange.lowerBound) },
-            set: { mb = Int($0.rounded()) }
+            set: { newValue in
+                let rounded = Int(newValue.rounded())
+                mb = rounded
+                // Track the live slider value so toggling off after
+                // any adjustment captures the latest setting (not just
+                // the value at the moment the row was constructed).
+                rememberedValue = rounded
+            }
         )
     }
 
