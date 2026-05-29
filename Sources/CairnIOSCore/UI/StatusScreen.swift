@@ -1380,6 +1380,8 @@ public struct StatusScreen: View {
                 return "Preparing…"
             case .fetchingServer:
                 return "Fetching server data…"
+            case .imputingFromServer:
+                return "Matching from server…"
             case .reconciling:
                 return "Reconciling…"
             case .finalizing:

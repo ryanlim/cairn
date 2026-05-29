@@ -622,6 +622,23 @@ public final class PhotoKitPersistentChangeReconciler {
             }
         }
 
+        // Telemetry: how many of the resolved deletions came through
+        // imputed (server-trusted) LocalHashStore entries rather than
+        // locally-verified hashes. If an imputed checksum is wrong,
+        // cairn trashes the wrong server row — recoverable via Immich
+        // Trash (30-day undo) but worth surfacing. The count should
+        // drop toward zero over time as the background verifier
+        // converts imputed → verified, or as the edit-driven
+        // automatic re-hash path catches modifications. See
+        // `docs/active-design/fast-initial-scan-plan.md`.
+        if !deletedIds.isEmpty {
+            let imputedIds = (try? await hashStore.imputedIdentifiers()) ?? []
+            let imputedDeletions = imputedIds.intersection(deletedIds).count
+            if imputedDeletions > 0 {
+                hashLog.notice("[cairn.recon] \(imputedDeletions, privacy: .public) of \(deletedIds.count, privacy: .public) deletions resolved through imputed entries (server-trusted, not locally verified)")
+            }
+        }
+
         // Single PHAsset.fetchAssets pass that records metadata for
         // every observed id (so a deletion-before-hash still has
         // correlation data) AND filters update events whose

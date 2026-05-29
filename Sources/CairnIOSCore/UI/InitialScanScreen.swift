@@ -25,6 +25,13 @@ public struct InitialScanScreen: View {
     /// when assets are deferred (too large for foreground download) or
     /// skipped (above hard ceiling).
     public let indexed: Int
+    /// Assets trust-seeded from the Immich server in this scan via the
+    /// fast-initial-scan path (matched on `deviceAssetId`). These
+    /// skipped local hashing entirely; their checksums came from
+    /// server-computed SHA1. Surfaced as a dedicated stat alongside
+    /// `hashed` so the user can see what was verified locally vs
+    /// imputed. `0` when fast-initial-scan is off or no matches.
+    public let imputed: Int
     /// Actual count of items in the deferred queue (will retry later).
     /// The gap `hashed - indexed - deferredQueueCount` = permanently
     /// skipped (above hard ceiling).
@@ -124,6 +131,7 @@ public struct InitialScanScreen: View {
         total: Int,
         hashed: Int,
         indexed: Int = 0,
+        imputed: Int = 0,
         deferredQueueCount: Int = 0,
         isActive: Bool,
         startedAt: Date?,
@@ -140,6 +148,7 @@ public struct InitialScanScreen: View {
         self.total = total
         self.hashed = hashed
         self.indexed = indexed
+        self.imputed = imputed
         self.deferredQueueCount = deferredQueueCount
         self.isActive = isActive
         self.startedAt = startedAt
@@ -527,10 +536,35 @@ public struct InitialScanScreen: View {
                 } else {
                     ProcessingBreakdown(indexed: indexed, deferredQueueCount: deferredQueueCount, processed: hashed)
                 }
+                if imputed > 0 {
+                    trustSeededLine
+                }
                 timingStrip
             }
             .padding(18)
         }
+    }
+
+    /// One-line caption shown when the fast-initial-scan path
+    /// trust-seeded any entries from the Immich server. Made distinct
+    /// from the locally-hashed counter both visually (different icon +
+    /// tint) and textually so the user can tell at a glance how many
+    /// assets cairn verified itself versus how many it trusted from
+    /// the server.
+    private var trustSeededLine: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "icloud.and.arrow.down")
+                .font(.cairnScaled(size: 10))
+                .foregroundStyle(t.info)
+            Text("\(imputed.formatted(.number)) trust-seeded from server")
+                .font(.cairnScaled(size: 12, weight: .medium))
+                .foregroundStyle(t.textBody)
+            Text("(skipped local hashing)")
+                .font(.cairnScaled(size: 12))
+                .foregroundStyle(t.textMuted)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(imputed) assets trust-seeded from server, skipped local hashing")
     }
 
     /// Phase label shown when the per-asset counter can't yet advance —
@@ -542,7 +576,7 @@ public struct InitialScanScreen: View {
     private var prePhaseLabel: String? {
         guard isActive else { return nil }
         switch phase {
-        case .preparing, .fetchingServer, .reconciling, .finalizing:
+        case .preparing, .fetchingServer, .imputingFromServer, .reconciling, .finalizing:
             return phase.displayName
         case .hashing, .idle:
             return nil
@@ -903,17 +937,39 @@ private struct InitialScanPreviewHost: View {
     @State var settings: CairnSettings = .defaults
     let total: Int
     let hashed: Int
+    let imputed: Int
     let isActive: Bool
     let startedAt: Date?
     let pausedElapsed: TimeInterval?
+    let phase: CairnAppModel.SyncPhase
+
+    init(
+        total: Int,
+        hashed: Int,
+        imputed: Int = 0,
+        isActive: Bool,
+        startedAt: Date?,
+        pausedElapsed: TimeInterval?,
+        phase: CairnAppModel.SyncPhase = .idle
+    ) {
+        self.total = total
+        self.hashed = hashed
+        self.imputed = imputed
+        self.isActive = isActive
+        self.startedAt = startedAt
+        self.pausedElapsed = pausedElapsed
+        self.phase = phase
+    }
 
     var body: some View {
         InitialScanScreen(
             total: total,
             hashed: hashed,
+            imputed: imputed,
             isActive: isActive,
             startedAt: startedAt,
             pausedElapsed: pausedElapsed,
+            phase: phase,
             settings: $settings
         )
         .cairnTheme()
@@ -923,7 +979,24 @@ private struct InitialScanPreviewHost: View {
 #Preview("InitialScan — active mid-run") {
     InitialScanPreviewHost(
         total: 4_218, hashed: 1_245, isActive: true,
-        startedAt: Date(timeIntervalSinceNow: -180), pausedElapsed: nil
+        startedAt: Date(timeIntervalSinceNow: -180), pausedElapsed: nil,
+        phase: .hashing
+    )
+}
+
+#Preview("InitialScan — fast-initial-scan mid-hash") {
+    InitialScanPreviewHost(
+        total: 600, hashed: 145, imputed: 3_618, isActive: true,
+        startedAt: Date(timeIntervalSinceNow: -22), pausedElapsed: nil,
+        phase: .hashing
+    )
+}
+
+#Preview("InitialScan — imputation phase") {
+    InitialScanPreviewHost(
+        total: 0, hashed: 0, imputed: 0, isActive: true,
+        startedAt: Date(timeIntervalSinceNow: -2), pausedElapsed: nil,
+        phase: .imputingFromServer
     )
 }
 
@@ -944,7 +1017,17 @@ private struct InitialScanPreviewHost: View {
 #Preview("InitialScan — dark") {
     InitialScanPreviewHost(
         total: 4_218, hashed: 1_245, isActive: true,
-        startedAt: Date(timeIntervalSinceNow: -180), pausedElapsed: nil
+        startedAt: Date(timeIntervalSinceNow: -180), pausedElapsed: nil,
+        phase: .hashing
+    )
+    .preferredColorScheme(.dark)
+}
+
+#Preview("InitialScan — dark fast-initial-scan") {
+    InitialScanPreviewHost(
+        total: 600, hashed: 145, imputed: 3_618, isActive: true,
+        startedAt: Date(timeIntervalSinceNow: -22), pausedElapsed: nil,
+        phase: .hashing
     )
     .preferredColorScheme(.dark)
 }

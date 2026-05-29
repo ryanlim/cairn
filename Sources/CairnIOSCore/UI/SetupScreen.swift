@@ -42,7 +42,7 @@ public struct SetupScreen: View {
 
     // MARK: - Step model
 
-    /// The seven onboarding steps. Order matches `body`'s switch and
+    /// The eight onboarding steps. Order matches `body`'s switch and
     /// the progress-dots row at the top of the screen.
     public enum Step: Int, CaseIterable, Sendable {
         case welcome
@@ -51,17 +51,19 @@ public struct SetupScreen: View {
         case background
         case thresholds
         case strictness
+        case initialScan
         case firstRun
 
         var label: String {
             switch self {
-            case .welcome:    return "Welcome"
-            case .server:     return "Server"
-            case .photos:     return "Photos"
-            case .background: return "Background"
-            case .thresholds: return "Safety"
-            case .strictness: return "Strictness"
-            case .firstRun:   return "First run"
+            case .welcome:     return "Welcome"
+            case .server:      return "Server"
+            case .photos:      return "Photos"
+            case .background:  return "Background"
+            case .thresholds:  return "Safety"
+            case .strictness:  return "Strictness"
+            case .initialScan: return "Initial scan"
+            case .firstRun:    return "First run"
             }
         }
     }
@@ -240,13 +242,14 @@ public struct SetupScreen: View {
     @ViewBuilder
     private var stepContent: some View {
         switch step {
-        case .welcome:    welcomeStep
-        case .server:     serverStep
-        case .photos:     photosStep
-        case .background: backgroundStep
-        case .thresholds: thresholdsStep
-        case .strictness: strictnessStep
-        case .firstRun:   firstRunStep
+        case .welcome:     welcomeStep
+        case .server:      serverStep
+        case .photos:      photosStep
+        case .background:  backgroundStep
+        case .thresholds:  thresholdsStep
+        case .strictness:  strictnessStep
+        case .initialScan: initialScanStep
+        case .firstRun:    firstRunStep
         }
     }
 
@@ -859,6 +862,46 @@ public struct SetupScreen: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    // MARK: - Step: Initial scan
+
+    /// Pick how the very first scan bootstraps `LocalHashStore`. The
+    /// choice is between trusting Immich's server-computed checksums
+    /// for matching uploads (fast, default) and recomputing every
+    /// SHA1 locally (slower but every value is locally-verified).
+    /// Lives one step before `.firstRun` because it directly shapes
+    /// what the user is about to see — picking "Full local hashing"
+    /// commits them to a multi-hour wait on an iCloud-Optimized
+    /// library; the choice deserves explicit framing rather than a
+    /// hidden default.
+    private var initialScanStep: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            stepHeadline(Text("Pick how the first scan runs."))
+            stepBlurb(Text.cairnWord + Text(" needs the SHA1 of every photo before it can match phone-side and server-side libraries. It can either compute every hash locally, or trust the hashes Immich already computed at upload time. Local hashing is what ") + .cairnWord + Text(" has always done; the trust path is faster but means ") + .cairnWord + Text(" doesn't verify those checksums itself."))
+
+            CairnRadioList(
+                selection: $settings.fastInitialScan,
+                options: [
+                    .init(
+                        value: false,
+                        title: "Hash everything locally",
+                        subtitle: "Compute the SHA1 of every phone photo on this device before the first scan completes. Slower (especially with iCloud-Optimized Storage — originals get downloaded as needed) but every checksum is verified by cairn itself."
+                    ),
+                    .init(
+                        value: true,
+                        title: "Trust Immich's hashes for matching uploads",
+                        subtitle: "For photos this device uploaded to Immich, use the server's SHA1 instead of re-hashing locally. Anything Immich didn't see — web uploads, photos from other devices — still hashes here. Imputed entries are flagged in cairn's cache. On iCloud-Optimized libraries this can drop the first scan from hours to seconds."
+                    ),
+                ]
+            )
+            .padding(.bottom, 12)
+
+            Text("You can change this any time in Settings.")
+                .font(.cairnScaled(size: 12))
+                .foregroundStyle(t.textMuted)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
     // MARK: - Step: First scan
 
     private var firstRunStep: some View {
@@ -1018,13 +1061,14 @@ public struct SetupScreen: View {
     /// so the user can still advance after granting or skipping.
     private var canAdvance: Bool {
         switch step {
-        case .welcome:    return true
-        case .server:     return verifyResult?.success == true
-        case .photos:     return photosGranted
-        case .background: return true   // optional; quiet "Skip for now" also advances
-        case .thresholds: return true
-        case .strictness: return true
-        case .firstRun:   return true   // not shown — firstRun has its own CTA
+        case .welcome:     return true
+        case .server:      return verifyResult?.success == true
+        case .photos:      return photosGranted
+        case .background:  return true   // optional; quiet "Skip for now" also advances
+        case .thresholds:  return true
+        case .strictness:  return true
+        case .initialScan: return true
+        case .firstRun:    return true   // not shown — firstRun has its own CTA
         }
     }
 
@@ -1173,6 +1217,10 @@ private struct SetupPreviewHarness: View {
 
 #Preview("Setup — strictness") {
     SetupPreviewHarness(initialStep: .strictness, preVerified: true)
+}
+
+#Preview("Setup — initial scan") {
+    SetupPreviewHarness(initialStep: .initialScan, preVerified: true)
 }
 
 #Preview("Setup — first dry-run") {

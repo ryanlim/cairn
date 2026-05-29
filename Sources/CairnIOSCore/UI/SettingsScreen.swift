@@ -197,6 +197,7 @@ public struct SettingsScreen: View {
                 immichServerSection
                 safetyRailsSection
                 indexingScopeSection
+                initialScanSection
                 notificationsSection
                 permissionsSection
                 appearanceSection
@@ -476,6 +477,28 @@ public struct SettingsScreen: View {
             Image(systemName: "chevron.right")
                 .font(.cairnScaled(size: 12, weight: .semibold))
                 .foregroundStyle(t.textHint)
+        }
+    }
+
+    // MARK: - Initial scan
+
+    /// Fast-initial-scan toggle. When on, cairn looks up each phone
+    /// asset in Immich's existing asset list via `deviceAssetId` and
+    /// trusts the server's SHA1 for matched uploads — skipping local
+    /// hashing for those entries. Surfaced as a discrete row because
+    /// the choice meaningfully affects first-scan time on iCloud-
+    /// optimized libraries (hours → seconds) and what cairn verifies
+    /// locally vs imputes from the server.
+    private var initialScanSection: some View {
+        Group {
+            KeylineSection("Initial scan", icon: "bolt", iconTint: t.info)
+            CairnCard {
+                ToggleRow(
+                    "Trust server checksums",
+                    sub: "Skip local hashing for phone photos that Immich uploaded from this device. Faster first scan; cairn imputes from server-computed hashes instead of re-hashing locally. Off = always hash locally.",
+                    value: $settings.fastInitialScan
+                )
+            }
         }
     }
 

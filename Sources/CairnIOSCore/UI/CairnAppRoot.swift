@@ -266,6 +266,7 @@ public struct CairnAppRoot: View {
             total: model.syncProgress?.total ?? model.library.local,
             hashed: model.syncProgress?.hashed ?? model.library.indexed,
             indexed: model.library.indexed,
+            imputed: model.syncProgress?.imputed ?? 0,
             deferredQueueCount: model.deferredQueue.count,
             isActive: model.isSyncing,
             startedAt: model.syncStartedAt,

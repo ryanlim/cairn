@@ -128,7 +128,8 @@ final class AppDependencies {
                     await MainActor.run {
                         guard let self else { return }
                         let baseline = self.model.syncProgress?.initialHashed ?? done
-                        self.model.syncProgress = .init(hashed: done, total: total, initialHashed: baseline)
+                        let imputed = self.model.syncProgress?.imputed ?? 0
+                        self.model.syncProgress = .init(hashed: done, total: total, initialHashed: baseline, imputed: imputed)
                     }
                     return
                 }
@@ -173,7 +174,8 @@ final class AppDependencies {
                     // rate is calculated from session-only work, not work
                     // that already finished on a prior launch.
                     let baseline = self.model.syncProgress?.initialHashed ?? done
-                    self.model.syncProgress = .init(hashed: done, total: total, initialHashed: baseline)
+                    let imputed = self.model.syncProgress?.imputed ?? 0
+                    self.model.syncProgress = .init(hashed: done, total: total, initialHashed: baseline, imputed: imputed)
                     let prevMatched = self.model.library.matched
                     self.model.library = self.model.library
                         .with(indexed: indexed, matched: prevMatched + batchMatched)
@@ -1047,6 +1049,126 @@ final class AppDependencies {
         }
     }
 
+    // MARK: - Fast initial scan (trust-seed imputation)
+
+    /// Outcome of one imputation pass.
+    fileprivate struct ImputationOutcome {
+        let imputed: Int        // entries written to LocalHashStore as imputed
+        let hits: Int           // localIds that matched a server deviceAssetId
+        let ambiguous: Int      // deviceAssetIds that matched >1 server row
+        let alreadyCached: Int  // matched localIds that were already in LocalHashStore
+        let totalPhone: Int     // total live phone localIds enumerated
+        let fellBack: Bool      // true if near-zero-hit fallback kicked in
+    }
+
+    /// Trust-seed `LocalHashStore` from the server's `deviceAssetId`
+    /// stamps. For each live phone localId not already cached, find
+    /// the unambiguous non-trashed server row whose `deviceAssetId`
+    /// equals the localId, and write its checksum as `imputed = true`.
+    /// The hash pass that runs next will skip these via the modDate-
+    /// match path. Verify-on-touch re-hashes before any deletion that
+    /// resolves through an imputed row.
+    ///
+    /// Applies the near-zero-hit safety: on libraries of more than
+    /// ~100 assets, if matched-and-seedable is <5% of total phone
+    /// assets, skip imputation entirely (likely a fresh-phone restore
+    /// where localIds rotated — the join would produce thousands of
+    /// false misses).
+    ///
+    /// See `docs/active-design/fast-initial-scan-plan.md`.
+    @MainActor
+    fileprivate func runImputationPass(serverAssets: [ServerAsset]) async throws -> ImputationOutcome {
+        // 1. Build deviceAssetId → ServerAsset map. Skip trashed rows
+        //    (deletion-bound; would impute a checksum that's about to
+        //    disappear) and ambiguous ids (reinstall scenarios produce
+        //    multiple non-trashed rows with the same deviceAssetId but
+        //    different deviceIds — we can't tell which is "current").
+        var byDeviceAssetId: [String: ServerAsset] = [:]
+        var ambiguous = Set<String>()
+        for asset in serverAssets where !asset.isTrashed {
+            guard let did = asset.deviceAssetId, !did.isEmpty else { continue }
+            if byDeviceAssetId[did] != nil {
+                ambiguous.insert(did)
+            } else {
+                byDeviceAssetId[did] = asset
+            }
+        }
+        let ambiguousCount = ambiguous.count
+        for did in ambiguous { byDeviceAssetId.removeValue(forKey: did) }
+
+        // 2. Snapshot phone (localId, modDate). Run the PHAsset fetch
+        //    on a detached task — PhotoKit enumeration off the main
+        //    actor avoids holding the UI thread.
+        let phoneEntries: [(String, Date?)] = await Task.detached(priority: .userInitiated) {
+            let opts = PHFetchOptions()
+            opts.includeHiddenAssets = false
+            opts.includeAssetSourceTypes = [.typeUserLibrary]
+            let fetch = PHAsset.fetchAssets(with: opts)
+            var out: [(String, Date?)] = []
+            out.reserveCapacity(fetch.count)
+            fetch.enumerateObjects { asset, _, _ in
+                out.append((asset.localIdentifier, asset.modificationDate))
+            }
+            return out
+        }.value
+        let totalPhone = phoneEntries.count
+
+        // 3. Skip localIds already in LocalHashStore. Imputation only
+        //    fills gaps — it never downgrades a verified entry.
+        let cachedIds = (try? await self.localHashStore.allLocalIdentifiers()) ?? []
+
+        var seedable: [(localId: String, checksum: Checksum, modDate: Date?)] = []
+        var alreadyCachedMatches = 0
+        for (localId, modDate) in phoneEntries {
+            guard let serverAsset = byDeviceAssetId[localId] else { continue }
+            if cachedIds.contains(localId) {
+                alreadyCachedMatches += 1
+                continue
+            }
+            seedable.append((localId, serverAsset.checksum, modDate))
+        }
+        let hits = seedable.count + alreadyCachedMatches
+
+        // 4. Near-zero-hit fallback. On a library with more than 100
+        //    assets, if hits/total < 5% the user is likely on a fresh
+        //    phone (restored from backup → all localIds rotated).
+        //    Producing imputed entries here would silently miss
+        //    thousands of assets; safer to fall back to full hashing.
+        if totalPhone > 100, hits > 0, Double(hits) / Double(totalPhone) < 0.05 {
+            return ImputationOutcome(
+                imputed: 0,
+                hits: hits,
+                ambiguous: ambiguousCount,
+                alreadyCached: alreadyCachedMatches,
+                totalPhone: totalPhone,
+                fellBack: true
+            )
+        }
+
+        // 5. Seed LocalHashStore. setImputed replaces any prior entries
+        //    for the localId (no-op for the just-checked "not cached"
+        //    case but keeps the API symmetric with `set`).
+        var imputedCount = 0
+        for entry in seedable {
+            try Task.checkCancellation()
+            try await self.localHashStore.setImputed(
+                entry.checksum,
+                for: entry.localId,
+                modificationDate: entry.modDate
+            )
+            imputedCount += 1
+        }
+
+        return ImputationOutcome(
+            imputed: imputedCount,
+            hits: hits,
+            ambiguous: ambiguousCount,
+            alreadyCached: alreadyCachedMatches,
+            totalPhone: totalPhone,
+            fellBack: false
+        )
+    }
+
     // MARK: - Live reconciliation
 
     @MainActor
@@ -1179,6 +1301,50 @@ final class AppDependencies {
         guard let reconciler = persistentChangeReconciler else {
             throw CancellationError()
         }
+
+        // Fast initial scan: when enabled, block on the server fetch
+        // BEFORE the hash pass so we can pre-seed LocalHashStore with
+        // imputed checksums for matching phone localIds. The hash pass
+        // skips them via the modDate-match path; only the residue
+        // hashes locally. This serializes server-fetch with hashing
+        // (the existing flow ran them in parallel), but the residue
+        // savings dwarf the serialization cost on any non-trivial
+        // library. The near-zero-hit fallback inside `runImputationPass`
+        // protects the fresh-phone-restore case.
+        if model.settings.fastInitialScan {
+            model.transitionSyncPhase(to: .imputingFromServer)
+            let imputeStart = Date()
+            let serverPrefetch = try await serverAssetsTask.value
+            let outcome = try await runImputationPass(serverAssets: serverPrefetch.assets)
+            let imputeMs = Int(Date().timeIntervalSince(imputeStart) * 1000)
+            syncLog.info("[cairn.impute] seeded=\(outcome.imputed) hits=\(outcome.hits) ambiguous=\(outcome.ambiguous) alreadyCached=\(outcome.alreadyCached) totalPhone=\(outcome.totalPhone) fellBack=\(outcome.fellBack) durationMs=\(imputeMs)")
+            model.syncTimeline.append(.init(
+                phase: .imputingFromServer,
+                startedAt: imputeStart,
+                durationMs: imputeMs
+            ))
+            let detail: String
+            if outcome.fellBack {
+                detail = "Trust-seeding skipped — only \(outcome.hits.formatted(.number))/\(outcome.totalPhone.formatted(.number)) matched (full local hashing)"
+            } else if outcome.imputed == 0 {
+                detail = "Trust-seeding: 0 new matches (full local hashing for residue)"
+            } else {
+                detail = "Trust-seeded \(outcome.imputed.formatted(.number)) of \(outcome.totalPhone.formatted(.number)) from server"
+            }
+            model.appendSyncActivity(.init(kind: .note, detail: detail))
+            // Surface the imputed count onto syncProgress so it survives
+            // through the hash pass and the InitialScanScreen stats strip
+            // can render "imputed Y" alongside "hashed X of Z". The hash
+            // pass will reconstruct syncProgress on first emit; both
+            // onHashProgress paths preserve the imputed field by reading
+            // the prior value before overwriting.
+            model.syncProgress = .init(hashed: 0, total: 0, initialHashed: 0, imputed: outcome.imputed)
+            // Drop back to .preparing so the next phase transition (to
+            // .hashing on first onHashProgress) reads as a single step
+            // in the timeline rather than a regression.
+            model.transitionSyncPhase(to: .preparing)
+        }
+
         // High-level phase stays `.preparing` until the first
         // `onHashProgress` callback flips it to `.hashing`. The scan's
         // internal phases (fetchPersistentChanges, observeAndFilter,
