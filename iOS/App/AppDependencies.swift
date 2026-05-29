@@ -583,6 +583,21 @@ final class AppDependencies {
             // is gone).
             syncLog.notice("[cairn.boot] mixed credential state after retries — url present=\(url != nil, privacy: .public), apiKey present=\(apiKey != nil, privacy: .public)")
         }
+        // One-time Keychain accessibility migration. Older builds
+        // wrote credentials with `kSecAttrAccessibleWhenUnlockedThisDeviceOnly`,
+        // which returns errSecItemNotFound when iOS wakes the app
+        // for background sync after the screen has relocked — the
+        // root cause of the recurring "onboarding flash" reports.
+        // We re-write every Keychain item with the more permissive
+        // `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` tier so
+        // background reads succeed. Gated by a UserDefaults flag so
+        // we only do the rewrite once per install.
+        let migrationKey = "cairn.keychain.accessibility_migrated_v1"
+        if url != nil || apiKey != nil, !UserDefaults.standard.bool(forKey: migrationKey) {
+            secretStore.migrateAccessibility()
+            UserDefaults.standard.set(true, forKey: migrationKey)
+            syncLog.notice("[cairn.boot] migrated Keychain items to AfterFirstUnlockThisDeviceOnly accessibility")
+        }
 
         #if DEBUG
         if url == nil || apiKey == nil {

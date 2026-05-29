@@ -423,7 +423,17 @@ public struct KeychainSecretStore: MutableSecretStore, Sendable {
             // Re-assert accessibility on every write so items created
             // under a different policy get corrected. Cheap; harmless
             // when the policy already matches.
-            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
+            //
+            // AfterFirstUnlockThisDeviceOnly (not WhenUnlocked) so the
+            // app can still read credentials when iOS wakes us for
+            // background sync after the screen has relocked. The
+            // WhenUnlocked tier returns errSecItemNotFound (or
+            // errSecInteractionNotAllowed) for the entire locked
+            // window, which surfaced for users as the brief
+            // onboarding-screen flash after a quick relaunch from a
+            // background-launched state. "ThisDeviceOnly" preserves
+            // the no-iCloud-sync guarantee.
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
         ]
         let updateStatus = SecItemUpdate(
             baseQuery(account: account) as CFDictionary,
@@ -442,12 +452,61 @@ public struct KeychainSecretStore: MutableSecretStore, Sendable {
 
         var addQuery = baseQuery(account: account)
         addQuery[kSecValueData as String] = data
-        addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+        addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
 
         let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
         guard addStatus == errSecSuccess else {
             throw KeychainError.osStatus(addStatus)
         }
+    }
+
+    /// Re-write every Keychain item this store owns with the current
+    /// accessibility tier (`kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`).
+    /// Idempotent and safe to call on every launch. Items already at
+    /// the current tier get their data re-set with the same accessibility
+    /// (no-op effect). Items at the older `WhenUnlocked` tier get upgraded.
+    ///
+    /// Bootstrap calls this once (gated by a UserDefaults flag) after
+    /// the first successful credential read on a build that switched
+    /// to the new tier — without this migration, accounts written by
+    /// older builds keep their stricter accessibility and the
+    /// background-launch bug persists.
+    public func migrateAccessibility() {
+        for account in accounts {
+            reasertAccessibility(account: account)
+        }
+    }
+
+    /// Every account this store manages. Source-of-truth for migration
+    /// and for any future "wipe every cairn secret" maintenance op.
+    private var accounts: [String] {
+        [
+            urlAccount,
+            keyAccount,
+            userIdAccount,
+            userEmailAccount,
+            keyActivationsAccount,
+            recentServersAccount,
+            sessionTokenAccount,
+        ]
+    }
+
+    /// Read the raw bytes at `account` and write them back, asserting
+    /// the current accessibility tier. Silent on absent items
+    /// (`errSecItemNotFound`) since not every install has every
+    /// account populated.
+    private func reasertAccessibility(account: String) {
+        var query = baseQuery(account: account)
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        var result: CFTypeRef?
+        let readStatus = SecItemCopyMatching(query as CFDictionary, &result)
+        guard readStatus == errSecSuccess, let data = result as? Data else { return }
+        let updateAttrs: [String: Any] = [
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+        ]
+        _ = SecItemUpdate(baseQuery(account: account) as CFDictionary, updateAttrs as CFDictionary)
     }
 
     private func delete(account: String) throws {
