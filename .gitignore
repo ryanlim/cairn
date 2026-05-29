@@ -46,3 +46,9 @@ iOS/fastlane/metadata/
 iOS/.team
 # Per-developer Immich dev credentials seeded by `make device` on debug installs.
 iOS/.dev-secrets
+
+# Launch-copy / intro-post drafts — local-only, never committed.
+# Scrubbed from history in this push; keep them on disk for use, but
+# off the public repo.
+docs/launch-copy.md
+docs/intro-posts.md
