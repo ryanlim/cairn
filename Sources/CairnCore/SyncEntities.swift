@@ -55,6 +55,11 @@ public struct SyncAssetV1: Sendable, Codable, Equatable, Hashable {
     public let fileModifiedAt: Date?
     public let width: Int?
     public let height: Int?
+    /// Originating-device per-asset identifier (PHAsset.localIdentifier
+    /// on iOS) stamped by the Immich mobile uploader. Nil for assets
+    /// uploaded via web or other clients. Used by the fast-initial-scan
+    /// path.
+    public let deviceAssetId: String?
 
     public init(
         id: String,
@@ -70,7 +75,8 @@ public struct SyncAssetV1: Sendable, Codable, Equatable, Hashable {
         fileCreatedAt: Date? = nil,
         fileModifiedAt: Date? = nil,
         width: Int? = nil,
-        height: Int? = nil
+        height: Int? = nil,
+        deviceAssetId: String? = nil
     ) {
         self.id = id
         self.ownerId = ownerId
@@ -86,6 +92,7 @@ public struct SyncAssetV1: Sendable, Codable, Equatable, Hashable {
         self.fileModifiedAt = fileModifiedAt
         self.width = width
         self.height = height
+        self.deviceAssetId = deviceAssetId
     }
 }
 

@@ -851,6 +851,7 @@ struct AssetItemDTO: Decodable {
     let originalFileName: String?
     let fileCreatedAt: String?
     let thumbhash: String?
+    let deviceAssetId: String?
 
     /// Parse an ISO-8601 string that may or may not include
     /// fractional seconds. `ISO8601DateFormatter` is
@@ -877,7 +878,8 @@ struct AssetItemDTO: Decodable {
             isTrashed: isTrashed,
             originalFileName: originalFileName,
             fileCreatedAt: created,
-            thumbhash: thumbhash
+            thumbhash: thumbhash,
+            deviceAssetId: deviceAssetId
         )
     }
 }

@@ -36,6 +36,13 @@ public struct ServerAsset: Hashable, Sendable, Codable {
     /// Base64-encoded thumbhash from the Immich API. Decodes to a
     /// small (~4×4) blurry placeholder image. ~28 bytes raw.
     public let thumbhash: String?
+    /// The originating device's per-asset identifier, as stamped by
+    /// the Immich mobile uploader at upload time. On iOS this is the
+    /// `PHAsset.localIdentifier`. Used by the fast-initial-scan path
+    /// to map server-side rows back to phone-side assets without
+    /// re-hashing. Nil for assets uploaded via web or by other
+    /// clients that didn't set the field.
+    public let deviceAssetId: String?
 
     public init(
         id: String,
@@ -44,7 +51,8 @@ public struct ServerAsset: Hashable, Sendable, Codable {
         isTrashed: Bool = false,
         originalFileName: String? = nil,
         fileCreatedAt: Date? = nil,
-        thumbhash: String? = nil
+        thumbhash: String? = nil,
+        deviceAssetId: String? = nil
     ) {
         self.id = id
         self.checksum = checksum
@@ -53,6 +61,7 @@ public struct ServerAsset: Hashable, Sendable, Codable {
         self.originalFileName = originalFileName
         self.fileCreatedAt = fileCreatedAt
         self.thumbhash = thumbhash
+        self.deviceAssetId = deviceAssetId
     }
 }
 
