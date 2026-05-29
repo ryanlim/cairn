@@ -514,17 +514,26 @@ final class AppDependencies {
         //      errSecAuthFailed. The credentials are intact; we just
         //      can't read them right now.
         //
-        // Strategy: retry up to 5x with a small delay. For the first
-        // `missingRetryWindow` attempts, treat `.missing` as
-        // potentially transient — only after the cache should be hot
-        // do we accept it as authoritative. OSStatus failures retry
-        // for the full 5x. Truly-missing credentials still route to
-        // onboarding, just after a ~400ms delay instead of instantly.
+        // Strategy: retry up to `maxAttempts` times with a small delay.
+        // For the first `missingRetryWindow` attempts, treat `.missing`
+        // as potentially transient — only after the cache should be
+        // hot do we accept it as authoritative. OSStatus failures
+        // retry the full window. Truly-missing credentials still
+        // route to onboarding, just after a brief delay.
+        //
+        // The 2-attempt (~400ms) `.missing` window we shipped earlier
+        // turned out to be too short on some launches: users reported
+        // the onboarding flash still recurred occasionally. Doubling
+        // the window to ~1.2s should comfortably cover the post-
+        // launch Keychain warm-up on devices that need longer, while
+        // adding only a one-time penalty for genuine fresh installs.
         var url: URL? = nil
         var apiKey: String? = nil
         var transientFailure = false
-        let missingRetryWindow = 2
-        for attempt in 0..<5 {
+        let maxAttempts = 10
+        let missingRetryWindow = 6
+        var successOnAttempt = -1
+        for attempt in 0..<maxAttempts {
             transientFailure = false
             var observedMissing = false
             do {
@@ -534,8 +543,8 @@ final class AppDependencies {
                 observedMissing = true
             } catch {
                 transientFailure = true
-                if attempt == 4 {
-                    syncLog.error("[cairn.boot] keychain serverURL read failed after 5 attempts: \(String(describing: error), privacy: .public)")
+                if attempt == maxAttempts - 1 {
+                    syncLog.error("[cairn.boot] keychain serverURL read failed after \(maxAttempts, privacy: .public) attempts: \(String(describing: error), privacy: .public)")
                 }
             }
             do {
@@ -545,16 +554,27 @@ final class AppDependencies {
                 observedMissing = true
             } catch {
                 transientFailure = true
-                if attempt == 4 {
-                    syncLog.error("[cairn.boot] keychain apiKey read failed after 5 attempts: \(String(describing: error), privacy: .public)")
+                if attempt == maxAttempts - 1 {
+                    syncLog.error("[cairn.boot] keychain apiKey read failed after \(maxAttempts, privacy: .public) attempts: \(String(describing: error), privacy: .public)")
                 }
             }
             // Clean read of both fields, neither missing — done.
-            if !transientFailure && !observedMissing { break }
+            if !transientFailure && !observedMissing {
+                successOnAttempt = attempt
+                break
+            }
             // Observed missing past the retry window with no OSStatus
             // churn — accept as authoritative and stop retrying.
             if !transientFailure && observedMissing && attempt >= missingRetryWindow { break }
             try? await Task.sleep(for: .milliseconds(200))
+        }
+        // Diagnostic: when we did succeed, log which attempt got us
+        // there. Tells us in Console.app whether the retry was needed
+        // at all and how long the post-launch Keychain warm-up
+        // actually was for this user. `attempt > 0` is the interesting
+        // case — it means the first read failed transiently.
+        if successOnAttempt > 0 {
+            syncLog.notice("[cairn.boot] keychain reads succeeded on attempt \(successOnAttempt + 1, privacy: .public)/\(maxAttempts, privacy: .public) (first \(successOnAttempt, privacy: .public) attempt(s) returned .missing transiently)")
         }
         if (url != nil) != (apiKey != nil) {
             // Exited the loop with exactly one field present — note
