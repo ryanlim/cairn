@@ -1488,7 +1488,12 @@ private struct HardCeilingRow: View {
                 Spacer(minLength: 0)
                 Toggle("", isOn: isEnabled)
                     .labelsHidden()
-                    .tint(t.text)
+                    // `t.text` rendered as a solid white pill with no
+                    // thumb contrast in dark mode (foreground color =
+                    // pill background = thumb color). `t.primaryInk`
+                    // is the accent the rest of the Settings toggles
+                    // use; reads correctly in both color schemes.
+                    .tint(t.primaryInk)
             }
             if mb != nil {
                 Text("Assets whose iCloud fetch would exceed this are out-of-scope — never indexed, never proposed for deletion.")
@@ -1500,7 +1505,7 @@ private struct HardCeilingRow: View {
                     in: Double(CairnSettings.iCloudMaxEverBytesMBRange.lowerBound)...Double(CairnSettings.iCloudMaxEverBytesMBRange.upperBound),
                     step: 50
                 )
-                .tint(t.text)
+                .tint(t.primaryInk)
                 HStack {
                     Spacer()
                     EditableNumericField(
