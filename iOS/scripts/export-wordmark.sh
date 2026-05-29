@@ -18,7 +18,14 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."  # iOS/
 
-DEST="../docs/brand/cairn-wordmark.png"
+# Optional env overrides:
+#   DEST=<path>          Output PNG path (default: ../docs/brand/cairn-wordmark.png)
+#   APPEARANCE=light|dark  Simulator UI mode at render time (default: light).
+#                          Use `dark` to produce the GitHub-dark-mode variant
+#                          (text renders via `t.text` which resolves to a
+#                          light foreground under the dark palette).
+DEST="${DEST:-../docs/brand/cairn-wordmark.png}"
+APPEARANCE="${APPEARANCE:-light}"
 BUNDLE_ID="app.cairn.ios"
 SIM_NAME="${SIM_NAME:-iPhone 17 Pro Max}"
 DERIVED="/tmp/cairn-wordmark-dd"
@@ -45,6 +52,10 @@ if [[ -z "$UDID" ]]; then
 fi
 
 xcrun simctl boot "$UDID" 2>/dev/null || true
+# Set the simulator UI appearance before installing the app so
+# SwiftUI resolves cairnTokens against the requested color scheme
+# when ImageRenderer rasterises the wordmark.
+xcrun simctl ui "$UDID" appearance "$APPEARANCE"
 
 echo "→ Building for $SIM_NAME ($UDID)…"
 xcodebuild -project Cairn.xcodeproj -scheme Cairn \
@@ -58,8 +69,14 @@ xcrun simctl terminate "$UDID" "$BUNDLE_ID" 2>/dev/null || true
 xcrun simctl uninstall "$UDID" "$BUNDLE_ID" 2>/dev/null || true
 xcrun simctl install "$UDID" "$APP"
 
-echo "→ Launching in wordmark-export mode…"
-xcrun simctl launch "$UDID" "$BUNDLE_ID" -CAIRN_RENDER_WORDMARK 1 > /dev/null
+echo "→ Launching in wordmark-export mode (appearance=$APPEARANCE)…"
+LAUNCH_ARGS=(-CAIRN_RENDER_WORDMARK 1)
+if [[ "$APPEARANCE" == "dark" ]]; then
+  # ImageRenderer doesn't pick up the system color scheme; force it
+  # explicitly inside the rendered view tree.
+  LAUNCH_ARGS+=(-CAIRN_WORDMARK_DARK 1)
+fi
+xcrun simctl launch "$UDID" "$BUNDLE_ID" "${LAUNCH_ARGS[@]}" > /dev/null
 
 # The app writes to its Documents dir once ImageRenderer completes.
 # Poll with short backoff; fail out after ~15s so we don't hang.

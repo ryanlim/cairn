@@ -1,5 +1,8 @@
 <p align="center">
-  <img src="docs/brand/cairn-wordmark.png" width="240" alt="cairn" />
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/brand/cairn-wordmark-dark.png">
+    <img src="docs/brand/cairn-wordmark.png" width="240" alt="cairn" />
+  </picture>
 </p>
 
 Reconciles your iPhone photo library against your [Immich](https://immich.app) server. When you delete a photo on your phone, `cairn` moves the matching asset on Immich to Trash. That's the whole job.

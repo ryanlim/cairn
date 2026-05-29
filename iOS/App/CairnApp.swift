@@ -390,12 +390,28 @@ private struct WordmarkExportView: View {
     /// Render `CairnWordmark` via `ImageRenderer` at 3× native scale
     /// and write the PNG to the app's Documents directory. Returns
     /// the on-device path (for the on-screen label + Console).
+    ///
+    /// Pass `-CAIRN_WORDMARK_DARK` at launch to render with the dark
+    /// color scheme (text resolves through `t.text` under the dark
+    /// palette, so the "cairn" wordmark comes out in light foreground
+    /// suitable for GitHub-dark-mode README rendering). The simulator
+    /// system appearance does NOT propagate into the ImageRenderer's
+    /// view tree — only an explicit `.environment(\.colorScheme, .dark)`
+    /// inside the rendered view forces the right token resolution.
     @MainActor
     private static func render(size: CGFloat) -> String? {
+        let isDark = ProcessInfo.processInfo.arguments.contains("-CAIRN_WORDMARK_DARK")
+        // Order matters: `.cairnTheme()` reads `@Environment(\.colorScheme)`
+        // from its own parent (not its content), so the override has to
+        // be applied AFTER `.cairnTheme()` to be picked up. Putting it
+        // inside the theme modifier silently no-ops — CairnThemeModifier
+        // sees the system default `colorScheme` and produces a light-
+        // token environment regardless of the override below it.
         let wordmark = CairnWordmark(size: size, variant: .hero, style: .iconPrefix)
             .padding(8)     // small breathing room around the glyph lockup
             .fixedSize()
-            .cairnTheme()   // ensures tokens resolve outside the normal app tree
+            .cairnTheme()
+            .environment(\.colorScheme, isDark ? .dark : .light)
 
         let renderer = ImageRenderer(content: wordmark)
         renderer.scale = 3.0   // retina — 3× pixel density
