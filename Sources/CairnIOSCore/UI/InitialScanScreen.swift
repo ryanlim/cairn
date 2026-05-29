@@ -833,7 +833,11 @@ private struct InitialScanHardCeilingRow: View {
                 Spacer()
                 Toggle("", isOn: isEnabled)
                     .labelsHidden()
-                    .tint(t.text)
+                    // `t.verified` for the on-state — see SettingsScreen
+                    // `HardCeilingRow` for the rationale; `t.text`
+                    // resolves to bone in dark mode and gives no thumb
+                    // contrast.
+                    .tint(t.verified)
             }
             if mb != nil {
                 Slider(
@@ -841,7 +845,7 @@ private struct InitialScanHardCeilingRow: View {
                     in: Double(CairnSettings.iCloudMaxEverBytesMBRange.lowerBound)...Double(CairnSettings.iCloudMaxEverBytesMBRange.upperBound),
                     step: 50
                 )
-                .tint(t.text)
+                .tint(t.verified)
                 HStack {
                     Text("Assets above this stay out of scope — ideal for multi-GB archived video.")
                         .font(.cairnScaled(size: 11))

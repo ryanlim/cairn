@@ -1488,12 +1488,16 @@ private struct HardCeilingRow: View {
                 Spacer(minLength: 0)
                 Toggle("", isOn: isEnabled)
                     .labelsHidden()
-                    // `t.text` rendered as a solid white pill with no
-                    // thumb contrast in dark mode (foreground color =
-                    // pill background = thumb color). `t.primaryInk`
-                    // is the accent the rest of the Settings toggles
-                    // use; reads correctly in both color schemes.
-                    .tint(t.primaryInk)
+                    // `t.verified` (cairn's "verified/active" green) for
+                    // the on-state. `t.primaryInk` and `t.text` both
+                    // resolve to `p.bone` (light cream) in dark mode,
+                    // so a tint sourced from either rendered the pill
+                    // as light-on-light against the toggle's white
+                    // thumb — visually indistinguishable from a single
+                    // filled bar. `verified` is the closest semantic
+                    // analog to "this switch is enabled" and reads
+                    // correctly in both color schemes.
+                    .tint(t.verified)
             }
             if mb != nil {
                 Text("Assets whose iCloud fetch would exceed this are out-of-scope — never indexed, never proposed for deletion.")
@@ -1505,7 +1509,7 @@ private struct HardCeilingRow: View {
                     in: Double(CairnSettings.iCloudMaxEverBytesMBRange.lowerBound)...Double(CairnSettings.iCloudMaxEverBytesMBRange.upperBound),
                     step: 50
                 )
-                .tint(t.primaryInk)
+                .tint(t.verified)
                 HStack {
                     Spacer()
                     EditableNumericField(
