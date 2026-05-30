@@ -575,6 +575,7 @@ public struct CairnAppRoot: View {
                 onClearRecentServers: { Task { await model.actions.clearRecentServers() } },
                 onSignOut: { Task { await model.actions.signOut() } },
                 onRescanLibrary: { Task { await model.actions.rescanLibrary() } },
+                onClearHashCache: { Task { await model.actions.clearHashCache() } },
                 deferredQueue: model.deferredQueue,
                 onForceDrainDeferred: { Task { await model.actions.forceDrainDeferred() } },
                 isSyncing: model.isSyncing,

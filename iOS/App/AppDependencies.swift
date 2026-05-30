@@ -4086,6 +4086,45 @@ final class AppDependencies {
                     }
                 }
             },
+            clearHashCache: { [weak self] in
+                guard let self else { return }
+                // Targeted reset for fast-initial-scan testing: clear
+                // the localId→SHA1 cache + change token + deferred
+                // queue so the next sync re-enumerates from scratch
+                // (no token → runFullEnumeration) and the imputation
+                // pass has gaps to seed. Preserves ObservedStore,
+                // ConfirmedDeletedStore, Exclusions, EditRetirement,
+                // DeletionSource, metadata, and status snapshots —
+                // so witness history, active quarantine, and user
+                // intent survive intact.
+                let (lh, dh, tk) = await MainActor.run {
+                    (self.localHashStore, self.deferredHashStore, self.tokenStore)
+                }
+                var ops: [(label: String, body: @Sendable () async throws -> Void)] = [
+                    ("local hash cache", { @Sendable in try await lh.clear() }),
+                    ("deferred queue", { @Sendable in try await dh.clear() }),
+                ]
+                if let tk {
+                    ops.append(("change-token store", { @Sendable in try await tk.clear() }))
+                }
+                let failures = await Self.aggregateClears(ops)
+                if !failures.isEmpty {
+                    let detail = failures.map { "\($0.label): \(Self.describeSyncError($0.error))" }.joined(separator: "; ")
+                    syncLog.error("[cairn.clearhash] partial failure: \(detail, privacy: .public)")
+                }
+                await MainActor.run {
+                    self.model.hasCompletedInitialScan = false
+                    self.model.reconciliation = nil
+                    self.model.syncProgress = nil
+                    self.model.deferredQueue = .empty
+                    self.model.library = self.model.library.with(indexed: 0)
+                    if failures.isEmpty {
+                        self.showStatusToast(.rescanQueued)
+                    } else {
+                        self.model.lastError = Self.summarizeClearFailures(action: "Clear hash cache", failures)
+                    }
+                }
+            },
             persistSettings: { [weak self] settings in
                 guard let self else { return }
                 do {

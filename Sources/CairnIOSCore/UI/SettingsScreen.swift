@@ -57,6 +57,7 @@ public struct SettingsScreen: View {
     public let onClearRecentServers: () -> Void
     public let onSignOut: () -> Void
     public let onRescanLibrary: () -> Void
+    public let onClearHashCache: () -> Void
     public let deferredQueue: CairnAppModel.DeferredQueueSummary
     public let onForceDrainDeferred: () -> Void
     /// True while a sync or drain is mid-flight. Used to disable the
@@ -112,6 +113,7 @@ public struct SettingsScreen: View {
     @Environment(\.cairnTokens) private var t
     @State private var pendingResetIndex: Bool = false
     @State private var pendingRescanLibrary: Bool = false
+    @State private var pendingClearHashCache: Bool = false
     @State private var pendingClearJournal: Bool = false
     @State private var pendingSignOut: Bool = false
     @State private var pendingClearRecentServers: Bool = false
@@ -139,6 +141,7 @@ public struct SettingsScreen: View {
         onClearRecentServers: @escaping () -> Void = {},
         onSignOut: @escaping () -> Void = {},
         onRescanLibrary: @escaping () -> Void = {},
+        onClearHashCache: @escaping () -> Void = {},
         deferredQueue: CairnAppModel.DeferredQueueSummary = .empty,
         onForceDrainDeferred: @escaping () -> Void = {},
         isSyncing: Bool = false,
@@ -170,6 +173,7 @@ public struct SettingsScreen: View {
         self.onClearRecentServers = onClearRecentServers
         self.onSignOut = onSignOut
         self.onRescanLibrary = onRescanLibrary
+        self.onClearHashCache = onClearHashCache
         self.deferredQueue = deferredQueue
         self.onForceDrainDeferred = onForceDrainDeferred
         self.isSyncing = isSyncing
@@ -244,6 +248,17 @@ public struct SettingsScreen: View {
             },
             message: {
                 Text("Clears the change-tracking baseline and deferred-hash queue. The next sync re-enumerates every photo against your current size limits. Use this after raising the iCloud limits to apply them immediately; otherwise background scans catch up on their own.")
+            }
+        )
+        .alert(
+            "Clear hash cache?",
+            isPresented: $pendingClearHashCache,
+            actions: {
+                Button("Cancel", role: .cancel) {}
+                Button("Clear", role: .destructive) { onClearHashCache() }
+            },
+            message: {
+                Text("Drops every cached SHA1 and the change-tracking baseline. The next sync re-hashes every photo (or imputes from server checksums if fast initial scan is on). Observed history, active quarantine, exclusions, and credentials are all kept. Useful for testing fast initial scan on an already-indexed library; otherwise rarely needed.")
             }
         )
         .alert(
@@ -420,6 +435,13 @@ public struct SettingsScreen: View {
                         value: { Text("Force re-enumerate").foregroundStyle(t.infoInk) },
                         chevron: true,
                         onTap: { pendingRescanLibrary = true }
+                    )
+                    RowDivider()
+                    KeyValRow(
+                        "Clear hash cache",
+                        value: { Text("Force re-hash").foregroundStyle(t.infoInk) },
+                        chevron: true,
+                        onTap: { pendingClearHashCache = true }
                     )
                     RowDivider()
                     KeyValRow(

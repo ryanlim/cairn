@@ -1092,6 +1092,17 @@ public struct CairnAppActions: Sendable {
     /// wants the new value to take effect immediately.
     public var rescanLibrary: @Sendable () async -> Void
 
+    /// Clear `LocalHashStore` + change token + deferred queue, but
+    /// keep ObservedStore / ConfirmedDeletedStore / Exclusions intact.
+    /// Lighter than `resetIndex` (which nukes witness state and
+    /// active quarantine) but heavier than `rescanLibrary` (which
+    /// leaves the hash cache alone). The main use case is exercising
+    /// the fast-initial-scan path on an already-populated install:
+    /// emptying the hash cache forces the imputation pass to find
+    /// gaps to seed and the hash loop to re-run on the residue,
+    /// without losing anything user-visible.
+    public var clearHashCache: @Sendable () async -> Void
+
     /// Persist the current `CairnSettings` to the on-device store.
     /// Called automatically when the settings binding mutates; there's
     /// no user-visible "save" button, so this runs in the background
@@ -1261,6 +1272,7 @@ public struct CairnAppActions: Sendable {
         clearExclusions: @escaping @Sendable () async -> Void = {},
         signOut: @escaping @Sendable () async -> Void = {},
         rescanLibrary: @escaping @Sendable () async -> Void = {},
+        clearHashCache: @escaping @Sendable () async -> Void = {},
         persistSettings: @escaping @Sendable (CairnSettings) async -> Void = { _ in },
         dismissInitialScan: @escaping @Sendable () async -> Void = {},
         startOverInitialScan: @escaping @Sendable () async -> Void = {},
@@ -1303,6 +1315,7 @@ public struct CairnAppActions: Sendable {
         self.clearExclusions = clearExclusions
         self.signOut = signOut
         self.rescanLibrary = rescanLibrary
+        self.clearHashCache = clearHashCache
         self.persistSettings = persistSettings
         self.dismissInitialScan = dismissInitialScan
         self.startOverInitialScan = startOverInitialScan
