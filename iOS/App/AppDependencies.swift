@@ -3517,11 +3517,32 @@ final class AppDependencies {
                     }
                 }
 
-                let deviceName = await MainActor.run { UIDevice.current.name }
+                let (deviceName, deviceVendorId) = await MainActor.run {
+                    (UIDevice.current.name, UIDevice.current.identifierForVendor?.uuidString)
+                }
+
+                // Snapshot the local hash cache into export rows. This
+                // is the expensive cache (hours to compute on large
+                // iCloud-Optimized libraries), so backing it up means
+                // a future Reset / Clear / device migration doesn't
+                // throw the work away.
+                let hashStore = await MainActor.run { self.localHashStore }
+                let hashRows = (try? await hashStore.exportableRows()) ?? []
+                let payloadHashRows: [CairnExportPayload.HashCacheRow] = hashRows.map { row in
+                    CairnExportPayload.HashCacheRow(
+                        localId: row.localId,
+                        checksumBase64: row.checksum.base64,
+                        modificationDate: row.modificationDate,
+                        imputed: row.imputed
+                    )
+                }
+
                 let export = CairnExportPayload(
                     exportedFrom: deviceName,
                     servers: serverPayloads,
-                    settings: settings
+                    settings: settings,
+                    deviceVendorId: deviceVendorId,
+                    localHashCache: payloadHashRows.isEmpty ? nil : payloadHashRows
                 )
 
                 let data = try CairnExportPayload.encode(export)
@@ -3595,6 +3616,41 @@ final class AppDependencies {
                     didApplySettings = true
                 }
 
+                // Hash cache restore — only when the payload's IDFV
+                // matches this device's. PHAsset.localIdentifier and
+                // IDFV rotate on the same triggers (device restore
+                // from backup, full vendor-app uninstall), so a
+                // matching IDFV is the strongest signal we have that
+                // every cached localId still points at the same
+                // PhotoKit asset. Mismatch or missing IDFV → skip
+                // and surface the reason in the result so the UI can
+                // explain it to the user.
+                var hashCacheImported = 0
+                var hashCacheSkipped: CairnImportResult.HashCacheSkipReason? = nil
+                if let payloadRows = payload.localHashCache, !payloadRows.isEmpty {
+                    let currentIDFV = await MainActor.run { UIDevice.current.identifierForVendor?.uuidString }
+                    if let payloadIDFV = payload.deviceVendorId,
+                       let currentIDFV,
+                       payloadIDFV == currentIDFV {
+                        let hashStore = await MainActor.run { self.localHashStore }
+                        let restoreRows: [(localId: String, checksum: Checksum, modificationDate: Date?, imputed: Bool)] =
+                            payloadRows.map { row in
+                                (
+                                    localId: row.localId,
+                                    checksum: Checksum(base64: row.checksumBase64),
+                                    modificationDate: row.modificationDate,
+                                    imputed: row.imputed
+                                )
+                            }
+                        try await hashStore.restoreFromExport(restoreRows)
+                        hashCacheImported = payloadRows.count
+                    } else if payload.deviceVendorId == nil {
+                        hashCacheSkipped = .missingIDFV
+                    } else {
+                        hashCacheSkipped = .deviceMismatch
+                    }
+                }
+
                 await self.refreshExcludedChecksums()
                 await self.refreshRunsList()
                 await self.refreshJournalTail()
@@ -3604,7 +3660,9 @@ final class AppDependencies {
                     exclusionsAdded: totalExclusionsAdded,
                     journalLinesAppended: totalJournalLines,
                     settingsApplied: didApplySettings,
-                    serverCount: processedServers
+                    serverCount: processedServers,
+                    hashCacheImported: hashCacheImported,
+                    hashCacheSkippedReason: hashCacheSkipped
                 )
             },
             bulkExcludeRecentOffload: { [weak self] in

@@ -77,7 +77,7 @@ public struct CairnAppRoot: View {
             ) { _ in
                 Button("OK", role: .cancel) { importResult = nil }
             } message: { result in
-                Text("\(result.serverCount) server\(result.serverCount == 1 ? "" : "s") processed. \(result.observedAdded) checksums added, \(result.exclusionsAdded) exclusions added, \(result.journalLinesAppended) journal lines appended.\(result.settingsApplied ? " Settings applied." : "")")
+                Text(importResultMessage(for: result))
             }
             // Persist every settings mutation. No explicit save UI — each
             // slider / toggle commit flows straight to disk. Debouncing
@@ -175,6 +175,30 @@ public struct CairnAppRoot: View {
 
     /// Translate `AppearanceOverride` into the `ColorScheme?` SwiftUI's
     /// `.preferredColorScheme` wants. `.system` → `nil` (follow OS).
+    /// Renders the post-import alert text. Surfaces hash-cache restore
+    /// status alongside the existing observed/exclusions/journal/
+    /// settings tally so the user sees whether their (often expensive)
+    /// SHA1 cache came back or was skipped — and if skipped, why.
+    private func importResultMessage(for result: CairnImportResult) -> String {
+        var parts: [String] = []
+        parts.append("\(result.serverCount) server\(result.serverCount == 1 ? "" : "s") processed.")
+        parts.append("\(result.observedAdded) checksums added, \(result.exclusionsAdded) exclusions added, \(result.journalLinesAppended) journal lines appended.")
+        if result.settingsApplied {
+            parts.append("Settings applied.")
+        }
+        switch result.hashCacheSkippedReason {
+        case .deviceMismatch:
+            parts.append("Hash cache skipped — backup came from a different device (or this iPhone was restored from backup since the export). Photos will re-hash on the next sync.")
+        case .missingIDFV:
+            parts.append("Hash cache skipped — backup didn't include a device fingerprint, so cairn can't tell if it's safe to restore. Photos will re-hash on the next sync.")
+        case nil:
+            if result.hashCacheImported > 0 {
+                parts.append("Hash cache restored — \(result.hashCacheImported.formatted(.number)) rows imported, no re-hashing needed.")
+            }
+        }
+        return parts.joined(separator: " ")
+    }
+
     private func appearanceOverrideScheme(_ override: AppearanceOverride) -> ColorScheme? {
         switch override {
         case .system: return nil

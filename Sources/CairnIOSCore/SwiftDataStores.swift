@@ -1082,6 +1082,22 @@ public actor SwiftDataLocalHashStore: LocalHashStore {
         return ids
     }
 
+    /// Single-fetch implementation. Avoids the protocol default's
+    /// N+1 query pattern (snapshot + modDate + isImputed per id) —
+    /// on libraries with thousands of rows that's the difference
+    /// between a few ms and a few seconds.
+    public func exportableRows() async throws -> [(localId: String, checksum: Checksum, modificationDate: Date?, imputed: Bool)] {
+        let rows = try context.fetch(FetchDescriptor<StoredLocalHashEntry>())
+        return rows.map { row in
+            (
+                localId: row.localIdentifier,
+                checksum: Checksum(base64: row.base64),
+                modificationDate: row.modificationDate,
+                imputed: row.imputed
+            )
+        }
+    }
+
     public func removeAll(for localIdentifiers: Set<String>) async throws {
         guard !localIdentifiers.isEmpty else { return }
         var changed = false

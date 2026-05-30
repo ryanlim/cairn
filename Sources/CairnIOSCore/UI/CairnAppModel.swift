@@ -930,13 +930,38 @@ public struct CairnImportResult: Sendable {
     public let journalLinesAppended: Int
     public let settingsApplied: Bool
     public let serverCount: Int
+    /// Rows written to `LocalHashStore` from the backup. Zero when
+    /// the payload didn't include a hash cache or when the IDFV gate
+    /// fired (`hashCacheSkippedReason != nil`).
+    public let hashCacheImported: Int
+    /// Non-nil when a hash cache was present in the payload but not
+    /// imported. `.deviceMismatch` means the IDFV check failed —
+    /// importing would point cairn at the wrong photos. `.missingIDFV`
+    /// means the payload didn't include one (older export); restoring
+    /// would be a guess, so we skip.
+    public let hashCacheSkippedReason: HashCacheSkipReason?
 
-    public init(observedAdded: Int, exclusionsAdded: Int, journalLinesAppended: Int, settingsApplied: Bool, serverCount: Int) {
+    public enum HashCacheSkipReason: Sendable, Equatable {
+        case deviceMismatch
+        case missingIDFV
+    }
+
+    public init(
+        observedAdded: Int,
+        exclusionsAdded: Int,
+        journalLinesAppended: Int,
+        settingsApplied: Bool,
+        serverCount: Int,
+        hashCacheImported: Int = 0,
+        hashCacheSkippedReason: HashCacheSkipReason? = nil
+    ) {
         self.observedAdded = observedAdded
         self.exclusionsAdded = exclusionsAdded
         self.journalLinesAppended = journalLinesAppended
         self.settingsApplied = settingsApplied
         self.serverCount = serverCount
+        self.hashCacheImported = hashCacheImported
+        self.hashCacheSkippedReason = hashCacheSkippedReason
     }
 }
 

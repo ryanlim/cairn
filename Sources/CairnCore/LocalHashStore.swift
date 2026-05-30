@@ -198,4 +198,57 @@ public extension LocalHashStore {
 
     /// Fallback for stores that don't track imputation. Always empty.
     func imputedIdentifiers() async throws -> Set<String> { [] }
+
+    /// Materialized rows suitable for backup / export — one entry per
+    /// `(localIdentifier, checksum)` tuple including the modification
+    /// date and imputed flag. Used by `Settings → Export data` so the
+    /// expensive SHA1 cache can be restored after a Reset Index / Clear
+    /// Hash Cache. Default impl materializes from `snapshot()` plus
+    /// per-id metadata lookups; concrete stores should override with a
+    /// single batched fetch.
+    func exportableRows() async throws -> [(localId: String, checksum: Checksum, modificationDate: Date?, imputed: Bool)] {
+        let snap = try await snapshot()
+        var out: [(localId: String, checksum: Checksum, modificationDate: Date?, imputed: Bool)] = []
+        out.reserveCapacity(snap.count)
+        for (localId, checksums) in snap {
+            let modDate = try await modificationDate(for: localId)
+            let imputed = try await isImputed(for: localId)
+            for checksum in checksums {
+                out.append((localId, checksum, modDate, imputed))
+            }
+        }
+        return out
+    }
+
+    /// Bulk-write rows from a backup. Each row replaces any prior
+    /// entries for its `localIdentifier`. `imputed=true` rows go
+    /// through `setImputed`; `imputed=false` rows through `set`. Used
+    /// during `importData` to restore the hash cache portion of a
+    /// backup that passed the IDFV gate.
+    func restoreFromExport(_ rows: [(localId: String, checksum: Checksum, modificationDate: Date?, imputed: Bool)]) async throws {
+        // Group rows by localId so Live Photos (multiple rows per id)
+        // land as a single `set` call rather than each row clobbering
+        // the prior one's siblings.
+        var grouped: [String: (checksums: Set<Checksum>, modDate: Date?, imputed: Bool)] = [:]
+        for row in rows {
+            if var existing = grouped[row.localId] {
+                existing.checksums.insert(row.checksum)
+                // Mixed imputed/verified for one localId shouldn't
+                // happen in practice, but if it does, the verified
+                // row wins (the imputation contract is "imputed
+                // until something verifies it").
+                existing.imputed = existing.imputed && row.imputed
+                grouped[row.localId] = existing
+            } else {
+                grouped[row.localId] = ([row.checksum], row.modificationDate, row.imputed)
+            }
+        }
+        for (localId, entry) in grouped {
+            if entry.imputed, let single = entry.checksums.first, entry.checksums.count == 1 {
+                try await setImputed(single, for: localId, modificationDate: entry.modDate)
+            } else {
+                try await set(entry.checksums, for: localId, modificationDate: entry.modDate)
+            }
+        }
+    }
 }

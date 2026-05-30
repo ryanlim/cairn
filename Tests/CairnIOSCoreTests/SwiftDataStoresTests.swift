@@ -589,6 +589,68 @@ struct SwiftDataLocalHashStoreTests {
         #expect(try await store.checksums(for: "id-1") == cks("C"))
         #expect(try await store.isImputed(for: "id-1") == true)
     }
+
+    // MARK: - Export / restore round-trip
+
+    @Test("exportableRows materializes every row with metadata + imputed flag")
+    func exportableRowsReturnsAllRowsWithMetadata() async throws {
+        let container = try makeContainer()
+        let store = SwiftDataLocalHashStore(container: container)
+        let modDate = Date(timeIntervalSince1970: 1_700_000_000)
+
+        // One id with two checksums (Live Photo), one id imputed.
+        try await store.set(cks("A", "B"), for: "id-1", modificationDate: modDate)
+        try await store.setImputed(Checksum(base64: "C"), for: "id-2", modificationDate: nil)
+
+        let rows = try await store.exportableRows()
+        #expect(rows.count == 3)
+        // Two rows for id-1 (verified, with modDate), one for id-2 (imputed).
+        let id1Rows = rows.filter { $0.localId == "id-1" }
+        #expect(id1Rows.count == 2)
+        #expect(id1Rows.allSatisfy { !$0.imputed })
+        #expect(id1Rows.allSatisfy { $0.modificationDate == modDate })
+        let id2Rows = rows.filter { $0.localId == "id-2" }
+        #expect(id2Rows.count == 1)
+        #expect(id2Rows[0].imputed == true)
+        #expect(id2Rows[0].checksum == Checksum(base64: "C"))
+    }
+
+    @Test("restoreFromExport rebuilds an equivalent store from exported rows")
+    func restoreFromExportRoundTrips() async throws {
+        // Build a source store, snapshot it, restore into a clean
+        // store, compare. This is the end-to-end path the
+        // Settings → Export → Import flow uses.
+        let modDate = Date(timeIntervalSince1970: 1_700_000_000)
+        let source = SwiftDataLocalHashStore(container: try makeContainer())
+        try await source.set(cks("A", "B"), for: "id-1", modificationDate: modDate)
+        try await source.setImputed(Checksum(base64: "C"), for: "id-2", modificationDate: nil)
+        try await source.set(cks("D"), for: "id-3", modificationDate: modDate)
+
+        let rows = try await source.exportableRows()
+
+        let dest = SwiftDataLocalHashStore(container: try makeContainer())
+        try await dest.restoreFromExport(rows)
+
+        // Each id round-trips with the right checksums and imputed flag.
+        #expect(try await dest.checksums(for: "id-1") == cks("A", "B"))
+        #expect(try await dest.isImputed(for: "id-1") == false)
+        #expect(try await dest.checksums(for: "id-2") == cks("C"))
+        #expect(try await dest.isImputed(for: "id-2") == true)
+        #expect(try await dest.checksums(for: "id-3") == cks("D"))
+        #expect(try await dest.isImputed(for: "id-3") == false)
+        #expect(try await dest.modificationDate(for: "id-1") == modDate)
+        #expect(try await dest.modificationDate(for: "id-2") == nil)
+    }
+
+    @Test("restoreFromExport on an empty input is a no-op")
+    func restoreFromExportEmptyInput() async throws {
+        let container = try makeContainer()
+        let store = SwiftDataLocalHashStore(container: container)
+        try await store.set(cks("A"), for: "id-1")
+        try await store.restoreFromExport([])
+        // Existing entries untouched.
+        #expect(try await store.checksums(for: "id-1") == cks("A"))
+    }
 }
 
 // MARK: - SwiftDataPersistentChangeTokenStore

@@ -200,4 +200,93 @@ struct CairnExportPayloadTests {
         #expect(decoded.servers[0].journal == original.servers[0].journal)
         #expect(decoded.servers[0].observed == original.servers[0].observed)
     }
+
+    // MARK: - Hash cache + IDFV (fast-initial-scan backup)
+
+    @Test("payload with deviceVendorId + localHashCache round-trips unchanged")
+    func hashCacheRoundTrip() throws {
+        let rows = [
+            CairnExportPayload.HashCacheRow(
+                localId: "A1B2-3C4D",
+                checksumBase64: "Y2hlY2tzdW0xCg==",
+                modificationDate: date("2026-05-29T12:00:00Z"),
+                imputed: false
+            ),
+            CairnExportPayload.HashCacheRow(
+                localId: "E5F6-7G8H",
+                checksumBase64: "Y2hlY2tzdW0yCg==",
+                modificationDate: nil,
+                imputed: true
+            )
+        ]
+        let original = CairnExportPayload(
+            exportedAt: date("2026-05-29T12:00:00Z"),
+            exportedFrom: "Test iPhone",
+            servers: [],
+            settings: nil,
+            deviceVendorId: "11111111-2222-3333-4444-555555555555",
+            localHashCache: rows
+        )
+        let data = try CairnExportPayload.encode(original)
+        let decoded = try CairnExportPayload.decode(from: data)
+        #expect(decoded.deviceVendorId == "11111111-2222-3333-4444-555555555555")
+        #expect(decoded.localHashCache?.count == 2)
+        #expect(decoded.localHashCache?[0] == rows[0])
+        #expect(decoded.localHashCache?[1] == rows[1])
+    }
+
+    @Test("legacy JSON without deviceVendorId / localHashCache decodes as nil")
+    func legacyJSONMissingHashCacheFields() throws {
+        // Pre-build-81 payload: settings/observed/exclusions/journal
+        // but no fast-initial-scan / hash-cache extensions.
+        let json = """
+        {
+          "version": 1,
+          "exportedAt": "2026-04-25T00:00:00Z",
+          "exportedFrom": "iPhone",
+          "servers": []
+        }
+        """
+        let data = Data(json.utf8)
+        let decoded = try CairnExportPayload.decode(from: data)
+        #expect(decoded.deviceVendorId == nil)
+        #expect(decoded.localHashCache == nil)
+    }
+
+    @Test("HashCacheRow without imputed field decodes as imputed=false")
+    func hashCacheRowMissingImputedDecodesFalse() throws {
+        // Forward-compat: a row written before the imputed flag
+        // existed must decode as imputed=false (the implicit semantics
+        // — every cached row was locally verified before fast-initial-
+        // scan landed).
+        let json = """
+        {
+          "localId": "id-1",
+          "checksumBase64": "Y2sx",
+          "modificationDate": "2026-05-01T10:00:00Z"
+        }
+        """
+        let dec = JSONDecoder()
+        dec.dateDecodingStrategy = .iso8601
+        let row = try dec.decode(CairnExportPayload.HashCacheRow.self, from: Data(json.utf8))
+        #expect(row.imputed == false)
+        #expect(row.localId == "id-1")
+    }
+
+    @Test("HashCacheRow with imputed=true round-trips through encode/decode")
+    func hashCacheRowImputedRoundTrips() throws {
+        let row = CairnExportPayload.HashCacheRow(
+            localId: "id-x",
+            checksumBase64: "Y2t4",
+            modificationDate: date("2026-05-15T08:00:00Z"),
+            imputed: true
+        )
+        let enc = JSONEncoder()
+        enc.dateEncodingStrategy = .iso8601
+        let data = try enc.encode(row)
+        let dec = JSONDecoder()
+        dec.dateDecodingStrategy = .iso8601
+        let decoded = try dec.decode(CairnExportPayload.HashCacheRow.self, from: data)
+        #expect(decoded == row)
+    }
 }
