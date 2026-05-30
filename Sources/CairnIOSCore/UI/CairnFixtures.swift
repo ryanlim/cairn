@@ -22,6 +22,13 @@ public enum CairnFixtures {
         /// different account on this device), which reads as "we
         /// somehow know about all your photos" — confusing.
         public let indexedKnown: Bool
+        /// Count of cached rows whose checksum was trust-seeded from
+        /// the Immich server via the fast-initial-scan path rather
+        /// than computed locally. `indexed - imputed` = locally
+        /// verified row count. Drives the diagnostic line in Settings
+        /// → Initial scan and gates the "Re-hash imputed entries"
+        /// action's visibility.
+        public let imputed: Int
 
         public init(
             local: Int,
@@ -29,7 +36,8 @@ public enum CairnFixtures {
             server: Int,
             matched: Int,
             candidates: Int,
-            indexedKnown: Bool = true
+            indexedKnown: Bool = true,
+            imputed: Int = 0
         ) {
             self.local = local
             self.indexed = indexed
@@ -37,6 +45,7 @@ public enum CairnFixtures {
             self.matched = matched
             self.candidates = candidates
             self.indexedKnown = indexedKnown
+            self.imputed = imputed
         }
 
         /// All-zeros library stats. Default for a real-install
@@ -60,7 +69,8 @@ public enum CairnFixtures {
             server: Int? = nil,
             matched: Int? = nil,
             candidates: Int? = nil,
-            indexedKnown: Bool? = nil
+            indexedKnown: Bool? = nil,
+            imputed: Int? = nil
         ) -> LibrarySize {
             LibrarySize(
                 local: local ?? self.local,
@@ -68,7 +78,8 @@ public enum CairnFixtures {
                 server: server ?? self.server,
                 matched: matched ?? self.matched,
                 candidates: candidates ?? self.candidates,
-                indexedKnown: indexedKnown ?? (indexed != nil ? true : self.indexedKnown)
+                indexedKnown: indexedKnown ?? (indexed != nil ? true : self.indexedKnown),
+                imputed: imputed ?? self.imputed
             )
         }
     }

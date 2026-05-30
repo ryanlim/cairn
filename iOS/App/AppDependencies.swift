@@ -2041,7 +2041,18 @@ final class AppDependencies {
                 if let membership, !membership.localIds.contains(localId) { continue }
                 indexedAssets += 1
             }
-            model.library = model.library.with(local: totalVisible, indexed: indexedAssets, indexedKnown: true)
+            // Imputed count is device-scoped (LocalHashStore is global;
+            // imputation marks rows regardless of which account
+            // requested the seed). Cheap to read; surfaces in the
+            // Initial scan diagnostic + gates the Re-hash imputed
+            // entries action's visibility.
+            let imputedCount = (try? await self.localHashStore.imputedCount()) ?? 0
+            model.library = model.library.with(
+                local: totalVisible,
+                indexed: indexedAssets,
+                indexedKnown: true,
+                imputed: imputedCount
+            )
         } else {
             model.library = model.library.with(local: totalVisible, indexedKnown: false)
         }
@@ -4182,6 +4193,57 @@ final class AppDependencies {
                         self.model.lastError = Self.summarizeClearFailures(action: "Clear hash cache", failures)
                     }
                 }
+            },
+            verifyImputedChecksums: { [weak self] in
+                guard let self else { return }
+                // Drop every imputed row from the local hash cache so
+                // the next sync re-hashes them locally. Verified rows
+                // are preserved by the modDate-skip path in the
+                // existing hashing loop. Clearing the change token
+                // forces a full enumeration so the dropped rows get
+                // picked up — runIncremental wouldn't see them as
+                // changes.
+                let (lh, tk) = await MainActor.run {
+                    (self.localHashStore, self.tokenStore)
+                }
+                let imputedIds: Set<String>
+                do {
+                    imputedIds = try await lh.imputedIdentifiers()
+                } catch {
+                    syncLog.error("[cairn.verify] couldn't list imputed rows: \(Self.describeSyncError(error), privacy: .public)")
+                    await MainActor.run {
+                        self.model.lastError = "Couldn't list imputed entries — try again. (\(Self.describeSyncError(error)))"
+                    }
+                    return
+                }
+                if imputedIds.isEmpty {
+                    syncLog.info("[cairn.verify] no imputed rows to verify")
+                    await MainActor.run { self.showStatusToast(.rescanQueued) }
+                    return
+                }
+                var ops: [(label: String, body: @Sendable () async throws -> Void)] = [
+                    ("imputed rows", { @Sendable in try await lh.removeAll(for: imputedIds) }),
+                ]
+                if let tk {
+                    ops.append(("change-token store", { @Sendable in try await tk.clear() }))
+                }
+                let failures = await Self.aggregateClears(ops)
+                if !failures.isEmpty {
+                    let detail = failures.map { "\($0.label): \(Self.describeSyncError($0.error))" }.joined(separator: "; ")
+                    syncLog.error("[cairn.verify] partial failure: \(detail, privacy: .public)")
+                }
+                syncLog.info("[cairn.verify] dropped \(imputedIds.count) imputed row(s) — next sync will re-hash")
+                await MainActor.run {
+                    self.model.hasCompletedInitialScan = false
+                    self.model.reconciliation = nil
+                    self.model.syncProgress = nil
+                    if failures.isEmpty {
+                        self.showStatusToast(.rescanQueued)
+                    } else {
+                        self.model.lastError = Self.summarizeClearFailures(action: "Re-hash imputed entries", failures)
+                    }
+                }
+                await self.refreshLibrarySizeStats()
             },
             persistSettings: { [weak self] settings in
                 guard let self else { return }

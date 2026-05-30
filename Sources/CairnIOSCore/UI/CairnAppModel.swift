@@ -1128,6 +1128,16 @@ public struct CairnAppActions: Sendable {
     /// without losing anything user-visible.
     public var clearHashCache: @Sendable () async -> Void
 
+    /// Re-hash every imputed (trust-seeded-from-server) entry in
+    /// `LocalHashStore`. Drops those rows + clears the change token
+    /// so the next sync re-enumerates and the dropped rows hash
+    /// locally. Verified rows are untouched (their modDate-skip
+    /// path preserves them). On iCloud-Optimized libraries this is
+    /// expensive — each dropped row downloads its original. The
+    /// Settings action surfaces the cost in copy before the user
+    /// confirms.
+    public var verifyImputedChecksums: @Sendable () async -> Void
+
     /// Persist the current `CairnSettings` to the on-device store.
     /// Called automatically when the settings binding mutates; there's
     /// no user-visible "save" button, so this runs in the background
@@ -1298,6 +1308,7 @@ public struct CairnAppActions: Sendable {
         signOut: @escaping @Sendable () async -> Void = {},
         rescanLibrary: @escaping @Sendable () async -> Void = {},
         clearHashCache: @escaping @Sendable () async -> Void = {},
+        verifyImputedChecksums: @escaping @Sendable () async -> Void = {},
         persistSettings: @escaping @Sendable (CairnSettings) async -> Void = { _ in },
         dismissInitialScan: @escaping @Sendable () async -> Void = {},
         startOverInitialScan: @escaping @Sendable () async -> Void = {},
@@ -1341,6 +1352,7 @@ public struct CairnAppActions: Sendable {
         self.signOut = signOut
         self.rescanLibrary = rescanLibrary
         self.clearHashCache = clearHashCache
+        self.verifyImputedChecksums = verifyImputedChecksums
         self.persistSettings = persistSettings
         self.dismissInitialScan = dismissInitialScan
         self.startOverInitialScan = startOverInitialScan

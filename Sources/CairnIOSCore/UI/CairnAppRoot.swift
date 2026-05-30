@@ -600,6 +600,8 @@ public struct CairnAppRoot: View {
                 onSignOut: { Task { await model.actions.signOut() } },
                 onRescanLibrary: { Task { await model.actions.rescanLibrary() } },
                 onClearHashCache: { Task { await model.actions.clearHashCache() } },
+                onVerifyImputedChecksums: { Task { await model.actions.verifyImputedChecksums() } },
+                library: model.library,
                 deferredQueue: model.deferredQueue,
                 onForceDrainDeferred: { Task { await model.actions.forceDrainDeferred() } },
                 isSyncing: model.isSyncing,

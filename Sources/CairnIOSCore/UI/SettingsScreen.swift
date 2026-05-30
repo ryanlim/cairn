@@ -58,6 +58,11 @@ public struct SettingsScreen: View {
     public let onSignOut: () -> Void
     public let onRescanLibrary: () -> Void
     public let onClearHashCache: () -> Void
+    public let onVerifyImputedChecksums: () -> Void
+    /// Library stats — used by the Initial scan section to surface
+    /// the diagnostic counter (verified vs trust-seeded rows) and
+    /// gate the "Re-hash imputed entries" action.
+    public let library: CairnFixtures.LibrarySize
     public let deferredQueue: CairnAppModel.DeferredQueueSummary
     public let onForceDrainDeferred: () -> Void
     /// True while a sync or drain is mid-flight. Used to disable the
@@ -114,6 +119,7 @@ public struct SettingsScreen: View {
     @State private var pendingResetIndex: Bool = false
     @State private var pendingRescanLibrary: Bool = false
     @State private var pendingClearHashCache: Bool = false
+    @State private var pendingVerifyImputed: Bool = false
     @State private var pendingClearJournal: Bool = false
     @State private var pendingSignOut: Bool = false
     @State private var pendingClearRecentServers: Bool = false
@@ -142,6 +148,8 @@ public struct SettingsScreen: View {
         onSignOut: @escaping () -> Void = {},
         onRescanLibrary: @escaping () -> Void = {},
         onClearHashCache: @escaping () -> Void = {},
+        onVerifyImputedChecksums: @escaping () -> Void = {},
+        library: CairnFixtures.LibrarySize = .empty,
         deferredQueue: CairnAppModel.DeferredQueueSummary = .empty,
         onForceDrainDeferred: @escaping () -> Void = {},
         isSyncing: Bool = false,
@@ -174,6 +182,8 @@ public struct SettingsScreen: View {
         self.onSignOut = onSignOut
         self.onRescanLibrary = onRescanLibrary
         self.onClearHashCache = onClearHashCache
+        self.onVerifyImputedChecksums = onVerifyImputedChecksums
+        self.library = library
         self.deferredQueue = deferredQueue
         self.onForceDrainDeferred = onForceDrainDeferred
         self.isSyncing = isSyncing
@@ -259,6 +269,17 @@ public struct SettingsScreen: View {
             },
             message: {
                 Text("Drops every cached SHA1 and the change-tracking baseline. The next sync re-hashes every photo (or imputes from server checksums if fast initial scan is on). Observed history, active quarantine, exclusions, and credentials are all kept. Useful for testing fast initial scan on an already-indexed library; otherwise rarely needed.")
+            }
+        )
+        .alert(
+            "Re-hash imputed entries?",
+            isPresented: $pendingVerifyImputed,
+            actions: {
+                Button("Cancel", role: .cancel) {}
+                Button("Re-hash") { onVerifyImputedChecksums() }
+            },
+            message: {
+                Text("Drops the \(library.imputed.formatted(.number)) trust-seeded SHA1\(library.imputed == 1 ? "" : "s") that cairn imported from Immich's server. The next sync re-hashes those photos locally — on iCloud-Optimized libraries this can take a while because each one's original needs to be downloaded. Locally verified rows are untouched. Use this if you want every checksum computed by cairn itself rather than trusted from the server.")
             }
         )
         .alert(
@@ -515,13 +536,51 @@ public struct SettingsScreen: View {
         Group {
             KeylineSection("Initial scan", icon: "bolt", iconTint: t.info)
             CairnCard {
-                ToggleRow(
-                    "Trust server checksums",
-                    sub: "Skip local hashing for phone photos that Immich uploaded from this device. Faster first scan; cairn imputes from server-computed hashes instead of re-hashing locally. Off = always hash locally.",
-                    value: $settings.fastInitialScan
-                )
+                VStack(spacing: 0) {
+                    ToggleRow(
+                        "Trust server checksums",
+                        sub: "Skip local hashing for phone photos that Immich uploaded from this device. Faster first scan; cairn imputes from server-computed hashes instead of re-hashing locally. Off = always hash locally.",
+                        value: $settings.fastInitialScan
+                    )
+                    if library.imputed > 0 {
+                        RowDivider()
+                        cachedHashDiagnosticRow
+                        RowDivider()
+                        KeyValRow(
+                            "Re-hash imputed entries",
+                            value: { Text("Verify locally").foregroundStyle(t.infoInk) },
+                            chevron: true,
+                            onTap: { pendingVerifyImputed = true }
+                        )
+                    }
+                }
             }
         }
+    }
+
+    /// Diagnostic line shown when at least one row in the cache was
+    /// imputed from the server rather than locally hashed. Surfaces
+    /// the breakdown so the user can see how much of the cache is
+    /// trust-seeded vs verified.
+    @ViewBuilder
+    private var cachedHashDiagnosticRow: some View {
+        let verified = max(0, library.indexed - library.imputed)
+        let imputed = library.imputed
+        KeyValRow(
+            "Cache breakdown",
+            value: {
+                HStack(spacing: 6) {
+                    Text("\(verified.formatted(.number)) verified")
+                        .font(.cairnScaled(size: 14))
+                        .foregroundStyle(t.textBody)
+                    Text("·")
+                        .foregroundStyle(t.textHint)
+                    Text("\(imputed.formatted(.number)) trust-seeded")
+                        .font(.cairnScaled(size: 14))
+                        .foregroundStyle(t.infoInk)
+                }
+            }
+        )
     }
 
     // MARK: - Notifications
