@@ -397,18 +397,6 @@ public struct SettingsScreen: View {
 
             RowDivider()
 
-            // System bundles Notifications + Permissions + Background
-            // refresh — anything that's about how cairn fits into the
-            // surrounding iOS environment. Three sub-cards inside.
-            SettingsCategoryRow(
-                icon: "bell.badge",
-                iconTint: t.pending,
-                title: "System",
-                summary: systemSummary
-            ) { systemPage }
-
-            RowDivider()
-
             SettingsCategoryRow(
                 icon: "paintpalette",
                 iconTint: t.accent,
@@ -467,26 +455,22 @@ public struct SettingsScreen: View {
         }
     }
 
-    /// Library summary — shows whether scope is restricted, since
-    /// that's the load-bearing choice on this page.
+    /// Library summary — prefer a Photos-auth health flag when
+    /// non-full (denied / limited blocks everything else), else fall
+    /// back to the scope description. Photos access lives on the
+    /// Library page now, so a degraded permission state surfacing
+    /// on the parent row is honest.
     private var librarySummary: String? {
-        switch settings.indexingScope {
-        case .fullLibrary: return "All photos"
-        case .selectedAlbums(let ids):
-            if ids.isEmpty { return "No albums selected" }
-            return "\(ids.count) album\(ids.count == 1 ? "" : "s")"
-        }
-    }
-
-    /// System summary — reflects the highest-priority permission
-    /// state. Background refresh state is iOS-side; Photos auth
-    /// surfaces here so a denied/limited state is visible on the
-    /// parent row.
-    private var systemSummary: String? {
         switch photoAuthStatus {
-        case .limited: return "Photos: limited"
         case .denied: return "Photos: denied"
-        case .full, .none: return nil
+        case .limited: return "Photos: limited"
+        case .full, .none:
+            switch settings.indexingScope {
+            case .fullLibrary: return "All photos"
+            case .selectedAlbums(let ids):
+                if ids.isEmpty { return "No albums selected" }
+                return "\(ids.count) album\(ids.count == 1 ? "" : "s")"
+            }
         }
     }
 
@@ -514,6 +498,8 @@ public struct SettingsScreen: View {
     private var libraryPage: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
+                photosAccessSection
+                backgroundRefreshSection
                 indexingScopeSection
                 initialScanSection
                 excludedAssetsLibrarySection
@@ -546,6 +532,7 @@ public struct SettingsScreen: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 safetyRailsCoreSection
+                safetyAlertsSection
             }
         }
         .background(t.bg)
@@ -606,22 +593,6 @@ public struct SettingsScreen: View {
         }
     }
 
-    /// Combines old Notifications + Permissions (Photos access +
-    /// Background refresh) — everything about how cairn integrates
-    /// with the surrounding iOS environment.
-    @ViewBuilder
-    private var systemPage: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                notificationsSection
-                permissionsSection
-            }
-        }
-        .background(t.bg)
-        .navigationTitle("System")
-        .cairnNavigationTitleDisplayMode(.inline)
-    }
-
     @ViewBuilder
     private var appearancePage: some View {
         ScrollView {
@@ -645,6 +616,7 @@ public struct SettingsScreen: View {
                 dataSection
                 recoverySection
                 recoveryHashCacheSection
+                verboseJournalSection
             }
         }
         .background(t.bg)
@@ -861,11 +833,16 @@ public struct SettingsScreen: View {
         )
     }
 
-    // MARK: - Notifications
+    // MARK: - Trip alerts (Safety & limits)
 
-    private var notificationsSection: some View {
+    /// Notification-shaped rows that hang off the safety rails:
+    /// alert when a run aborts, and alert when quarantine backlog
+    /// crosses a threshold. Both are "tell me when the rails do
+    /// their job" — they belong with the rails themselves rather
+    /// than in their own Notifications page.
+    private var safetyAlertsSection: some View {
         Group {
-            KeylineSection("Notifications", icon: "bell", iconTint: t.pending)
+            KeylineSection("Alerts", icon: "bell", iconTint: t.pending)
             CairnCard {
                 VStack(spacing: 0) {
                     ToggleRow(
@@ -875,43 +852,50 @@ public struct SettingsScreen: View {
                     )
                     RowDivider()
                     BacklogAlertRow(threshold: $settings.deletionBacklogAlertThreshold)
-                    RowDivider()
-                    ToggleRow(
-                        "Verbose journal",
-                        sub: "Record every API request in deletion-journal.jsonl.",
-                        value: $settings.verboseLogging
-                    )
                 }
             }
         }
     }
 
-    // MARK: - Permissions
+    // MARK: - Verbose journal (Data & recovery)
 
-    private var permissionsSection: some View {
+    /// Journal verbosity toggle. Sat with the other notification
+    /// rows historically; it's actually about journal data
+    /// recording, so it lives with Data & recovery now.
+    private var verboseJournalSection: some View {
         Group {
-            KeylineSection("Permissions", icon: "lock", iconTint: t.quiet)
+            KeylineSection("Journal", icon: "list.bullet.rectangle", iconTint: t.quiet)
             CairnCard {
-                VStack(spacing: 0) {
-                    // Can't *grant* permissions in-app — iOS only
-                    // allows requesting them once. After that the
-                    // user has to flip the switch in Settings → cairn.
-                    // Row taps deep-link there so the fix is one tap
-                    // away rather than a "go find it yourself" trek.
-                    KeyValRow(
-                        "Photos access",
-                        value: { photoAccessValueLabel },
-                        chevron: true,
-                        onTap: openIOSSettings
-                    )
-                    RowDivider()
-                    KeyValRow(
-                        "Background refresh",
-                        value: { Text("Allowed").foregroundStyle(t.verifiedInk) },
-                        chevron: true,
-                        onTap: openIOSSettings
-                    )
-                }
+                ToggleRow(
+                    "Verbose journal",
+                    sub: "Record every API request in deletion-journal.jsonl.",
+                    value: $settings.verboseLogging
+                )
+            }
+        }
+    }
+
+    // MARK: - Photos access (Library)
+
+    /// Photos-access row lifted out of the old combined permissions
+    /// section into Library — Photos access and indexing scope both
+    /// bound "what cairn can see," so they belong together. The
+    /// limited-mode Callout follows the row.
+    private var photosAccessSection: some View {
+        Group {
+            KeylineSection("Photos access", icon: "lock", iconTint: t.quiet)
+            CairnCard {
+                // Can't *grant* permissions in-app — iOS only
+                // allows requesting them once. After that the
+                // user has to flip the switch in Settings → cairn.
+                // Row taps deep-link there so the fix is one tap
+                // away rather than a "go find it yourself" trek.
+                KeyValRow(
+                    "Photos access",
+                    value: { photoAccessValueLabel },
+                    chevron: true,
+                    onTap: openIOSSettings
+                )
             }
             // Explanatory note for `.limited` mode. Lives outside the
             // card as a soft-tone Callout so it reads as context, not
@@ -933,6 +917,26 @@ public struct SettingsScreen: View {
                 }
                 .padding(.horizontal, 16)
                 .padding(.top, 8)
+            }
+        }
+    }
+
+    // MARK: - Background refresh (Notifications)
+
+    /// Background-refresh row split out of the old combined
+    /// permissions section. Stays on the Notifications page since
+    /// background refresh is what enables background syncs that
+    /// in turn drive notification surfaces.
+    private var backgroundRefreshSection: some View {
+        Group {
+            KeylineSection("Background refresh", icon: "arrow.triangle.2.circlepath", iconTint: t.quiet)
+            CairnCard {
+                KeyValRow(
+                    "Background refresh",
+                    value: { Text("Allowed").foregroundStyle(t.verifiedInk) },
+                    chevron: true,
+                    onTap: openIOSSettings
+                )
             }
         }
     }
