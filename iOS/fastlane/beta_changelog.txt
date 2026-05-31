@@ -1,9 +1,5 @@
-Three follow-ups on the Settings restructure from build 85:
+Followup on the Settings reshape: Photos Access and Indexing Scope are about the same thing (what cairn can see), so Photos Access moves into Library alongside Background Refresh. With those gone from Notifications, the category doesn't pull its weight — dropped. Its rows fan out where they actually belong: Alert on aborted run and Backlog alert threshold to Safety & limits (they're trip indicators for the rails); Verbose journal to Data & recovery (it controls journal data).
 
-Consolidated 11 root categories down to 8. Notifications and Permissions are now one "System" page (alerts, Photos access, Background refresh — all about iOS integration). Data and Recovery merged into "Data & recovery." Danger zone moved inside Advanced as the bottom subsection — both are power-user surfaces and co-located cleanly.
+Root list is now 7 categories: Connection, Library, Safety & limits, Appearance, Data & recovery, Advanced, About.
 
-Refreshed icon tints so every category uses a distinct palette token (no more duplicate blue / amber across rows). Library now uses cairn's primary brand color since it's about the core thing cairn manages.
-
-Removed the leftover "Show / hide advanced settings" collapse toggle inside the Advanced page. With Advanced as its own NavigationLink, tapping the row to enter the page and then tapping again to reveal the rows was double-friction; the rows now show immediately.
-
-Also: the System parent row shows "Photos: limited" or "Photos: denied" inline when the permission state isn't full, so a hiccup is visible without drilling in.
+The Library parent row also now surfaces a degraded Photos-auth state inline ("Photos: limited" or "Photos: denied"), since that blocks everything else cairn does on the library — should be obvious without drilling in.
