@@ -1077,7 +1077,7 @@ struct AboutSheet: View {
 
                     CairnCard {
                         VStack(alignment: .leading, spacing: 0) {
-                            KeyValRow("Marketing version", value: AboutInfo.version, mono: true)
+                            KeyValRow("App version", value: AboutInfo.version, mono: true)
                             Divider().background(t.divider)
                             KeyValRow("Build", value: AboutInfo.build, mono: true)
                         }
