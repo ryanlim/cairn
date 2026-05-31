@@ -124,7 +124,6 @@ public struct SettingsScreen: View {
     @State private var pendingSignOut: Bool = false
     @State private var pendingClearRecentServers: Bool = false
     @State private var pendingClearExclusions: Bool = false
-    @State private var advancedExpanded: Bool = false
     @State private var howItWorksExpanded: Bool = false
     @State private var showExportPicker = false
     @State private var showImportPicker = false
@@ -381,8 +380,8 @@ public struct SettingsScreen: View {
             RowDivider()
 
             SettingsCategoryRow(
-                icon: "rectangle.dashed",
-                iconTint: t.info,
+                icon: "photo.on.rectangle.angled",
+                iconTint: t.primary,
                 title: "Library",
                 summary: librarySummary
             ) { libraryPage }
@@ -398,21 +397,15 @@ public struct SettingsScreen: View {
 
             RowDivider()
 
+            // System bundles Notifications + Permissions + Background
+            // refresh — anything that's about how cairn fits into the
+            // surrounding iOS environment. Three sub-cards inside.
             SettingsCategoryRow(
-                icon: "bell",
+                icon: "bell.badge",
                 iconTint: t.pending,
-                title: "Notifications",
-                summary: nil
-            ) { notificationsPage }
-
-            RowDivider()
-
-            SettingsCategoryRow(
-                icon: "lock",
-                iconTint: t.quiet,
-                title: "Permissions",
-                summary: nil
-            ) { permissionsPage }
+                title: "System",
+                summary: systemSummary
+            ) { systemPage }
 
             RowDivider()
 
@@ -425,42 +418,29 @@ public struct SettingsScreen: View {
 
             RowDivider()
 
+            // Data + Recovery merged. Both are about moving state
+            // around / getting back to a known-good place; the two
+            // were artificially separate in Phase 1.
             SettingsCategoryRow(
                 icon: "arrow.up.arrow.down",
-                iconTint: t.verifiedInk,
-                title: "Data",
+                iconTint: t.quiet,
+                title: "Data & recovery",
                 summary: nil
-            ) { dataPage }
+            ) { dataAndRecoveryPage }
 
             RowDivider()
 
-            SettingsCategoryRow(
-                icon: "wand.and.stars",
-                iconTint: t.pendingInk,
-                title: "Recovery",
-                summary: nil
-            ) { recoveryPage }
-
-            RowDivider()
-
+            // Advanced now contains the Danger zone subsection at
+            // the bottom. Power-user surface in one place — both the
+            // tunable knobs (cache caps, count floor, incremental
+            // sync) and the irreversible actions (reset index,
+            // clear journal, sign out) live behind one row.
             SettingsCategoryRow(
                 icon: "wrench.and.screwdriver",
                 iconTint: t.textMuted,
                 title: "Advanced",
                 summary: nil
             ) { advancedPage }
-
-            RowDivider()
-
-            // Danger zone gets a distinct tint so the destructive
-            // category reads at a glance — same convention as the old
-            // single-page layout, just relocated.
-            SettingsCategoryRow(
-                icon: "exclamationmark.triangle",
-                iconTint: t.danger,
-                title: "Danger zone",
-                summary: nil
-            ) { dangerZonePage }
 
             RowDivider()
 
@@ -495,6 +475,18 @@ public struct SettingsScreen: View {
         case .selectedAlbums(let ids):
             if ids.isEmpty { return "No albums selected" }
             return "\(ids.count) album\(ids.count == 1 ? "" : "s")"
+        }
+    }
+
+    /// System summary — reflects the highest-priority permission
+    /// state. Background refresh state is iOS-side; Photos auth
+    /// surfaces here so a denied/limited state is visible on the
+    /// parent row.
+    private var systemSummary: String? {
+        switch photoAuthStatus {
+        case .limited: return "Photos: limited"
+        case .denied: return "Photos: denied"
+        case .full, .none: return nil
         }
     }
 
@@ -614,27 +606,19 @@ public struct SettingsScreen: View {
         }
     }
 
+    /// Combines old Notifications + Permissions (Photos access +
+    /// Background refresh) — everything about how cairn integrates
+    /// with the surrounding iOS environment.
     @ViewBuilder
-    private var notificationsPage: some View {
+    private var systemPage: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 notificationsSection
-            }
-        }
-        .background(t.bg)
-        .navigationTitle("Notifications")
-        .cairnNavigationTitleDisplayMode(.inline)
-    }
-
-    @ViewBuilder
-    private var permissionsPage: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
                 permissionsSection
             }
         }
         .background(t.bg)
-        .navigationTitle("Permissions")
+        .navigationTitle("System")
         .cairnNavigationTitleDisplayMode(.inline)
     }
 
@@ -650,34 +634,27 @@ public struct SettingsScreen: View {
         .cairnNavigationTitleDisplayMode(.inline)
     }
 
+    /// Combines old Data (export / import) + Recovery (find missed
+    /// deletions + deferred queue + rescan + clear hash cache).
+    /// Both are about moving state around to get back to a working
+    /// place — natural co-location.
     @ViewBuilder
-    private var dataPage: some View {
+    private var dataAndRecoveryPage: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 dataSection
-            }
-        }
-        .background(t.bg)
-        .navigationTitle("Data")
-        .cairnNavigationTitleDisplayMode(.inline)
-    }
-
-    @ViewBuilder
-    private var recoveryPage: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
                 recoverySection
                 recoveryHashCacheSection
             }
         }
         .background(t.bg)
-        .navigationTitle("Recovery")
+        .navigationTitle("Data & recovery")
         .cairnNavigationTitleDisplayMode(.inline)
     }
 
-    /// Hash-cache management rows lifted out of the old safety-rails
-    /// page. These are recovery-shaped affordances (rebuild the cache,
-    /// drop the change token, etc.) rather than safety knobs.
+    /// Hash-cache management rows. Recovery-shaped affordances
+    /// (rebuild the cache, drop the change token, etc.) rather than
+    /// safety knobs.
     private var recoveryHashCacheSection: some View {
         Group {
             KeylineSection("Hash cache", icon: "arrow.clockwise", iconTint: t.info)
@@ -708,23 +685,19 @@ public struct SettingsScreen: View {
         }
     }
 
-    @ViewBuilder
-    private var dangerZonePage: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                dangerZoneSection
-            }
-        }
-        .background(t.bg)
-        .navigationTitle("Danger zone")
-        .cairnNavigationTitleDisplayMode(.inline)
-    }
-
+    /// Advanced now hosts the Danger zone subsection at the bottom.
+    /// Both surfaces are "for power users who know what they're
+    /// doing" — natural co-location. The old standalone collapse
+    /// toggle inside `advancedSection` is gone now that Advanced
+    /// has its own page (one-tap navigation already filters to
+    /// power users; the second collapse-then-tap was friction
+    /// without value).
     @ViewBuilder
     private var advancedPage: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 advancedSection
+                dangerZoneSection
             }
         }
         .background(t.bg)
@@ -1130,78 +1103,58 @@ public struct SettingsScreen: View {
         }
     }
 
+    /// Advanced power-user settings. No collapse toggle anymore —
+    /// the page itself is the affordance now that Advanced has its
+    /// own NavigationLink. Putting a "Show/hide" button inside a
+    /// page the user already chose to enter is double-friction.
     private var advancedSection: some View {
         Group {
             KeylineSection("Advanced", icon: "wrench.and.screwdriver", iconTint: t.textMuted)
             CairnCard {
                 VStack(spacing: 0) {
-                    Button {
-                        withAnimation(reduceMotion ? .none : .snappy(duration: 0.16)) {
-                            advancedExpanded.toggle()
-                        }
-                    } label: {
-                        HStack(spacing: 8) {
-                            Text(advancedExpanded ? "Hide advanced settings" : "Show advanced settings")
-                                .font(.cairnScaled(size: 15))
-                                .foregroundStyle(t.textBody)
-                            Spacer(minLength: 12)
-                            Image(systemName: advancedExpanded ? "chevron.up" : "chevron.down")
-                                .font(.cairnScaled(size: 12, weight: .semibold))
-                                .foregroundStyle(t.textHint)
-                        }
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 14)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(advancedExpanded ? "Hide advanced settings" : "Show advanced settings")
-
-                    if advancedExpanded {
-                        RowDivider()
-                        CountFloorRow(floor: $settings.minDeleteFloor)
-                        RowDivider()
-                        ThumbnailCacheCapRow(mb: $settings.thumbnailCacheCapMB)
-                        RowDivider()
-                        ThumbhashCacheCapRow(mb: $settings.thumbhashCapMB)
-                        RowDivider()
-                        ToggleRow(
-                            "Incremental server sync",
-                            sub: "Stream only the changes since the last sync instead of refetching the whole server library each time. Much faster on large libraries. Falls back to the slower full-refetch path if you're not signed in to Immich or your account doesn't allow the streaming endpoint.",
-                            value: $settings.useIncrementalServerSync
-                        )
-                        RowDivider()
-                        if hasSessionToken {
-                            KeyValRow(
-                                "Signed in to Immich",
-                                value: { Text("Sign out").foregroundStyle(t.dangerInk) },
-                                chevron: false,
-                                onTap: onSignOutSession
-                            )
-                        } else {
-                            KeyValRow(
-                                "Sign in to Immich",
-                                value: { Text("Required for incremental sync").foregroundStyle(t.textMuted) },
-                                chevron: true,
-                                onTap: onOpenSessionSignIn
-                            )
-                        }
-                        #if DEBUG
-                        RowDivider()
+                    CountFloorRow(floor: $settings.minDeleteFloor)
+                    RowDivider()
+                    ThumbnailCacheCapRow(mb: $settings.thumbnailCacheCapMB)
+                    RowDivider()
+                    ThumbhashCacheCapRow(mb: $settings.thumbhashCapMB)
+                    RowDivider()
+                    ToggleRow(
+                        "Incremental server sync",
+                        sub: "Stream only the changes since the last sync instead of refetching the whole server library each time. Much faster on large libraries. Falls back to the slower full-refetch path if you're not signed in to Immich or your account doesn't allow the streaming endpoint.",
+                        value: $settings.useIncrementalServerSync
+                    )
+                    RowDivider()
+                    if hasSessionToken {
                         KeyValRow(
-                            "Replay onboarding (dev)",
-                            value: { Text("Review setup").foregroundStyle(t.textMuted) },
-                            chevron: true,
-                            onTap: onReplayOnboarding
+                            "Signed in to Immich",
+                            value: { Text("Sign out").foregroundStyle(t.dangerInk) },
+                            chevron: false,
+                            onTap: onSignOutSession
                         )
-                        RowDivider()
+                    } else {
                         KeyValRow(
-                            "Fire BG refresh now (dev)",
-                            value: { Text("Run scheduled scan").foregroundStyle(t.infoInk) },
+                            "Sign in to Immich",
+                            value: { Text("Required for incremental sync").foregroundStyle(t.textMuted) },
                             chevron: true,
-                            onTap: onFireBackgroundRefresh
+                            onTap: onOpenSessionSignIn
                         )
-                        #endif
                     }
+                    #if DEBUG
+                    RowDivider()
+                    KeyValRow(
+                        "Replay onboarding (dev)",
+                        value: { Text("Review setup").foregroundStyle(t.textMuted) },
+                        chevron: true,
+                        onTap: onReplayOnboarding
+                    )
+                    RowDivider()
+                    KeyValRow(
+                        "Fire BG refresh now (dev)",
+                        value: { Text("Run scheduled scan").foregroundStyle(t.infoInk) },
+                        chevron: true,
+                        onTap: onFireBackgroundRefresh
+                    )
+                    #endif
                 }
             }
         }
