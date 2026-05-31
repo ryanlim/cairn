@@ -442,6 +442,8 @@ public struct SettingsScreen: View {
                     RowDivider()
                     HardCeilingRow(mb: $settings.iCloudMaxEverBytesMB)
                     RowDivider()
+                    PropagationMaxAgeRow(days: $settings.propagationMaxAgeDays)
+                    RowDivider()
                     MaxRetryAttemptsRow(attempts: $settings.maxRetryAttempts)
                     RowDivider()
                     DeferredQueueRow(
@@ -1659,6 +1661,112 @@ private struct HardCeilingRow: View {
         .padding(.vertical, 14)
     }
 
+}
+
+// MARK: - Propagation max-age row
+
+/// Optional age cutoff on which phone deletions propagate to the
+/// server. When set, deletions of photos older than N days are
+/// silently dropped — server copy stays, no quarantine entry. The
+/// row mirrors HardCeilingRow's shape (toggle + slider with
+/// remembered value) so the on/off semantics read consistently with
+/// the never-touch ceiling. Default off; only protects OLD photos —
+/// recent deletes still propagate through the normal quarantine.
+private struct PropagationMaxAgeRow: View {
+    @Binding var days: Int?
+    @Environment(\.cairnTokens) private var t
+
+    /// Remembers the last enabled value so toggling off then on
+    /// restores the user's prior choice (matching the never-touch
+    /// ceiling pattern).
+    @State private var rememberedValue: Int
+
+    init(days: Binding<Int?>) {
+        self._days = days
+        // 365 days (one year) is the suggested starting value when
+        // the user first toggles the cutoff on. Wide enough that a
+        // "look back at last summer" photo isn't accidentally
+        // protected; tight enough that genuinely old photos that the
+        // user has already curated on the server side are covered.
+        self._rememberedValue = State(initialValue: days.wrappedValue ?? 365)
+    }
+
+    private var isEnabled: Binding<Bool> {
+        Binding(
+            get: { days != nil },
+            set: { newValue in
+                if newValue {
+                    days = rememberedValue
+                } else {
+                    if let current = days {
+                        rememberedValue = current
+                    }
+                    days = nil
+                }
+            }
+        )
+    }
+
+    private var doubleBinding: Binding<Double> {
+        Binding(
+            get: { Double(days ?? CairnSettings.propagationMaxAgeDaysRange.lowerBound) },
+            set: { newValue in
+                let rounded = Int(newValue.rounded())
+                days = rounded
+                rememberedValue = rounded
+            }
+        )
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Don't propagate old deletes")
+                    .font(.cairnScaled(size: 15))
+                    .foregroundStyle(t.textBody)
+                HelpPopover {
+                    Text("**Age cutoff for propagation.** When on, cairn silently ignores phone-delete events for photos taken more than N days ago. Their server copies stay on Immich; no quarantine entry is written.")
+                    Text("Use case: you've already curated your Immich library and want to bulk-clean older photos off the phone without those deletions mirroring to the server.")
+                    Text("Protects only OLD photos. Recent deletions still propagate through the normal quarantine path — this isn't a global pause.")
+                    Text("The age is measured from each photo's capture date (creationDate), not from when cairn first saw it. Scanned-in photos with backdated EXIF will auto-skip too.")
+                }
+                Spacer(minLength: 0)
+                Toggle("", isOn: isEnabled)
+                    .labelsHidden()
+                    .tint(t.verified)
+            }
+            if let days {
+                Text("Ignores phone-delete events for photos taken more than \(days.formatted(.number)) day\(days == 1 ? "" : "s") ago. Recent deletes still propagate normally.")
+                    .font(.cairnScaled(size: 12))
+                    .foregroundStyle(t.textMuted)
+                    .fixedSize(horizontal: false, vertical: true)
+                Slider(
+                    value: doubleBinding,
+                    in: Double(CairnSettings.propagationMaxAgeDaysRange.lowerBound)...Double(CairnSettings.propagationMaxAgeDaysRange.upperBound),
+                    step: 30
+                )
+                .tint(t.verified)
+                HStack {
+                    Spacer()
+                    EditableNumericField(
+                        value: doubleBinding,
+                        range: Double(CairnSettings.propagationMaxAgeDaysRange.lowerBound)...Double(CairnSettings.propagationMaxAgeDaysRange.upperBound),
+                        step: 30,
+                        unitSuffix: " days",
+                        format: { String(format: "%.0f", $0) },
+                        parse: NumericInputParse.integer
+                    )
+                }
+            } else {
+                Text("Off. Every phone deletion is in scope for propagation, regardless of when the photo was taken.")
+                    .font(.cairnScaled(size: 12))
+                    .foregroundStyle(t.textMuted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 14)
+    }
 }
 
 // MARK: - Backlog alert row

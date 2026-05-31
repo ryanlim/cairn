@@ -91,6 +91,12 @@ final class AppDependencies {
 
         let isLimitedAccess = PHPhotoLibrary.authorizationStatus(for: .readWrite) == .limited
         let activeScope = model.settings.indexingScope
+        // Snapshot the propagation cutoff at build time. Since this
+        // property rebuilds the reconciler on every access, the value
+        // is fresh per scan — a Settings toggle takes effect on the
+        // next call to `persistentChangeReconciler`. No need for a
+        // MainActor hop inside the reconciler's scan path.
+        let propagationCutoff = model.settings.propagationMaxAgeDays
         return PhotoKitPersistentChangeReconciler(
             hashStore: localHashStore,
             confirmedDeleted: confirmed,
@@ -105,6 +111,7 @@ final class AppDependencies {
             hardCeilingBytes: ceilingBytes,
             requireExplicitDeletionEvent: isLimitedAccess,
             scope: activeScope,
+            propagationMaxAgeDays: { propagationCutoff },
             onHashProgress: { [weak self] done, total, newChecksums in
                 // Fetch all MainActor-isolated state in one hop.
                 struct Snapshot {
@@ -1355,6 +1362,18 @@ final class AppDependencies {
         let scan = try await reconciler.runDeletionScan(skipDrain: true)
         syncLog.info("[cairn.sync] scan took \(Int(Date().timeIntervalSince(t0) * 1000))ms (events=\(scan.changeEventsProcessed))")
         let burst = scan.newlyConfirmedDeleted.count
+        // Surface the propagation-cutoff outcome to the activity feed
+        // when any deletions were filtered out. Without this the
+        // setting feels invisible — the user enables it, deletes some
+        // old photos, sees nothing change in the app. The line in the
+        // SyncDetailSheet timeline is the receipt that it worked.
+        if scan.skippedTooOldForPropagation > 0,
+           let days = model.settings.propagationMaxAgeDays {
+            model.appendSyncActivity(.init(
+                kind: .note,
+                detail: "Skipped propagation (older than \(days)d): \(scan.skippedTooOldForPropagation.formatted(.number))"
+            ))
+        }
 
         // The reconciler has already mutated `ConfirmedDeletedStore`,
         // `LocalHashStore`, and `ObservedStore`. Persist the

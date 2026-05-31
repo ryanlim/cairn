@@ -191,6 +191,34 @@ public struct CairnSettings: Sendable, Codable, Equatable {
     /// of beta soak-testing surfaces no regressions.
     public var useIncrementalServerSync: Bool
 
+    /// Optional age cutoff on which phone deletions propagate to the
+    /// server. When set to N (days), cairn ignores phone-delete events
+    /// for any asset whose `PHAsset.creationDate` is older than
+    /// `now - N`. The asset stays on Immich; no quarantine entry is
+    /// written. Use case: you've already curated your Immich library
+    /// and want to bulk-clean older photos off the phone without those
+    /// deletions mirroring to the server.
+    ///
+    /// Only protects **old** photos. Recent deletions still propagate
+    /// through the normal quarantine path — this isn't a "stop
+    /// propagating everything" switch.
+    ///
+    /// Default `nil` (no cutoff; every deletion is in scope, matching
+    /// the original behavior). Values outside `propagationMaxAgeDaysRange`
+    /// are tolerated on decode for forward compatibility; UI should
+    /// clamp on write.
+    public var propagationMaxAgeDays: Int?
+
+    /// Permitted range for `propagationMaxAgeDays` when set. `30` days
+    /// is the smallest practical cutoff (anything tighter starts
+    /// catching photos in normal recent-deletes-and-undo flows).
+    /// `3650` days (~10 years) is an aggressive upper bound — most
+    /// libraries don't have photos older than that — but lets users
+    /// who want a very wide horizon still pick one. Default `nil`
+    /// (off) when first enabled is up to the UI; reasonable starting
+    /// values are 365 (one year) or 730 (two years).
+    public static let propagationMaxAgeDaysRange: ClosedRange<Int> = 30...3650
+
     /// Fast initial scan: trust Immich's server-computed checksum for
     /// any phone asset where `phone.localId == server.deviceAssetId`
     /// (set by the Immich mobile uploader at upload time) and seed
@@ -232,7 +260,8 @@ public struct CairnSettings: Sendable, Codable, Equatable {
         maxRetryAttempts: Int = 5,
         timeDisplayFormat: TimeDisplayFormat = .system,
         useIncrementalServerSync: Bool = false,
-        fastInitialScan: Bool = false
+        fastInitialScan: Bool = false,
+        propagationMaxAgeDays: Int? = nil
     ) {
         self.maxDeletePercent = maxDeletePercent
         self.minDeleteFloor = minDeleteFloor
@@ -251,6 +280,7 @@ public struct CairnSettings: Sendable, Codable, Equatable {
         self.timeDisplayFormat = timeDisplayFormat
         self.useIncrementalServerSync = useIncrementalServerSync
         self.fastInitialScan = fastInitialScan
+        self.propagationMaxAgeDays = propagationMaxAgeDays
     }
 
     /// The factory defaults. Kept as a single constant so tests and the
@@ -271,6 +301,7 @@ public struct CairnSettings: Sendable, Codable, Equatable {
         case timeDisplayFormat
         case useIncrementalServerSync
         case fastInitialScan
+        case propagationMaxAgeDays
     }
 
     public init(from decoder: Decoder) throws {
@@ -293,6 +324,7 @@ public struct CairnSettings: Sendable, Codable, Equatable {
         self.timeDisplayFormat = try c.decodeIfPresent(TimeDisplayFormat.self, forKey: .timeDisplayFormat) ?? d.timeDisplayFormat
         self.useIncrementalServerSync = try c.decodeIfPresent(Bool.self, forKey: .useIncrementalServerSync) ?? d.useIncrementalServerSync
         self.fastInitialScan = try c.decodeIfPresent(Bool.self, forKey: .fastInitialScan) ?? d.fastInitialScan
+        self.propagationMaxAgeDays = try c.decodeIfPresent(Int.self, forKey: .propagationMaxAgeDays) ?? d.propagationMaxAgeDays
     }
 }
 

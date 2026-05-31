@@ -211,6 +211,41 @@ struct CairnSettingsTests {
         }
     }
 
+    @Test("propagationMaxAgeDays defaults to nil (off)")
+    func propagationMaxAgeDaysDefaultsNil() {
+        #expect(CairnSettings.defaults.propagationMaxAgeDays == nil)
+    }
+
+    @Test("legacy JSON without propagationMaxAgeDays decodes as nil")
+    func legacyJSONMissingPropagationMaxAgeDecodesNil() throws {
+        let legacyJSON = """
+        {
+            "maxDeletePercent": 1.0,
+            "minDeleteFloor": 5,
+            "notifyOnAbort": true,
+            "verboseLogging": false,
+            "deletionStrictness": "trusting"
+        }
+        """
+        let decoded = try JSONDecoder().decode(CairnSettings.self, from: Data(legacyJSON.utf8))
+        #expect(decoded.propagationMaxAgeDays == nil)
+    }
+
+    @Test("propagationMaxAgeDays round-trips a real value and nil")
+    func propagationMaxAgeDaysRoundTrips() throws {
+        for value in [nil, 30, 365, 3650] as [Int?] {
+            let original = CairnSettings(propagationMaxAgeDays: value)
+            let data = try JSONEncoder().encode(original)
+            let decoded = try JSONDecoder().decode(CairnSettings.self, from: data)
+            #expect(decoded.propagationMaxAgeDays == value)
+        }
+    }
+
+    @Test("propagationMaxAgeDaysRange covers the documented 30...3650 span")
+    func propagationMaxAgeDaysRangeIsDocumented() {
+        #expect(CairnSettings.propagationMaxAgeDaysRange == 30...3650)
+    }
+
     @Test("legacy JSON without indexingScope decodes as .fullLibrary")
     func legacyJSONMissingIndexingScopeUsesFullLibrary() throws {
         let legacyJSON = """

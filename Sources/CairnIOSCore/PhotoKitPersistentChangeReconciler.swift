@@ -162,6 +162,13 @@ public final class PhotoKitPersistentChangeReconciler {
         /// path.
         public let editsQuarantined: Int
 
+        /// Phone-delete events that were ignored this pass because the
+        /// deleted asset's `creationDate` predated the user's
+        /// `CairnSettings.propagationMaxAgeDays` cutoff. The server
+        /// copy stays alive; no quarantine entry is written. Zero when
+        /// the cutoff is off or every deletion fell within the window.
+        public let skippedTooOldForPropagation: Int
+
         public init(
             newlyConfirmedDeleted: Set<Checksum>,
             unconfirmedByRestoration: Set<Checksum>,
@@ -181,7 +188,8 @@ public final class PhotoKitPersistentChangeReconciler {
             confirmedFromChangeLog: Int = 0,
             confirmedFromOrphanSweep: Int = 0,
             editsProtected: Int = 0,
-            editsQuarantined: Int = 0
+            editsQuarantined: Int = 0,
+            skippedTooOldForPropagation: Int = 0
         ) {
             self.newlyConfirmedDeleted = newlyConfirmedDeleted
             self.unconfirmedByRestoration = unconfirmedByRestoration
@@ -202,6 +210,7 @@ public final class PhotoKitPersistentChangeReconciler {
             self.confirmedFromOrphanSweep = confirmedFromOrphanSweep
             self.editsProtected = editsProtected
             self.editsQuarantined = editsQuarantined
+            self.skippedTooOldForPropagation = skippedTooOldForPropagation
         }
     }
 
@@ -286,6 +295,17 @@ public final class PhotoKitPersistentChangeReconciler {
     /// per access in `AppDependencies`, so a scope toggle takes effect
     /// on the next sync without an in-flight cancellation.
     private let scope: IndexingScope
+
+    /// Read-just-in-time callback supplying the current
+    /// `CairnSettings.propagationMaxAgeDays` value. Closure rather than
+    /// a static let so toggling the setting takes effect immediately
+    /// without rebuilding the reconciler (the same reason `clock` is
+    /// a closure). When the value is non-nil, the deletion-resolution
+    /// path consults `LocalAssetMetadataStore` for each deleted
+    /// `localIdentifier` and drops any whose `creationDate` is older
+    /// than `now - N days` — those localIds don't enter the
+    /// `removedChecksums` set and never reach quarantine.
+    private let propagationMaxAgeDays: @Sendable () -> Int?
 
     /// Wall-clock ceiling per asset in foreground mode. Small-looking
     /// assets can still stall on network hiccups or background
@@ -397,6 +417,7 @@ public final class PhotoKitPersistentChangeReconciler {
         foregroundDrainBudget: Int = 25,
         requireExplicitDeletionEvent: Bool = false,
         scope: IndexingScope = .fullLibrary,
+        propagationMaxAgeDays: @escaping @Sendable () -> Int? = { nil },
         onHashProgress: @escaping @Sendable (Int, Int, Set<Checksum>) async -> Void = { _, _, _ in },
         onPhaseChange: @escaping @Sendable (String, Int) async -> Void = { _, _ in },
         onHashStarted: @escaping @Sendable (String, String, Int64) async -> Void = { _, _, _ in },
@@ -418,6 +439,7 @@ public final class PhotoKitPersistentChangeReconciler {
         self.foregroundDrainBudget = foregroundDrainBudget
         self.requireExplicitDeletionEvent = requireExplicitDeletionEvent
         self.scope = scope
+        self.propagationMaxAgeDays = propagationMaxAgeDays
         self.onHashProgress = onHashProgress
         self.onPhaseChange = onPhaseChange
         self.onHashStarted = onHashStarted
@@ -611,7 +633,33 @@ public final class PhotoKitPersistentChangeReconciler {
         // creation dates for the original-vs-edit upload pair; the
         // localIdentifier match is unambiguous.
         var sourceLocalIdentifierByChecksum: [Checksum: String] = [:]
+
+        // Resolve the propagation-age cutoff once per scan. When set,
+        // each deleted id is checked against its cached
+        // `LocalAssetMetadata.creationDate`; ids older than the cutoff
+        // are skipped — they never enter `removedChecksums` and never
+        // reach quarantine. Use case: bulk-deleting old phone photos
+        // that the user has already curated on the server side and
+        // doesn't want propagation for. Only the `nil` (off) path
+        // skips the metadata lookup entirely; when set, we read
+        // metadata for every deleted id even if the cutoff doesn't
+        // apply, which is cheap (one indexed fetch per id).
+        let maxAgeDays = propagationMaxAgeDays()
+        let cutoffDate: Date? = maxAgeDays.map { clock().addingTimeInterval(-Double($0) * 86400) }
+        var skippedTooOld = 0
+
         for id in deletedIds {
+            // Age-gate before consulting the cache: skip the
+            // hash-store lookup entirely for assets we're not going
+            // to propagate. Cuts wasted work on bulk-delete-old runs.
+            if let cutoffDate, let mdStore = metadataStore {
+                if let md = try? await mdStore.metadata(for: id),
+                   let createdAt = md.creationDate,
+                   createdAt < cutoffDate {
+                    skippedTooOld += 1
+                    continue
+                }
+            }
             let cached = try await hashStore.checksums(for: id)
             removedChecksums.formUnion(cached)
             for c in cached { sourceLocalIdentifierByChecksum[c] = id }
@@ -620,6 +668,10 @@ public final class PhotoKitPersistentChangeReconciler {
                 removedChecksums.formUnion(firstObserved)
                 for c in firstObserved { sourceLocalIdentifierByChecksum[c] = id }
             }
+        }
+
+        if let maxAgeDays, skippedTooOld > 0 {
+            hashLog.notice("[cairn.recon] skipped \(skippedTooOld, privacy: .public) deletion\(skippedTooOld == 1 ? "" : "s") older than \(maxAgeDays, privacy: .public) days (propagationMaxAgeDays cutoff)")
         }
 
         // Telemetry: how many of the resolved deletions came through
@@ -800,8 +852,37 @@ public final class PhotoKitPersistentChangeReconciler {
         )
         Self.reconLog.notice("[cairn.recon] orphan sweep ran: cache=\(preOrphanCacheCount, privacy: .public) orphans=\(orphanResult.orphanIds.count, privacy: .public) recovered-checksums=\(orphanResult.checksums.count, privacy: .public)")
         tick("orphanSweep")
-        if !orphanResult.checksums.isEmpty {
-            removedChecksums.formUnion(orphanResult.checksums)
+        // Apply the same propagationMaxAgeDays cutoff to orphan-resolved
+        // deletions as the explicit-delete path applies above.
+        // Otherwise toggling the cutoff on would still propagate old
+        // deletions that arrived via the orphan-sweep safety net
+        // (back-channel deletions, token-gap recoveries). Filter the
+        // orphan-result by per-id creationDate before adding to
+        // `removedChecksums`; the cache eviction has already happened
+        // inside `reconcileCacheAgainstLibrary`, which is what we want
+        // — server propagation is the only thing the cutoff blocks.
+        var orphanChecksumsToPropagate = orphanResult.checksums
+        if let cutoffDate, let mdStore = metadataStore, !orphanResult.orphanIds.isEmpty {
+            var skippedOrphanChecksums: Set<Checksum> = []
+            for id in orphanResult.orphanIds {
+                guard let md = try? await mdStore.metadata(for: id),
+                      let createdAt = md.creationDate,
+                      createdAt < cutoffDate else { continue }
+                // Find every checksum this orphan id contributed to
+                // the recovered set and remove it from the propagate
+                // set. sourceIdByChecksum is the precise mapping.
+                for (ck, srcId) in orphanResult.sourceIdByChecksum where srcId == id {
+                    skippedOrphanChecksums.insert(ck)
+                }
+                skippedTooOld += 1
+            }
+            if !skippedOrphanChecksums.isEmpty {
+                orphanChecksumsToPropagate.subtract(skippedOrphanChecksums)
+                hashLog.notice("[cairn.recon] cutoff dropped \(skippedOrphanChecksums.count, privacy: .public) orphan-sweep checksum(s) (older than \(maxAgeDays ?? 0, privacy: .public) days)")
+            }
+        }
+        if !orphanChecksumsToPropagate.isEmpty {
+            removedChecksums.formUnion(orphanChecksumsToPropagate)
         }
         // Same source-id capture as the explicit-delete path above —
         // orphan-swept checksums need to collapse alongside any
@@ -988,7 +1069,8 @@ public final class PhotoKitPersistentChangeReconciler {
             confirmedFromChangeLog: confirmedFromChangeLogCount,
             confirmedFromOrphanSweep: confirmedFromOrphanSweepCount,
             editsProtected: editsProtectedCount,
-            editsQuarantined: editsQuarantinedCount
+            editsQuarantined: editsQuarantinedCount,
+            skippedTooOldForPropagation: skippedTooOld
         )
     }
 
