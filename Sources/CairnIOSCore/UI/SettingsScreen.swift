@@ -213,6 +213,7 @@ public struct SettingsScreen: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
                         Color.clear.frame(height: 0).id(Self.scrollTopAnchor)
+                        quickSettingsCard
                         rootList
                         footer
                     }
@@ -371,6 +372,34 @@ public struct SettingsScreen: View {
     /// what cairn watches; Safety & limits is everything about how
     /// aggressive it gets; Recovery is everything about getting back
     /// to a known-good state; etc.
+    // MARK: - Quick settings
+
+    /// Pinned at the top of the Settings root: the two safety knobs
+    /// users revisit most after onboarding (strictness + quarantine
+    /// window). Same bindings as the canonical rows inside Safety &
+    /// limits — editing here updates the value in both places. The
+    /// canonical home stays on the sub-page; this card is a quick-
+    /// access shortcut so calibration doesn't require a drill-in
+    /// every time.
+    @ViewBuilder
+    private var quickSettingsCard: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("QUICK SETTINGS")
+                .font(.cairnScaled(size: 11, weight: .semibold))
+                .tracking(0.9)
+                .foregroundStyle(t.textMuted)
+                .padding(.horizontal, 22)
+                .padding(.top, 16)
+            CairnCard {
+                VStack(spacing: 0) {
+                    StrictnessRow(strictness: $settings.deletionStrictness)
+                    RowDivider()
+                    QuarantineRow(days: $settings.quarantineDays)
+                }
+            }
+        }
+    }
+
     @ViewBuilder
     private var rootList: some View {
         CairnCard {
@@ -399,7 +428,7 @@ public struct SettingsScreen: View {
                 icon: "shield",
                 iconTint: t.verified,
                 title: "Safety & limits",
-                summary: nil
+                summary: safetyLimitsSummary
             ) { safetyLimitsPage }
 
             RowDivider()
@@ -408,7 +437,7 @@ public struct SettingsScreen: View {
                 icon: "paintpalette",
                 iconTint: t.accent,
                 title: "Appearance",
-                summary: nil
+                summary: appearanceSummary
             ) { appearancePage }
 
             RowDivider()
@@ -420,7 +449,7 @@ public struct SettingsScreen: View {
                 icon: "arrow.up.arrow.down",
                 iconTint: t.quiet,
                 title: "Data & recovery",
-                summary: nil
+                summary: dataAndRecoverySummary
             ) { dataAndRecoveryPage }
 
             RowDivider()
@@ -479,6 +508,43 @@ public struct SettingsScreen: View {
                 return "\(ids.count) album\(ids.count == 1 ? "" : "s")"
             }
         }
+    }
+
+    /// Safety & limits summary — strictness + quarantine in shorthand
+    /// (e.g. "Trusting · 14d"). These are the two highest-signal
+    /// rails values; surfacing them inline lets the user verify the
+    /// current calibration without entering the sub-page.
+    private var safetyLimitsSummary: String? {
+        let strictness: String
+        switch settings.deletionStrictness {
+        case .strict: strictness = "Strict"
+        case .trusting: strictness = "Trusting"
+        case .autonomous: strictness = "Auto"
+        }
+        let days = settings.quarantineDays
+        let quarantine = days == 0 ? "no quarantine" : "\(days)d"
+        return "\(strictness) · \(quarantine)"
+    }
+
+    /// Appearance summary — current theme override. `.system` shows
+    /// nothing (default; nothing notable to surface). Time format
+    /// stays inside the sub-page since it's lower-signal.
+    private var appearanceSummary: String? {
+        switch settings.appearance {
+        case .light: return "Light"
+        case .dark: return "Dark"
+        case .system: return nil
+        }
+    }
+
+    /// Data & recovery summary — only shows when there's actually
+    /// something to surface (non-empty deferred queue is the
+    /// load-bearing signal there; otherwise the page is just
+    /// affordances and there's nothing for the parent row to say).
+    private var dataAndRecoverySummary: String? {
+        let count = deferredQueue.count + deferredQueue.aboveCeiling
+        guard count > 0 else { return nil }
+        return "\(count) deferred"
     }
 
     // MARK: - Sub-pages
