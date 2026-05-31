@@ -38,6 +38,11 @@ public struct SettingsScreen: View {
     public let apiKeyMasked: String
     public let excludedCount: Int
     public let connectionStatus: ConnectionStatus
+    /// Triggers a re-ping of the configured server. Wired to a
+    /// `.task` on the Connection sub-page so opening it always
+    /// shows a fresh latency reading, and to other manual refresh
+    /// affordances. No-op when no server is configured.
+    public let onRefreshConnection: () -> Void
     public let onOpenExcluded: () -> Void
     public let onResetIndex: () -> Void
     public let onResetIndexAllAccounts: () -> Void
@@ -137,6 +142,7 @@ public struct SettingsScreen: View {
         apiKeyMasked: String,
         excludedCount: Int,
         connectionStatus: ConnectionStatus,
+        onRefreshConnection: @escaping () -> Void = {},
         onOpenExcluded: @escaping () -> Void = {},
         onResetIndex: @escaping () -> Void = {},
         onResetIndexAllAccounts: @escaping () -> Void = {},
@@ -171,6 +177,7 @@ public struct SettingsScreen: View {
         self.apiKeyMasked = apiKeyMasked
         self.excludedCount = excludedCount
         self.connectionStatus = connectionStatus
+        self.onRefreshConnection = onRefreshConnection
         self.onOpenExcluded = onOpenExcluded
         self.onResetIndex = onResetIndex
         self.onResetIndexAllAccounts = onResetIndexAllAccounts
@@ -492,6 +499,14 @@ public struct SettingsScreen: View {
         .background(t.bg)
         .navigationTitle("Connection")
         .cairnNavigationTitleDisplayMode(.inline)
+        // Re-ping on appear so the latency reading is always fresh
+        // when the user looks. Without this the value is from app
+        // boot or the last manual retry — can easily be hours old.
+        // Cheap (one HTTP round-trip); only runs while this page is
+        // on screen, so it doesn't burn battery in normal use.
+        .task {
+            onRefreshConnection()
+        }
     }
 
     @ViewBuilder

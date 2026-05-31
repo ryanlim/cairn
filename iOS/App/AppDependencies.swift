@@ -1937,6 +1937,15 @@ final class AppDependencies {
                 try? await thumbStore.evictThumbnails(overCapBytes: thumbnailCap)
             }
         }
+
+        // Refresh the displayed connection latency now that we just
+        // hit the server hard enough to know it's reachable. Free
+        // signal (single small request, off the critical path) and
+        // means the Settings → Connection latency reading is never
+        // older than the last successful sync.
+        Task { [weak self] in
+            await self?.checkServerHealth()
+        }
     }
 
     /// Repopulate `model.journalTail` from the on-disk journal. Called

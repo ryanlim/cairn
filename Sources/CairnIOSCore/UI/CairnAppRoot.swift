@@ -590,6 +590,7 @@ public struct CairnAppRoot: View {
                 apiKeyMasked: model.apiKeyMasked,
                 excludedCount: model.excludedEntries.count,
                 connectionStatus: model.connectionStatus,
+                onRefreshConnection: { Task { @MainActor in await model.actions.retryConnection() } },
                 onOpenExcluded: { model.settingsRoute = .excluded },
                 onResetIndex: { Task { await model.actions.resetIndex() } },
                 onResetIndexAllAccounts: { Task { await model.actions.resetIndexAllAccounts() } },
