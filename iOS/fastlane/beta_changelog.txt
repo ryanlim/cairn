@@ -1,5 +1,1 @@
-Followup on the Settings reshape: Photos Access and Indexing Scope are about the same thing (what cairn can see), so Photos Access moves into Library alongside Background Refresh. With those gone from Notifications, the category doesn't pull its weight — dropped. Its rows fan out where they actually belong: Alert on aborted run and Backlog alert threshold to Safety & limits (they're trip indicators for the rails); Verbose journal to Data & recovery (it controls journal data).
-
-Root list is now 7 categories: Connection, Library, Safety & limits, Appearance, Data & recovery, Advanced, About.
-
-The Library parent row also now surfaces a degraded Photos-auth state inline ("Photos: limited" or "Photos: denied"), since that blocks everything else cairn does on the library — should be obvious without drilling in.
+Fix: the connection latency shown on Settings → Connection now refreshes when you open the page and after every successful sync. Previously it was measured once at app boot (and refreshed only by the manual "Retry" banner tap), so the value could be hours stale on a long-running session. Same single-ping measurement under the hood; just measured more often.
