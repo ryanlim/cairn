@@ -1,3 +1,9 @@
-Reshaped Settings into a hierarchical layout. The old long single-scroll page is now a flat list of category rows (Connection, Library, Safety & limits, Notifications, Permissions, Appearance, Data, Recovery, Advanced, Danger zone, About) that drill into sub-pages via standard iOS push navigation. Bucketing follows the user's task, not the underlying data model — e.g. Library combines indexing scope + initial scan + excluded assets; Recovery combines find-missed-deletions + deferred queue + rescan + clear hash cache.
+Three follow-ups on the Settings restructure from build 85:
 
-The Connection row surfaces a status summary inline ("Connected" / "Offline") and the Library row shows the current scope ("All photos" / "N albums") so a misconfigured setup is visible without drilling in. Phase 1 is mechanical — no copy or behavior changes, just a layout reshape. Phase 2 will add a Quick settings card at the top + more inline summaries on the parent rows; Phase 3 adds search across Settings.
+Consolidated 11 root categories down to 8. Notifications and Permissions are now one "System" page (alerts, Photos access, Background refresh — all about iOS integration). Data and Recovery merged into "Data & recovery." Danger zone moved inside Advanced as the bottom subsection — both are power-user surfaces and co-located cleanly.
+
+Refreshed icon tints so every category uses a distinct palette token (no more duplicate blue / amber across rows). Library now uses cairn's primary brand color since it's about the core thing cairn manages.
+
+Removed the leftover "Show / hide advanced settings" collapse toggle inside the Advanced page. With Advanced as its own NavigationLink, tapping the row to enter the page and then tapping again to reveal the rows was double-friction; the rows now show immediately.
+
+Also: the System parent row shows "Photos: limited" or "Photos: denied" inline when the permission state isn't full, so a hiccup is visible without drilling in.
