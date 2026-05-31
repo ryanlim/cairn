@@ -27,7 +27,7 @@ public struct SettingsScreen: View {
     /// The connection-status pill the URL section terminates with. Mirrors
     /// the prototype's healthy/offline/auth-stale variants.
     public enum ConnectionStatus: Sendable, Equatable {
-        case healthy(latencyMs: Int)
+        case healthy(latencyMs: Int, checkedAt: Date = Date())
         case offline
         case authStale
     }
@@ -1548,26 +1548,40 @@ struct AboutSheet: View {
 
 // MARK: - Connection pill
 
-/// Compact "● healthy · 42ms" / "● offline" pill that lives on the right
-/// side of the URL/Connection row. Mirrors the prototype's inline span.
+/// Compact "● healthy · 42ms · 12s ago" / "● offline" pill that lives
+/// on the right side of the URL/Connection row. The trailing
+/// relative-time tail tells the user how stale the latency reading
+/// is — important because the value only refreshes on Connection
+/// page open + after each sync, so anything older than that is
+/// genuinely old. Re-renders periodically via TimelineView so a
+/// page sitting open doesn't show a frozen "5s ago" forever.
 private struct ConnectionPill: View {
     let status: SettingsScreen.ConnectionStatus
     @Environment(\.cairnTokens) private var t
 
     var body: some View {
-        HStack(spacing: 6) {
-            Circle().fill(dotColor).frame(width: 6, height: 6)
-            Text(label)
-                .font(.cairnScaled(size: 13))
-                .foregroundStyle(inkColor)
+        // TimelineView re-fires every minute so the relative tail
+        // ticks forward on long-lived views. The tail itself is
+        // formatted via `relativeAge(for:from:)` with the current
+        // wall-clock from `context.date`.
+        TimelineView(.periodic(from: Date(), by: 60)) { context in
+            HStack(spacing: 6) {
+                Circle().fill(dotColor).frame(width: 6, height: 6)
+                Text(label(now: context.date))
+                    .font(.cairnScaled(size: 13))
+                    .foregroundStyle(inkColor)
+            }
         }
     }
 
-    private var label: String {
+    private func label(now: Date) -> String {
         switch status {
-        case .healthy(let ms): return "healthy · \(ms)ms"
-        case .offline:         return "offline"
-        case .authStale:       return "auth expired"
+        case .healthy(let ms, let checkedAt):
+            return "healthy · \(ms)ms · \(Self.relativeAge(for: checkedAt, now: now))"
+        case .offline:
+            return "offline"
+        case .authStale:
+            return "auth expired"
         }
     }
     private var inkColor: Color {
@@ -1577,6 +1591,19 @@ private struct ConnectionPill: View {
         }
     }
     private var dotColor: Color { inkColor.opacity(0.85) }
+
+    /// Compact "just now / 12s ago / 3m ago / 2h ago / 4d ago".
+    /// No external dependencies — `RelativeDateTimeFormatter` is
+    /// fine but produces "1 minute ago" with full units which is
+    /// chattier than this surface wants.
+    static func relativeAge(for date: Date, now: Date) -> String {
+        let delta = max(0, now.timeIntervalSince(date))
+        if delta < 5 { return "just now" }
+        if delta < 60 { return "\(Int(delta))s ago" }
+        if delta < 3600 { return "\(Int(delta / 60))m ago" }
+        if delta < 86_400 { return "\(Int(delta / 3600))h ago" }
+        return "\(Int(delta / 86_400))d ago"
+    }
 }
 
 // (SliderInputRow has been promoted to a public primitive in
