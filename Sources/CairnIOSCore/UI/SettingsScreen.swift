@@ -202,29 +202,24 @@ public struct SettingsScreen: View {
     }
 
     public var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
-                    Color.clear.frame(height: 0).id(Self.scrollTopAnchor)
-                    AppHeader(title: "Settings")
-
-                immichServerSection
-                safetyRailsSection
-                indexingScopeSection
-                initialScanSection
-                notificationsSection
-                permissionsSection
-                appearanceSection
-                howItWorksSection
-                advancedSection
-                dataSection
-                recoverySection
-                dangerZoneSection
-                aboutSection
-                footer
+        NavigationStack {
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        Color.clear.frame(height: 0).id(Self.scrollTopAnchor)
+                        rootList
+                        footer
+                    }
+                }
+                .onChange(of: scrollResetToken) { _, _ in
+                    withAnimation(reduceMotion ? .none : .easeInOut(duration: 0.25)) {
+                        proxy.scrollTo(Self.scrollTopAnchor, anchor: .top)
+                    }
+                }
             }
-        }
-        .background(t.bg)
+            .navigationTitle("Settings")
+            .cairnNavigationTitleDisplayMode(.large)
+            .background(t.bg)
         // Keyboard dismissal: drag down on the list to interactively
         // drag the keyboard away, or tap any empty chrome outside
         // the focused field. Together these replace the explicit
@@ -358,12 +353,396 @@ public struct SettingsScreen: View {
         .sheet(isPresented: $showAbout) {
             AboutSheet(onClose: { showAbout = false })
         }
-        .onChange(of: scrollResetToken) { _, _ in
-            withAnimation(reduceMotion ? .none : .easeInOut(duration: 0.25)) {
-                proxy.scrollTo(Self.scrollTopAnchor, anchor: .top)
+        }
+    }
+
+    // MARK: - Root list
+
+    /// Root settings list — a flat list of category rows that drill
+    /// into sub-pages. Replaces the old long-scroll layout. Categories
+    /// are grouped by user task ("what are you trying to do?") rather
+    /// than by the underlying data model: Library is everything about
+    /// what cairn watches; Safety & limits is everything about how
+    /// aggressive it gets; Recovery is everything about getting back
+    /// to a known-good state; etc.
+    @ViewBuilder
+    private var rootList: some View {
+        CairnCard {
+            // Connection lives at the top because a wrong / missing
+            // server URL or API key blocks everything else; that's the
+            // one row a confused user should hit first.
+            SettingsCategoryRow(
+                icon: "network",
+                iconTint: t.info,
+                title: "Connection",
+                summary: connectionSummary
+            ) { connectionPage }
+
+            RowDivider()
+
+            SettingsCategoryRow(
+                icon: "rectangle.dashed",
+                iconTint: t.info,
+                title: "Library",
+                summary: librarySummary
+            ) { libraryPage }
+
+            RowDivider()
+
+            SettingsCategoryRow(
+                icon: "shield",
+                iconTint: t.verified,
+                title: "Safety & limits",
+                summary: nil
+            ) { safetyLimitsPage }
+
+            RowDivider()
+
+            SettingsCategoryRow(
+                icon: "bell",
+                iconTint: t.pending,
+                title: "Notifications",
+                summary: nil
+            ) { notificationsPage }
+
+            RowDivider()
+
+            SettingsCategoryRow(
+                icon: "lock",
+                iconTint: t.quiet,
+                title: "Permissions",
+                summary: nil
+            ) { permissionsPage }
+
+            RowDivider()
+
+            SettingsCategoryRow(
+                icon: "paintpalette",
+                iconTint: t.accent,
+                title: "Appearance",
+                summary: nil
+            ) { appearancePage }
+
+            RowDivider()
+
+            SettingsCategoryRow(
+                icon: "arrow.up.arrow.down",
+                iconTint: t.verifiedInk,
+                title: "Data",
+                summary: nil
+            ) { dataPage }
+
+            RowDivider()
+
+            SettingsCategoryRow(
+                icon: "wand.and.stars",
+                iconTint: t.pendingInk,
+                title: "Recovery",
+                summary: nil
+            ) { recoveryPage }
+
+            RowDivider()
+
+            SettingsCategoryRow(
+                icon: "wrench.and.screwdriver",
+                iconTint: t.textMuted,
+                title: "Advanced",
+                summary: nil
+            ) { advancedPage }
+
+            RowDivider()
+
+            // Danger zone gets a distinct tint so the destructive
+            // category reads at a glance — same convention as the old
+            // single-page layout, just relocated.
+            SettingsCategoryRow(
+                icon: "exclamationmark.triangle",
+                iconTint: t.danger,
+                title: "Danger zone",
+                summary: nil
+            ) { dangerZonePage }
+
+            RowDivider()
+
+            SettingsCategoryRow(
+                icon: "info.circle",
+                iconTint: t.info,
+                title: "About",
+                summary: AboutInfo.versionLabel
+            ) { aboutPage }
+        }
+        .padding(.top, 16)
+    }
+
+    // MARK: - Inline summaries
+
+    /// Short status text on the Connection parent row — surfaces
+    /// connection state inline so the user can spot a broken setup
+    /// without drilling in.
+    private var connectionSummary: String? {
+        switch connectionStatus {
+        case .healthy: return "Connected"
+        case .offline: return "Offline"
+        case .authStale: return "Auth stale"
+        }
+    }
+
+    /// Library summary — shows whether scope is restricted, since
+    /// that's the load-bearing choice on this page.
+    private var librarySummary: String? {
+        switch settings.indexingScope {
+        case .fullLibrary: return "All photos"
+        case .selectedAlbums(let ids):
+            if ids.isEmpty { return "No albums selected" }
+            return "\(ids.count) album\(ids.count == 1 ? "" : "s")"
+        }
+    }
+
+    // MARK: - Sub-pages
+    //
+    // Each sub-page wraps the corresponding section computed property
+    // (still defined below for preview / single-section reuse) inside
+    // a scrollable container with a navigation title. KeylineSection
+    // headers inside section views double as visual sub-section
+    // markers when a page combines multiple groupings.
+
+    @ViewBuilder
+    private var connectionPage: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                immichServerSection
             }
         }
+        .background(t.bg)
+        .navigationTitle("Connection")
+        .cairnNavigationTitleDisplayMode(.inline)
+    }
+
+    @ViewBuilder
+    private var libraryPage: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                indexingScopeSection
+                initialScanSection
+                excludedAssetsLibrarySection
+            }
         }
+        .background(t.bg)
+        .navigationTitle("Library")
+        .cairnNavigationTitleDisplayMode(.inline)
+    }
+
+    /// Excluded-assets row lifted out of the old safety-rails page
+    /// into Library — it's about *what* cairn manages, not *how* it
+    /// behaves. Same KeyValRow + value preview as before; just a
+    /// different home.
+    private var excludedAssetsLibrarySection: some View {
+        Group {
+            KeylineSection("Excluded assets", icon: "hand.raised", iconTint: t.quiet)
+            CairnCard {
+                KeyValRow(
+                    "Excluded assets",
+                    value: { excludedValue },
+                    onTap: onOpenExcluded
+                )
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var safetyLimitsPage: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                safetyRailsCoreSection
+            }
+        }
+        .background(t.bg)
+        .navigationTitle("Safety & limits")
+        .cairnNavigationTitleDisplayMode(.inline)
+    }
+
+    /// Just the actual safety rails — percent threshold, strictness,
+    /// quarantine, iCloud limits, hard ceiling, propagation cutoff,
+    /// retry attempts. Excluded assets / deferred queue / rescan /
+    /// clear-hash-cache live on Library and Recovery now.
+    private var safetyRailsCoreSection: some View {
+        Group {
+            KeylineSection("Safety rails", icon: "shield", iconTint: t.verified)
+            CairnCard {
+                VStack(spacing: 0) {
+                    VStack(alignment: .leading, spacing: 0) {
+                        HStack(alignment: .firstTextBaseline, spacing: 0) {
+                            Spacer(minLength: 0)
+                            HelpPopover {
+                                Text("**Safety rail.** If a single run would move more than this fraction of matched photos to Immich's Trash, the run aborts without touching the server.")
+                                Text("Defends against bugs, permission regressions, or a library-wipe cascading into a mass delete.")
+                                Text("The \"Count floor\" under Advanced is paired with this: for small libraries, 1% can be just one or two photos, which is noise — the floor sets a minimum batch size before the percent check engages.")
+                            }
+                            .padding(.trailing, 6)
+                        }
+                        .padding(.top, 10)
+                        .padding(.bottom, -4)
+
+                        SliderInputRow(
+                            label: "Percent threshold",
+                            sub: String(
+                                format: "Abort if a run would move more than %.1f%% of matched assets to Immich's Trash.",
+                                settings.maxDeletePercent
+                            ),
+                            value: $settings.maxDeletePercent,
+                            range: 0.5...5,
+                            step: 0.1,
+                            unitSuffix: "%",
+                            format: { String(format: "%.1f", $0) },
+                            parse: NumericInputParse.decimal
+                        )
+                    }
+                    RowDivider()
+                    StrictnessRow(strictness: $settings.deletionStrictness)
+                    RowDivider()
+                    QuarantineRow(days: $settings.quarantineDays)
+                    RowDivider()
+                    ICloudDownloadLimitRow(mb: $settings.iCloudDownloadLimitMB)
+                    RowDivider()
+                    HardCeilingRow(mb: $settings.iCloudMaxEverBytesMB)
+                    RowDivider()
+                    PropagationMaxAgeRow(days: $settings.propagationMaxAgeDays)
+                    RowDivider()
+                    MaxRetryAttemptsRow(attempts: $settings.maxRetryAttempts)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var notificationsPage: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                notificationsSection
+            }
+        }
+        .background(t.bg)
+        .navigationTitle("Notifications")
+        .cairnNavigationTitleDisplayMode(.inline)
+    }
+
+    @ViewBuilder
+    private var permissionsPage: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                permissionsSection
+            }
+        }
+        .background(t.bg)
+        .navigationTitle("Permissions")
+        .cairnNavigationTitleDisplayMode(.inline)
+    }
+
+    @ViewBuilder
+    private var appearancePage: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                appearanceSection
+            }
+        }
+        .background(t.bg)
+        .navigationTitle("Appearance")
+        .cairnNavigationTitleDisplayMode(.inline)
+    }
+
+    @ViewBuilder
+    private var dataPage: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                dataSection
+            }
+        }
+        .background(t.bg)
+        .navigationTitle("Data")
+        .cairnNavigationTitleDisplayMode(.inline)
+    }
+
+    @ViewBuilder
+    private var recoveryPage: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                recoverySection
+                recoveryHashCacheSection
+            }
+        }
+        .background(t.bg)
+        .navigationTitle("Recovery")
+        .cairnNavigationTitleDisplayMode(.inline)
+    }
+
+    /// Hash-cache management rows lifted out of the old safety-rails
+    /// page. These are recovery-shaped affordances (rebuild the cache,
+    /// drop the change token, etc.) rather than safety knobs.
+    private var recoveryHashCacheSection: some View {
+        Group {
+            KeylineSection("Hash cache", icon: "arrow.clockwise", iconTint: t.info)
+            CairnCard {
+                VStack(spacing: 0) {
+                    DeferredQueueRow(
+                        summary: deferredQueue,
+                        isSyncing: isSyncing,
+                        syncProgress: syncProgress,
+                        onHashNow: onForceDrainDeferred
+                    )
+                    RowDivider()
+                    KeyValRow(
+                        "Rescan library",
+                        value: { Text("Force re-enumerate").foregroundStyle(t.infoInk) },
+                        chevron: true,
+                        onTap: { pendingRescanLibrary = true }
+                    )
+                    RowDivider()
+                    KeyValRow(
+                        "Clear hash cache",
+                        value: { Text("Force re-hash").foregroundStyle(t.infoInk) },
+                        chevron: true,
+                        onTap: { pendingClearHashCache = true }
+                    )
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var dangerZonePage: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                dangerZoneSection
+            }
+        }
+        .background(t.bg)
+        .navigationTitle("Danger zone")
+        .cairnNavigationTitleDisplayMode(.inline)
+    }
+
+    @ViewBuilder
+    private var advancedPage: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                advancedSection
+            }
+        }
+        .background(t.bg)
+        .navigationTitle("Advanced")
+        .cairnNavigationTitleDisplayMode(.inline)
+    }
+
+    @ViewBuilder
+    private var aboutPage: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                howItWorksSection
+                aboutSection
+            }
+        }
+        .background(t.bg)
+        .navigationTitle("About")
+        .cairnNavigationTitleDisplayMode(.inline)
     }
 
     private static let scrollTopAnchor = "cairn.scroll.top"
@@ -399,83 +778,7 @@ public struct SettingsScreen: View {
         }
     }
 
-    // MARK: - Safety rails
-
-    private var safetyRailsSection: some View {
-        Group {
-            KeylineSection("Safety rails", icon: "shield", iconTint: t.verified)
-            CairnCard {
-                VStack(spacing: 0) {
-                    VStack(alignment: .leading, spacing: 0) {
-                        HStack(alignment: .firstTextBaseline, spacing: 0) {
-                            Spacer(minLength: 0)
-                            HelpPopover {
-                                Text("**Safety rail.** If a single run would move more than this fraction of matched photos to Immich's Trash, the run aborts without touching the server.")
-                                Text("Defends against bugs, permission regressions, or a library-wipe cascading into a mass delete.")
-                                Text("The \"Count floor\" below is paired with this: for small libraries, 1% can be just one or two photos, which is noise — the floor sets a minimum batch size before the percent check engages.")
-                            }
-                            .padding(.trailing, 6)
-                        }
-                        .padding(.top, 10)
-                        .padding(.bottom, -4)
-
-                        SliderInputRow(
-                            label: "Percent threshold",
-                            sub: String(
-                                format: "Abort if a run would move more than %.1f%% of matched assets to Immich's Trash.",
-                                settings.maxDeletePercent
-                            ),
-                            value: $settings.maxDeletePercent,
-                            range: 0.5...5,
-                            step: 0.1,
-                            unitSuffix: "%",
-                            format: { String(format: "%.1f", $0) },
-                            parse: NumericInputParse.decimal
-                        )
-                    }
-                    RowDivider()
-                    StrictnessRow(strictness: $settings.deletionStrictness)
-                    RowDivider()
-                    QuarantineRow(days: $settings.quarantineDays)
-                    RowDivider()
-                    ICloudDownloadLimitRow(mb: $settings.iCloudDownloadLimitMB)
-                    RowDivider()
-                    HardCeilingRow(mb: $settings.iCloudMaxEverBytesMB)
-                    RowDivider()
-                    PropagationMaxAgeRow(days: $settings.propagationMaxAgeDays)
-                    RowDivider()
-                    MaxRetryAttemptsRow(attempts: $settings.maxRetryAttempts)
-                    RowDivider()
-                    DeferredQueueRow(
-                        summary: deferredQueue,
-                        isSyncing: isSyncing,
-                        syncProgress: syncProgress,
-                        onHashNow: onForceDrainDeferred
-                    )
-                    RowDivider()
-                    KeyValRow(
-                        "Rescan library",
-                        value: { Text("Force re-enumerate").foregroundStyle(t.infoInk) },
-                        chevron: true,
-                        onTap: { pendingRescanLibrary = true }
-                    )
-                    RowDivider()
-                    KeyValRow(
-                        "Clear hash cache",
-                        value: { Text("Force re-hash").foregroundStyle(t.infoInk) },
-                        chevron: true,
-                        onTap: { pendingClearHashCache = true }
-                    )
-                    RowDivider()
-                    KeyValRow(
-                        "Excluded assets",
-                        value: { excludedValue },
-                        onTap: onOpenExcluded
-                    )
-                }
-            }
-        }
-    }
+    // MARK: - Excluded-value sub-view
 
     @ViewBuilder
     private var excludedValue: some View {
@@ -1033,6 +1336,97 @@ public struct SettingsScreen: View {
     }
 }
 
+/// Cross-platform shim for `navigationBarTitleDisplayMode` — only
+/// available on iOS, but the CairnIOSCore module also builds on macOS
+/// for tests / previews / lint targets. On non-iOS platforms this is
+/// a no-op so the call sites can stay flat.
+extension View {
+    @ViewBuilder
+    func cairnNavigationTitleDisplayMode(_ mode: CairnNavigationTitleDisplayMode) -> some View {
+        #if os(iOS)
+        switch mode {
+        case .large: self.navigationBarTitleDisplayMode(.large)
+        case .inline: self.navigationBarTitleDisplayMode(.inline)
+        }
+        #else
+        self
+        #endif
+    }
+}
+
+enum CairnNavigationTitleDisplayMode {
+    case large
+    case inline
+}
+
+/// Row used by the new hierarchical Settings root. Visually inspired
+/// by iOS Settings.app's category rows: leading rounded icon tile,
+/// title, optional summary value, trailing chevron. Wraps a
+/// `NavigationLink` so the destination view pushes onto the
+/// surrounding `NavigationStack`. Tap target spans the row.
+private struct SettingsCategoryRow<Destination: View>: View {
+    let icon: String
+    let iconTint: Color
+    let title: String
+    /// Optional inline summary on the right (before the chevron).
+    /// Lets the parent row show "Indexing scope · 3 albums" so the
+    /// user can spot a non-default state without drilling in.
+    let summary: String?
+    let destination: () -> Destination
+
+    @Environment(\.cairnTokens) private var t
+
+    init(
+        icon: String,
+        iconTint: Color,
+        title: String,
+        summary: String? = nil,
+        @ViewBuilder destination: @escaping () -> Destination
+    ) {
+        self.icon = icon
+        self.iconTint = iconTint
+        self.title = title
+        self.summary = summary
+        self.destination = destination
+    }
+
+    var body: some View {
+        NavigationLink {
+            destination()
+        } label: {
+            HStack(spacing: 12) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(iconTint.opacity(0.16))
+                        .frame(width: 30, height: 30)
+                    Image(systemName: icon)
+                        .font(.cairnScaled(size: 14, weight: .semibold))
+                        .foregroundStyle(iconTint)
+                }
+                Text(title)
+                    .font(.cairnScaled(size: 15))
+                    .foregroundStyle(t.textBody)
+                Spacer(minLength: 8)
+                if let summary, !summary.isEmpty {
+                    Text(summary)
+                        .font(.cairnScaled(size: 13))
+                        .foregroundStyle(t.textMuted)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+                Image(systemName: "chevron.right")
+                    .font(.cairnScaled(size: 12, weight: .semibold))
+                    .foregroundStyle(t.textHint)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityHint(summary.map { "Current: \($0)" } ?? "")
+    }
+}
+
 /// Static helpers reading the bundled marketing version + build
 /// number from `Info.plist`. Centralized so the footer, About
 /// sheet, and any future diagnostics surface stay consistent.
@@ -1103,7 +1497,7 @@ struct AboutSheet: View {
             .background(t.bg)
             .navigationTitle("About")
             #if canImport(UIKit)
-            .navigationBarTitleDisplayMode(.inline)
+            .cairnNavigationTitleDisplayMode(.inline)
             #endif
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
