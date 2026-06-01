@@ -241,13 +241,21 @@ public struct SettingsScreen: View {
             // `.navigationBarDrawer` placement so the same source
             // compiles for macOS tooling / preview builds too.
             .searchable(text: $searchText, prompt: "Search settings")
-        // Keyboard dismissal: drag down on the list to interactively
-        // drag the keyboard away, or tap any empty chrome outside
-        // the focused field. Together these replace the explicit
-        // keyboard-toolbar Done button, which rendered awkwardly
-        // on iOS 26.
-        .scrollDismissesKeyboard(.interactively)
-        .cairnDismissKeyboardOnBackgroundTap()
+            // Keyboard dismissal: drag down on the list to interactively
+            // drag the keyboard away, or tap any empty chrome outside
+            // the focused field. Together these replace the explicit
+            // keyboard-toolbar Done button, which rendered awkwardly
+            // on iOS 26.
+            .scrollDismissesKeyboard(.interactively)
+            .cairnDismissKeyboardOnBackgroundTap()
+        }
+        // Alerts / sheets / fileImporters are attached to the
+        // NavigationStack itself rather than to the root content,
+        // so they present from a layer that's above the navigation
+        // push. Previously, attaching them to the inner ScrollView
+        // meant their triggers from inside a pushed sub-page (e.g.
+        // tapping "Export data" on Data & recovery) silently queued
+        // until the user popped back to the root — visible bug.
         // Destructive confirmations use `.alert` (centered modal) not
         // `.confirmationDialog` — on iOS 26 / Liquid Glass, the latter
         // adapts to a popover with an arrow that anchors to a near-
@@ -373,7 +381,6 @@ public struct SettingsScreen: View {
         )
         .sheet(isPresented: $showAbout) {
             AboutSheet(onClose: { showAbout = false })
-        }
         }
     }
 
