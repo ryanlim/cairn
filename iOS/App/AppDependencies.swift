@@ -1455,7 +1455,17 @@ final class AppDependencies {
         // savings dwarf the serialization cost on any non-trivial
         // library. The near-zero-hit fallback inside `runImputationPass`
         // protects the fresh-phone-restore case.
-        if model.settings.fastInitialScan {
+        // Imputation only fires when there's no PhotoKit change-token
+        // — i.e., this sync is a full enumeration (bootstrap install,
+        // post-Clear-Hash-Cache, post-Reset-Index, post-Rescan-Library).
+        // On normal incremental syncs the cache is already populated
+        // and imputation would find nothing to seed; running it anyway
+        // just serializes the server fetch + PHAssetResource enumeration
+        // ahead of the hash pass for no payoff. The change-token is
+        // the load-bearing signal because every place that resets the
+        // hash cache also clears the token.
+        let isBootstrapScan = (try? await tokenStore?.load()) == nil
+        if model.settings.fastInitialScan && isBootstrapScan {
             model.transitionSyncPhase(to: .imputingFromServer)
             let imputeStart = Date()
             let serverPrefetch = try await serverAssetsTask.value
