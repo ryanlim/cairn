@@ -1070,11 +1070,12 @@ final class AppDependencies {
         // to local hashing instead of being trust-seeded. Visible in
         // the activity feed so the user can see why their residue
         // size is what it is (filename-missing vs collision vs
-        // server doesn't have it at all).
+        // server doesn't have it at all vs Live Photo).
         let missingFilename: Int     // PHAssetResource didn't yield an originalFilename
         let missingCreationDate: Int // PHAsset.creationDate was nil
         let noServerMatch: Int       // valid phone key, no matching server row
         let ambiguousPhoneSide: Int  // phone key hit an ambiguous server bucket
+        let livePhotoSkipped: Int    // matched a Live Photo; imputation declined (motion-video hash drift)
     }
 
     /// Render the imputation outcome's skip-reason categories as a
@@ -1087,6 +1088,9 @@ final class AppDependencies {
         var parts: [String] = []
         if outcome.noServerMatch > 0 {
             parts.append("\(outcome.noServerMatch.formatted(.number)) not on Immich")
+        }
+        if outcome.livePhotoSkipped > 0 {
+            parts.append("\(outcome.livePhotoSkipped.formatted(.number)) Live Photo (motion video transcoded)")
         }
         if outcome.ambiguousPhoneSide > 0 {
             parts.append("\(outcome.ambiguousPhoneSide.formatted(.number)) ambiguous (filename + date collision)")
@@ -1142,24 +1146,22 @@ final class AppDependencies {
         //    filename + capture-second) get dropped entirely so
         //    those localIds fall through to local hashing.
         //
-        //    Also build a secondary id→asset map so a matched still
-        //    asset's livePhotoVideoId can be resolved to the paired
-        //    motion video's checksum. Live Photos are one phone
-        //    localId with two server assets (still + motion linked
-        //    by livePhotoVideoId); seeding only the still leaves
-        //    the motion checksum in ObservedStore but absent from
-        //    LocalHashStore, which the engine flags as a phantom
-        //    deletion. Seeding both checksums under the one localId
-        //    keeps the engine's diff honest.
+        //    Live Photo motion videos (server rows with `isLivePhoto`
+        //    paired via livePhotoVideoId) aren't dereferenced —
+        //    Live Photos as a class are skipped during seeding
+        //    (matched server stills with non-nil livePhotoVideoId
+        //    are dropped). The build-95 try at seeding the paired
+        //    motion checksum produced systematic phantom orphans
+        //    because Immich processes motion videos at upload time
+        //    and the server's SHA1 doesn't round-trip back to the
+        //    phone bytes.
         struct JoinKey: Hashable {
             let filename: String
             let secondsSince1970: Int
         }
         var byKey: [JoinKey: ServerAsset] = [:]
-        var byId: [String: ServerAsset] = [:]
         var ambiguous = Set<JoinKey>()
         for asset in serverAssets where !asset.isTrashed {
-            byId[asset.id] = asset
             guard let filename = asset.originalFileName, !filename.isEmpty,
                   let created = asset.fileCreatedAt else { continue }
             let key = JoinKey(filename: filename, secondsSince1970: Int(created.timeIntervalSince1970))
@@ -1217,6 +1219,7 @@ final class AppDependencies {
         var missingCreationDate = 0
         var noServerMatch = 0
         var ambiguousPhoneSide = 0
+        var livePhotoSkipped = 0
         for entry in phoneEntries {
             // Skip rows already in the cache before counting skip
             // reasons — those aren't residue, they're already done.
@@ -1249,18 +1252,30 @@ final class AppDependencies {
                 noServerMatch += 1
                 continue
             }
-            // Collect both still and paired-motion checksums when
-            // present. The motion video's server row is reached via
-            // livePhotoVideoId; if the paired row exists and is
-            // non-trashed (it's in byId because we filtered to
-            // non-trashed during map construction), include its
-            // checksum too.
-            var checksums: Set<Checksum> = [serverAsset.checksum]
-            if let pairedId = serverAsset.livePhotoVideoId,
-               let paired = byId[pairedId] {
-                checksums.insert(paired.checksum)
+            // Live Photos are EXCLUDED from imputation entirely.
+            // Build-95 attempted to include the paired motion video's
+            // checksum via livePhotoVideoId, but Immich processes
+            // motion videos at upload time (transcoding, container
+            // changes), so the server's stored SHA1 systematically
+            // doesn't match the on-device SHA1. Imputing the wrong
+            // motion-video checksum then surfaces as a phantom
+            // deletion candidate the moment ObservedStore retains the
+            // real phone-side hash from any prior sync (which is
+            // the steady-state condition after a Clear Hash Cache).
+            //
+            // Letting Live Photos fall through to local hashing
+            // costs the imputation speedup for them but keeps the
+            // identity model honest. Non-Live-Photo stills
+            // (the majority of camera-roll content) still benefit.
+            //
+            // The detection signal: a non-nil livePhotoVideoId on
+            // the matched server asset means it's the still photo
+            // half of a Live Photo pair on the server side.
+            if serverAsset.livePhotoVideoId != nil {
+                livePhotoSkipped += 1
+                continue
             }
-            seedable.append((entry.localId, checksums, entry.modDate))
+            seedable.append((entry.localId, [serverAsset.checksum], entry.modDate))
         }
         let hits = seedable.count + alreadyCachedMatches
 
@@ -1281,7 +1296,8 @@ final class AppDependencies {
                 missingFilename: missingFilename,
                 missingCreationDate: missingCreationDate,
                 noServerMatch: noServerMatch,
-                ambiguousPhoneSide: ambiguousPhoneSide
+                ambiguousPhoneSide: ambiguousPhoneSide,
+                livePhotoSkipped: livePhotoSkipped
             )
         }
 
@@ -1309,7 +1325,8 @@ final class AppDependencies {
             missingFilename: missingFilename,
             missingCreationDate: missingCreationDate,
             noServerMatch: noServerMatch,
-            ambiguousPhoneSide: ambiguousPhoneSide
+            ambiguousPhoneSide: ambiguousPhoneSide,
+            livePhotoSkipped: livePhotoSkipped
         )
     }
 
