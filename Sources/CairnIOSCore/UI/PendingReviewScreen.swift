@@ -1155,16 +1155,18 @@ private struct PendingReviewGroupRow: View {
                     }
                 }
 
-                HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 2) {
                     Text(kindLabel(for: representative))
+                        .font(.cairnScaled(size: 11.5))
+                        .foregroundStyle(t.textMuted)
+                        .lineLimit(1)
                     if let countdown {
-                        Text("·")
                         Text(countdown)
+                            .font(.cairnScaled(size: 11.5))
+                            .foregroundStyle(t.textMuted)
+                            .lineLimit(1)
                     }
                 }
-                .font(.cairnScaled(size: 11.5))
-                .foregroundStyle(t.textMuted)
-                .lineLimit(1)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
