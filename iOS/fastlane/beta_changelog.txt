@@ -1,1 +1,3 @@
-The connection status pill on Settings → Connection now shows when the latency was measured. "● healthy · 42ms · 12s ago" — the trailing tail advances over time (just now / Ns / Nm / Nh / Nd) so a number that looks fresh stays honest about its age. Updates on a 1-minute timer while the page is visible, and re-measures on appear + after every sync (from build 88).
+Settings Phase 3: a search bar on the Settings root. Type a keyword and the page replaces its category list with a flat list of matching rows from anywhere in Settings — title first, synonyms (e.g. "icloud," "danger," "rebuild") matched too. Tap a result to drill into the sub-page that owns it.
+
+Closes out the three-phase Settings reshape (hierarchical sub-pages → quick-settings card + summaries → search) from earlier builds. The intent was: frequently-tweaked settings one tap away, set-once knobs grouped behind coherent sub-pages, and a search bar for the "I know it's somewhere" cases.
