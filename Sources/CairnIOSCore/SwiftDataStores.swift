@@ -1029,22 +1029,28 @@ public actor SwiftDataLocalHashStore: LocalHashStore {
         return try context.fetch(descriptor).first?.modificationDate
     }
 
-    public func setImputed(_ checksum: Checksum, for localIdentifier: String, modificationDate: Date?) async throws {
+    public func setImputed(_ checksums: Set<Checksum>, for localIdentifier: String, modificationDate: Date?) async throws {
         // Same replace-all-prior-rows semantics as `set`, but stamps
         // `imputed = true` so the verify-on-touch path knows to re-hash
         // before propagating any deletion that resolves through it.
+        // Multiple checksums per localId is the Live Photo case:
+        // still + paired motion video both seed under the same
+        // PHAsset.localIdentifier.
+        guard !checksums.isEmpty else { return }
         let staleDescriptor = FetchDescriptor<StoredLocalHashEntry>(
             predicate: #Predicate<StoredLocalHashEntry> { $0.localIdentifier == localIdentifier }
         )
         for row in try context.fetch(staleDescriptor) {
             context.delete(row)
         }
-        context.insert(StoredLocalHashEntry(
-            localIdentifier: localIdentifier,
-            base64: checksum.base64,
-            modificationDate: modificationDate,
-            imputed: true
-        ))
+        for checksum in checksums {
+            context.insert(StoredLocalHashEntry(
+                localIdentifier: localIdentifier,
+                base64: checksum.base64,
+                modificationDate: modificationDate,
+                imputed: true
+            ))
+        }
         try context.save()
     }
 

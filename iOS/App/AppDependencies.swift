@@ -1141,13 +1141,25 @@ final class AppDependencies {
         //    Ambiguous keys (multiple non-trashed rows on the same
         //    filename + capture-second) get dropped entirely so
         //    those localIds fall through to local hashing.
+        //
+        //    Also build a secondary id→asset map so a matched still
+        //    asset's livePhotoVideoId can be resolved to the paired
+        //    motion video's checksum. Live Photos are one phone
+        //    localId with two server assets (still + motion linked
+        //    by livePhotoVideoId); seeding only the still leaves
+        //    the motion checksum in ObservedStore but absent from
+        //    LocalHashStore, which the engine flags as a phantom
+        //    deletion. Seeding both checksums under the one localId
+        //    keeps the engine's diff honest.
         struct JoinKey: Hashable {
             let filename: String
             let secondsSince1970: Int
         }
         var byKey: [JoinKey: ServerAsset] = [:]
+        var byId: [String: ServerAsset] = [:]
         var ambiguous = Set<JoinKey>()
         for asset in serverAssets where !asset.isTrashed {
+            byId[asset.id] = asset
             guard let filename = asset.originalFileName, !filename.isEmpty,
                   let created = asset.fileCreatedAt else { continue }
             let key = JoinKey(filename: filename, secondsSince1970: Int(created.timeIntervalSince1970))
@@ -1199,7 +1211,7 @@ final class AppDependencies {
         //    explain *why* the residue is the size it is.
         let cachedIds = (try? await self.localHashStore.allLocalIdentifiers()) ?? []
 
-        var seedable: [(localId: String, checksum: Checksum, modDate: Date?)] = []
+        var seedable: [(localId: String, checksums: Set<Checksum>, modDate: Date?)] = []
         var alreadyCachedMatches = 0
         var missingFilename = 0
         var missingCreationDate = 0
@@ -1237,7 +1249,18 @@ final class AppDependencies {
                 noServerMatch += 1
                 continue
             }
-            seedable.append((entry.localId, serverAsset.checksum, entry.modDate))
+            // Collect both still and paired-motion checksums when
+            // present. The motion video's server row is reached via
+            // livePhotoVideoId; if the paired row exists and is
+            // non-trashed (it's in byId because we filtered to
+            // non-trashed during map construction), include its
+            // checksum too.
+            var checksums: Set<Checksum> = [serverAsset.checksum]
+            if let pairedId = serverAsset.livePhotoVideoId,
+               let paired = byId[pairedId] {
+                checksums.insert(paired.checksum)
+            }
+            seedable.append((entry.localId, checksums, entry.modDate))
         }
         let hits = seedable.count + alreadyCachedMatches
 
@@ -1269,7 +1292,7 @@ final class AppDependencies {
         for entry in seedable {
             try Task.checkCancellation()
             try await self.localHashStore.setImputed(
-                entry.checksum,
+                entry.checksums,
                 for: entry.localId,
                 modificationDate: entry.modDate
             )

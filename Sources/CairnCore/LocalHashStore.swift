@@ -82,12 +82,18 @@ public protocol LocalHashStore: Sendable {
     /// trustworthy" signal.
     func set(_ checksums: Set<Checksum>, for localIdentifier: String, modificationDate: Date?) async throws
 
-    /// Record a single checksum **imputed from server-side trust** —
-    /// not computed locally. Used by the fast-initial-scan path when
-    /// `phone.localId == server.deviceAssetId` lets us trust the
-    /// server's SHA1 without re-hashing locally. Marks the entry as
-    /// `imputed = true`; the verify-on-touch path will re-hash before
-    /// propagating any deletion that resolves through this entry.
+    /// Record one or more checksums **imputed from server-side
+    /// trust** — not computed locally. Used by the fast-initial-scan
+    /// path when a `(filename, fileCreatedAt)` match against the
+    /// server lets us trust the server's SHA1(s) without re-hashing
+    /// locally. Marks every resulting row as `imputed = true`.
+    ///
+    /// Live Photos pass multiple checksums in a single call: a Live
+    /// Photo is one phone localId with two server assets (still +
+    /// motion video, linked via `livePhotoVideoId`), and both
+    /// checksums must land on the same localId so the engine's
+    /// `observed - currentLocal` diff doesn't phantom-delete the
+    /// motion video. Non-Live-Photo callers pass a one-element set.
     ///
     /// Replaces any prior entries for the identifier (same shape as
     /// `set`). `modificationDate` should be the phone-side asset's
@@ -95,7 +101,7 @@ public protocol LocalHashStore: Sendable {
     /// for incremental scans.
     ///
     /// See `docs/active-design/fast-initial-scan-plan.md`.
-    func setImputed(_ checksum: Checksum, for localIdentifier: String, modificationDate: Date?) async throws
+    func setImputed(_ checksums: Set<Checksum>, for localIdentifier: String, modificationDate: Date?) async throws
 
     /// Whether the cached entries for `localIdentifier` were imputed
     /// (trusted from the server) rather than locally hashed. Used by
@@ -183,11 +189,11 @@ public extension LocalHashStore {
     }
 
     /// Fallback for stores that don't track imputation (CLI fixtures,
-    /// JSON-file stores used by tests). Records the checksum via the
+    /// JSON-file stores used by tests). Records the checksums via the
     /// regular `set` path with no imputed flag — these stores don't
     /// participate in the fast-initial-scan optimization.
-    func setImputed(_ checksum: Checksum, for localIdentifier: String, modificationDate: Date?) async throws {
-        try await set([checksum], for: localIdentifier, modificationDate: modificationDate)
+    func setImputed(_ checksums: Set<Checksum>, for localIdentifier: String, modificationDate: Date?) async throws {
+        try await set(checksums, for: localIdentifier, modificationDate: modificationDate)
     }
 
     /// Fallback for stores that don't track imputation. Always false.
@@ -244,8 +250,8 @@ public extension LocalHashStore {
             }
         }
         for (localId, entry) in grouped {
-            if entry.imputed, let single = entry.checksums.first, entry.checksums.count == 1 {
-                try await setImputed(single, for: localId, modificationDate: entry.modDate)
+            if entry.imputed {
+                try await setImputed(entry.checksums, for: localId, modificationDate: entry.modDate)
             } else {
                 try await set(entry.checksums, for: localId, modificationDate: entry.modDate)
             }

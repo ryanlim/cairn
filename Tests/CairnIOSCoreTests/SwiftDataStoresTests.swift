@@ -526,7 +526,7 @@ struct SwiftDataLocalHashStoreTests {
         let container = try makeContainer()
         let store = SwiftDataLocalHashStore(container: container)
 
-        try await store.setImputed(Checksum(base64: "A"), for: "id-1", modificationDate: nil)
+        try await store.setImputed([Checksum(base64: "A")], for: "id-1", modificationDate: nil)
         #expect(try await store.isImputed(for: "id-1") == true)
         // Cached checksum reads back identically — imputed entries
         // participate in the normal lookup path.
@@ -538,7 +538,7 @@ struct SwiftDataLocalHashStoreTests {
         let container = try makeContainer()
         let store = SwiftDataLocalHashStore(container: container)
 
-        try await store.setImputed(Checksum(base64: "A"), for: "id-1", modificationDate: nil)
+        try await store.setImputed([Checksum(base64: "A")], for: "id-1", modificationDate: nil)
         #expect(try await store.isImputed(for: "id-1") == true)
 
         // The hashing path (set) is treated as "this value was just
@@ -568,8 +568,8 @@ struct SwiftDataLocalHashStoreTests {
         let container = try makeContainer()
         let store = SwiftDataLocalHashStore(container: container)
 
-        try await store.setImputed(Checksum(base64: "A"), for: "id-1", modificationDate: nil)
-        try await store.setImputed(Checksum(base64: "B"), for: "id-2", modificationDate: nil)
+        try await store.setImputed([Checksum(base64: "A")], for: "id-1", modificationDate: nil)
+        try await store.setImputed([Checksum(base64: "B")], for: "id-2", modificationDate: nil)
         try await store.set(cks("C"), for: "id-3", modificationDate: nil)
 
         #expect(try await store.imputedCount() == 2)
@@ -583,7 +583,7 @@ struct SwiftDataLocalHashStoreTests {
         let store = SwiftDataLocalHashStore(container: container)
 
         try await store.set(cks("A", "B"), for: "id-1", modificationDate: nil)
-        try await store.setImputed(Checksum(base64: "C"), for: "id-1", modificationDate: nil)
+        try await store.setImputed([Checksum(base64: "C")], for: "id-1", modificationDate: nil)
 
         // Old A and B gone; only the imputed C remains.
         #expect(try await store.checksums(for: "id-1") == cks("C"))
@@ -600,7 +600,7 @@ struct SwiftDataLocalHashStoreTests {
 
         // One id with two checksums (Live Photo), one id imputed.
         try await store.set(cks("A", "B"), for: "id-1", modificationDate: modDate)
-        try await store.setImputed(Checksum(base64: "C"), for: "id-2", modificationDate: nil)
+        try await store.setImputed([Checksum(base64: "C")], for: "id-2", modificationDate: nil)
 
         let rows = try await store.exportableRows()
         #expect(rows.count == 3)
@@ -623,7 +623,7 @@ struct SwiftDataLocalHashStoreTests {
         let modDate = Date(timeIntervalSince1970: 1_700_000_000)
         let source = SwiftDataLocalHashStore(container: try makeContainer())
         try await source.set(cks("A", "B"), for: "id-1", modificationDate: modDate)
-        try await source.setImputed(Checksum(base64: "C"), for: "id-2", modificationDate: nil)
+        try await source.setImputed([Checksum(base64: "C")], for: "id-2", modificationDate: nil)
         try await source.set(cks("D"), for: "id-3", modificationDate: modDate)
 
         let rows = try await source.exportableRows()
