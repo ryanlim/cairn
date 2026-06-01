@@ -29,7 +29,7 @@ All of this is local to your device. Nothing is synchronized to a cloud account 
 - **Exclusion list** — checksums you've explicitly protected from future runs.
 - **App settings** — your thresholds, quarantine window, appearance preference, etc.
 
-You can wipe any of this from Settings → Danger zone (Reset index / Clear journal / Sign out of server) or by deleting the app.
+You can wipe any of this from Settings → Advanced → Danger zone (Reset index / Clear journal / Sign out of server) or by deleting the app.
 
 ## What `cairn` sends over the network
 
@@ -56,9 +56,9 @@ Only requests to your configured Immich server, signed with your API key:
 
 - Data stays until you remove it.
 - **Uninstalling `cairn`** removes the iOS Keychain entries, the on-device stores, and the journal. (Apple deletes app-sandbox data on uninstall.)
-- **Settings → Sign out of server** removes credentials from Keychain but preserves the indexed state for when you sign back in.
-- **Settings → Reset index** wipes the SHA1 cache, ever-seen set, and quarantine state. Credentials and exclusions are preserved.
-- **Settings → Clear journal** deletes the deletion-journal.jsonl file from disk.
+- **Settings → Advanced → Danger zone → Sign out of server** removes credentials from Keychain but preserves the indexed state for when you sign back in.
+- **Settings → Advanced → Danger zone → Reset index** wipes the SHA1 cache, ever-seen set, and quarantine state. Credentials and exclusions are preserved.
+- **Settings → Advanced → Danger zone → Clear journal** deletes the deletion-journal.jsonl file from disk.
 
 Data stored on your Immich server is governed by your Immich server, not by `cairn`.
 

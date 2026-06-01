@@ -10,7 +10,7 @@ This page is the support resource for the iOS app.
 
 Email **cairn-ios@proton.me** for support, bug reports, or feature requests. Include:
 
-- the build number you're running (Settings → About cairn)
+- the build number you're running (Settings → About)
 - your iOS version
 - a short description of what you tried and what happened
 
@@ -34,7 +34,7 @@ Every sync run is tagged on Immich with `cairn/v1/run/<id>`. To undo, open `cair
 
 ### `cairn` says "Couldn't reach Immich" — what now?
 
-The server is unreachable (offline, wrong URL, VPN dropped, certificate expired). `cairn` doesn't lose any work — your decisions are queued and replayed when the connection returns. If you're sure the server is online, double-check the URL in Settings → Immich server.
+The server is unreachable (offline, wrong URL, VPN dropped, certificate expired). `cairn` doesn't lose any work — your decisions are queued and replayed when the connection returns. If you're sure the server is online, double-check the URL in Settings → Connection.
 
 ### Why does `cairn` need Full Photos access?
 

@@ -59,8 +59,8 @@ re-seeds the fixture state on each round (so the trash / approve /
 dismiss flows can be exercised repeatedly without rebuilding the
 app); this is expected and not a defect.
 
-To exit review mode: Settings → Sign out. Onboarding will
-restart for normal use.
+To exit review mode: Settings → Advanced → Danger zone → Sign
+out. Onboarding will restart for normal use.
 
 FAQ
 — "Permanently deleted?" No. Trash only. 30-day retention on
