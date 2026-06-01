@@ -1,7 +1,11 @@
-Fix: the fast initial scan from build 85 was silently broken on current Immich. Immich removed the per-device asset identifier (deviceAssetId) from its asset schema in April 2026 as part of moving to checksum-based identity. With that field gone, the trust-seed join had nothing to match on — "Matching from server" would run and find zero hits, falling through to full local hashing.
+Bug fix: after the clear-cache + fast-initial-scan test, Live Photos were phantom-flagging their paired motion video as a deletion candidate (visible as "Aging out" entries in Pending Review even though nothing had actually been deleted on the phone).
 
-This build pivots the join to a different stable pair: filename + capture date. For photos that Immich's mobile app uploaded from this iPhone, both values round-trip exactly through the upload → server → cairn path, so the match should land just as well as before. The join is heuristic where the previous one was rigorous, so the safety guards are tightened: any (filename, capture-date) pair that matches more than one non-trashed server row is treated as ambiguous and falls through to local hashing. The near-zero-hit fallback, the imputed flag, the verify-on-edit path, and the 30-day Immich Trash recovery window are all unchanged.
+Cause: a Live Photo is one PHAsset localId on the phone but two server assets on Immich (still photo + motion video, linked by livePhotoVideoId). Imputation seeded only the still's checksum, so when the hash pass skipped the asset (modDate matched the imputed row), the motion video's checksum was missing from the local cache. ObservedStore retained it from prior syncs, the engine saw it as missing, and quarantine started.
 
-Worst case from a bad imputed match: cairn trashes the wrong server row when you've already asked for some delete. Recoverable from Immich Trash.
+The fix: imputation now seeds both checksums under the same localId by following the still's livePhotoVideoId to its paired motion asset. Users who already had phantom entries can dismiss or exclude them via Pending Review; the bug doesn't repeat from this build onward.
 
-To test on an already-indexed install: Settings → Data & recovery → Export data (backup), then Library → Trust server checksums → ON, then Data & recovery → Clear hash cache → Clear, then sync. The "Matching from server" phase should now actually produce a non-zero trust-seeded count. Restore the backup via Data & recovery → Import data when done.
+UI follow-ups in the same build:
+- Sync detail's current-phase card now keeps a constant height during hashing so the timeline below it doesn't bounce every time the currently-hashed file changes
+- Activity feed coalesces consecutive hash-progress entries into a single rolling row instead of flooding the list with hundreds of near-identical entries
+- After the imputation pass, the activity feed gets a follow-up line breaking down WHY each part of the residue is falling through to local hashing ("N not on Immich, M ambiguous, …")
+- Pending review's compact "Aging out" rows put the "eligible in N days" text on its own line so it doesn't truncate
