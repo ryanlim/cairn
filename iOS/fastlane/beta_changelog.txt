@@ -1,11 +1,3 @@
-Bug fix: after the clear-cache + fast-initial-scan test, Live Photos were phantom-flagging their paired motion video as a deletion candidate (visible as "Aging out" entries in Pending Review even though nothing had actually been deleted on the phone).
+Fix: the fast-initial-scan / imputation pass was running on every sync, not just on bootstrap. On normal incremental syncs the local cache is already populated so the imputation has nothing to seed — it'd find every phone asset as "already cached" and exit. But it still spent time enumerating the phone library + PHAssetResource filenames + the server (filename, capture-date) map, and worse, serialized the server fetch before the hash pass for that whole window. The "Matching from server" phase appearing briefly on every sync was the visible symptom.
 
-Cause: a Live Photo is one PHAsset localId on the phone but two server assets on Immich (still photo + motion video, linked by livePhotoVideoId). Imputation seeded only the still's checksum, so when the hash pass skipped the asset (modDate matched the imputed row), the motion video's checksum was missing from the local cache. ObservedStore retained it from prior syncs, the engine saw it as missing, and quarantine started.
-
-The fix: imputation now seeds both checksums under the same localId by following the still's livePhotoVideoId to its paired motion asset. Users who already had phantom entries can dismiss or exclude them via Pending Review; the bug doesn't repeat from this build onward.
-
-UI follow-ups in the same build:
-- Sync detail's current-phase card now keeps a constant height during hashing so the timeline below it doesn't bounce every time the currently-hashed file changes
-- Activity feed coalesces consecutive hash-progress entries into a single rolling row instead of flooding the list with hundreds of near-identical entries
-- After the imputation pass, the activity feed gets a follow-up line breaking down WHY each part of the residue is falling through to local hashing ("N not on Immich, M ambiguous, …")
-- Pending review's compact "Aging out" rows put the "eligible in N days" text on its own line so it doesn't truncate
+Now gated on the PhotoKit change-token: imputation runs only when the token is absent (fresh install, after Clear Hash Cache, after Reset Index, after Rescan Library — the cases where the cache is actually empty). On normal syncs the server fetch runs parallel with the hash pass again as it should, and the "Matching from server" phase doesn't appear at all.
