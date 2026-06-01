@@ -175,11 +175,20 @@ public struct InitialScanScreen: View {
     /// Elapsed = frozen paused value when paused, else live
     /// `now - startedAt`. When both are nil, returns nil (no scan
     /// has run yet this session).
-    private var elapsed: TimeInterval? {
+    ///
+    /// Two variants: `elapsedTime(now:)` takes an explicit current
+    /// time so a `TimelineView` tick can drive periodic re-evaluation
+    /// of the displayed ELAPSED cell. `elapsed` (no-arg) uses
+    /// `Date()` — kept for internal computations (ETA derivation,
+    /// confidence tiers) where the precise tick alignment doesn't
+    /// matter.
+    private func elapsedTime(now: Date) -> TimeInterval? {
         if let pausedElapsed { return pausedElapsed }
         guard let startedAt else { return nil }
-        return Date().timeIntervalSince(startedAt)
+        return now.timeIntervalSince(startedAt)
     }
+
+    private var elapsed: TimeInterval? { elapsedTime(now: Date()) }
 
     /// True when the scan has run and been interrupted — progress is
     /// frozen at the last known values. Drives the paused CTA layout.
@@ -583,30 +592,32 @@ public struct InitialScanScreen: View {
         }
     }
 
-    /// Two-column stats strip under the progress bar.
+    /// Two-column stats strip under the progress bar. Wrapped in a
+    /// single `TimelineView` ticking once per second so BOTH cells
+    /// (ELAPSED + REMAINING) refresh on the same cadence. Previously
+    /// only REMAINING was inside a TimelineView; ELAPSED only
+    /// re-rendered when some other piece of view state changed,
+    /// which meant during long pre-hash phases the elapsed clock
+    /// could sit frozen for many seconds and then jump when the
+    /// hash pass started ticking.
     @ViewBuilder
     private var timingStrip: some View {
-        HStack(spacing: 24) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("ELAPSED")
-                    .font(.cairnScaled(size: 10, weight: .semibold))
-                    .tracking(0.9)
-                    .foregroundStyle(t.textHint)
-                Text(elapsed.map(Self.formatDuration) ?? "—")
-                    .font(.cairnScaled(size: 14, weight: .semibold).monospacedDigit())
-                    .foregroundStyle(t.textBody)
-            }
-            VStack(alignment: .leading, spacing: 2) {
-                Text("REMAINING")
-                    .font(.cairnScaled(size: 10, weight: .semibold))
-                    .tracking(0.9)
-                    .foregroundStyle(t.textHint)
-                TimelineView(.periodic(from: Date(), by: 1.0)) { context in
-                    // Periodic tick handles the "no asset progress in 8s
-                    // but it's been long enough to refresh anyway" case
-                    // — strict `.onChange(of: hashed)` would never fire
-                    // during a long iCloud wait and the displayed value
-                    // would silently go stale.
+        TimelineView(.periodic(from: Date(), by: 1.0)) { context in
+            HStack(spacing: 24) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("ELAPSED")
+                        .font(.cairnScaled(size: 10, weight: .semibold))
+                        .tracking(0.9)
+                        .foregroundStyle(t.textHint)
+                    Text(elapsedTime(now: context.date).map(Self.formatDuration) ?? "—")
+                        .font(.cairnScaled(size: 14, weight: .semibold).monospacedDigit())
+                        .foregroundStyle(t.textBody)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("REMAINING")
+                        .font(.cairnScaled(size: 10, weight: .semibold))
+                        .tracking(0.9)
+                        .foregroundStyle(t.textHint)
                     Text(remainingDisplay)
                         .font(.cairnScaled(size: 14, weight: .semibold).monospacedDigit())
                         .foregroundStyle(remainingColor)
@@ -614,8 +625,8 @@ public struct InitialScanScreen: View {
                             reconsiderPublishedEta(now: now)
                         }
                 }
+                Spacer()
             }
-            Spacer()
         }
     }
 

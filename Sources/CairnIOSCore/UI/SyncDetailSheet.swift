@@ -259,7 +259,10 @@ public struct SyncDetailSheet: View {
     private func elapsedLabel(at now: Date) -> String {
         guard let started = syncStartedAt else { return "—" }
         let seconds = now.timeIntervalSince(started)
-        if seconds < 60 { return String(format: "%.1fs", seconds) }
+        // Whole seconds for the live elapsed clock — the prior
+        // "%.1fs" precision read as noisy decimals on a number that
+        // updates every half-second.
+        if seconds < 60 { return String(format: "%.0fs", seconds) }
         let minutes = Int(seconds / 60)
         let remainder = Int(seconds) % 60
         return "\(minutes)m \(remainder)s"
@@ -403,7 +406,11 @@ public struct SyncDetailSheet: View {
     static func formatDuration(ms: Int) -> String {
         if ms < 1000 { return "\(ms)ms" }
         let secs = Double(ms) / 1000.0
-        if secs < 60 { return String(format: "%.1fs", secs) }
+        // Whole seconds for the activity-feed phase durations —
+        // matches the live elapsed clock and the InitialScanScreen
+        // ELAPSED format. Sub-second precision still available below
+        // 1000ms via the "\(ms)ms" branch above.
+        if secs < 60 { return String(format: "%.0fs", secs) }
         let m = Int(secs / 60)
         let r = Int(secs) % 60
         return "\(m)m \(r)s"
