@@ -128,9 +128,12 @@ struct SyncActivityTests {
 
     @Test("SyncDetailSheet duration formatter — seconds")
     func durationFormatterSeconds() {
-        #expect(SyncDetailSheet.formatDuration(ms: 1000) == "1.0s")
-        #expect(SyncDetailSheet.formatDuration(ms: 12_400) == "12.4s")
-        #expect(SyncDetailSheet.formatDuration(ms: 59_999) == "60.0s")
+        // Whole seconds, rounded — matches the activity feed's
+        // visual style and the live elapsed clock. Sub-second
+        // precision is still available in the "ms" branch below 1s.
+        #expect(SyncDetailSheet.formatDuration(ms: 1000) == "1s")
+        #expect(SyncDetailSheet.formatDuration(ms: 12_400) == "12s")
+        #expect(SyncDetailSheet.formatDuration(ms: 59_999) == "60s")
     }
 
     @Test("SyncDetailSheet duration formatter — minutes")
