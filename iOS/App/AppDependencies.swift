@@ -1507,7 +1507,17 @@ final class AppDependencies {
             // pass will reconstruct syncProgress on first emit; both
             // onHashProgress paths preserve the imputed field by reading
             // the prior value before overwriting.
-            model.syncProgress = .init(hashed: 0, total: 0, initialHashed: 0, imputed: outcome.imputed)
+            //
+            // `total` set to the phone library count, NOT 0. Previously
+            // we left total at 0, which had a visible regression: the
+            // InitialScanScreen's top counter would jump from
+            // "0 / <library size>" (its fallback before imputation
+            // surfaces) to "0 / 0" (after imputation resets), then to
+            // "1 / <hash pass total>" on the first hash tick. The user
+            // saw the scope of work disappear briefly. Pinning total to
+            // the phone count keeps the counter monotonic and meaningful
+            // through the imputation→hashing transition.
+            model.syncProgress = .init(hashed: 0, total: outcome.totalPhone, initialHashed: 0, imputed: outcome.imputed)
             // Drop back to .preparing so the next phase transition (to
             // .hashing on first onHashProgress) reads as a single step
             // in the timeline rather than a regression.
