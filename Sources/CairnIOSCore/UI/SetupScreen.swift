@@ -888,8 +888,8 @@ public struct SetupScreen: View {
                     ),
                     .init(
                         value: true,
-                        title: "Trust Immich's hashes for matching uploads",
-                        subtitle: "For photos this device uploaded to Immich, use the server's SHA1 instead of re-hashing locally. Anything Immich didn't see — web uploads, photos from other devices — still hashes here. Imputed entries are flagged in cairn's cache. On iCloud-Optimized libraries this can drop the first scan from hours to seconds."
+                        title: "Trust Immich's hashes for matching photos",
+                        subtitle: "Match phone photos to the server by filename and capture date. Where exactly one server photo matches, use its SHA1 instead of re-hashing locally. Ambiguous matches and anything Immich didn't have (web uploads, photos from other devices) still hash here. Imputed entries are flagged in cairn's cache. On iCloud-Optimized libraries this can drop the first scan from hours to seconds."
                     ),
                 ]
             )

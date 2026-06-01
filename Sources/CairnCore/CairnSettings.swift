@@ -220,19 +220,26 @@ public struct CairnSettings: Sendable, Codable, Equatable {
     public static let propagationMaxAgeDaysRange: ClosedRange<Int> = 30...3650
 
     /// Fast initial scan: trust Immich's server-computed checksum for
-    /// any phone asset where `phone.localId == server.deviceAssetId`
-    /// (set by the Immich mobile uploader at upload time) and seed
-    /// the local hash cache from the server instead of re-hashing
+    /// any phone asset whose `(originalFilename, creationDate)` pair
+    /// matches an unambiguous non-trashed server row, and seed the
+    /// local hash cache from the server instead of re-hashing
     /// locally. On iCloud-Optimized libraries this can drop initial
     /// scan from hours to seconds, since matched assets skip the
     /// original-resource download.
     ///
+    /// (History note: originally joined on `deviceAssetId`, but
+    /// Immich dropped that column from the asset schema in Apr 2026.
+    /// The current join uses the closest stable proxy: filename +
+    /// capture date, with strict unambiguity so collisions fall
+    /// through to local hashing.)
+    ///
     /// Only the matched subset is imputed; everything else (web
-    /// uploads, photos from other devices, fresh-phone restore case)
-    /// still hashes locally. Imputed entries are flagged in the cache;
-    /// the modDate-skip path automatically re-hashes any imputed asset
-    /// whose pixel bytes later change. Deletions resolved through
-    /// imputed entries are logged for telemetry.
+    /// uploads, photos from other devices, fresh-phone restore case,
+    /// ambiguous filename collisions) still hashes locally. Imputed
+    /// entries are flagged in the cache; the modDate-skip path
+    /// automatically re-hashes any imputed asset whose pixel bytes
+    /// later change. Deletions resolved through imputed entries are
+    /// logged for telemetry.
     ///
     /// Default **off** — the user opts in at onboarding (or later in
     /// Settings) after seeing both paths explained. The tradeoff is

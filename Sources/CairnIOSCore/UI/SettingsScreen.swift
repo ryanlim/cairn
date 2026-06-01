@@ -442,7 +442,7 @@ public struct SettingsScreen: View {
         .init(id: "lib.scope", title: "Indexing scope", breadcrumb: "Library",
               keywords: ["album", "albums", "selected albums", "full library"], page: .library),
         .init(id: "lib.fastscan", title: "Trust server checksums", breadcrumb: "Library",
-              keywords: ["fast initial scan", "imputed", "trust", "deviceassetid"], page: .library),
+              keywords: ["fast initial scan", "imputed", "trust", "filename match", "checksum"], page: .library),
         .init(id: "lib.cache", title: "Cache breakdown", breadcrumb: "Library",
               keywords: ["imputed", "verified", "hashed", "trust-seeded"], page: .library),
         .init(id: "lib.rehash", title: "Re-hash imputed entries", breadcrumb: "Library",
@@ -1093,9 +1093,9 @@ public struct SettingsScreen: View {
 
     // MARK: - Initial scan
 
-    /// Fast-initial-scan toggle. When on, cairn looks up each phone
-    /// asset in Immich's existing asset list via `deviceAssetId` and
-    /// trusts the server's SHA1 for matched uploads — skipping local
+    /// Fast-initial-scan toggle. When on, cairn matches phone photos
+    /// against server assets on `(filename, capture date)` and trusts
+    /// the server's SHA1 for unambiguous matches — skipping local
     /// hashing for those entries. Surfaced as a discrete row because
     /// the choice meaningfully affects first-scan time on iCloud-
     /// optimized libraries (hours → seconds) and what cairn verifies
@@ -1107,7 +1107,7 @@ public struct SettingsScreen: View {
                 VStack(spacing: 0) {
                     ToggleRow(
                         "Trust server checksums",
-                        sub: "Skip local hashing for phone photos that Immich uploaded from this device. Faster first scan; cairn imputes from server-computed hashes instead of re-hashing locally. Off = always hash locally.",
+                        sub: "For phone photos that match a server asset by filename and capture date, use the server's SHA1 instead of re-hashing locally. Ambiguous matches (multiple server photos with the same filename and date) fall through to local hashing. Off = always hash locally.",
                         value: $settings.fastInitialScan
                     )
                     if library.imputed > 0 {

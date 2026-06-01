@@ -1061,63 +1061,104 @@ final class AppDependencies {
     /// Outcome of one imputation pass.
     fileprivate struct ImputationOutcome {
         let imputed: Int        // entries written to LocalHashStore as imputed
-        let hits: Int           // localIds that matched a server deviceAssetId
-        let ambiguous: Int      // deviceAssetIds that matched >1 server row
+        let hits: Int           // localIds that matched a server (filename, fileCreatedAt) pair
+        let ambiguous: Int      // (filename, fileCreatedAt) pairs that matched >1 server row
         let alreadyCached: Int  // matched localIds that were already in LocalHashStore
         let totalPhone: Int     // total live phone localIds enumerated
         let fellBack: Bool      // true if near-zero-hit fallback kicked in
     }
 
-    /// Trust-seed `LocalHashStore` from the server's `deviceAssetId`
-    /// stamps. For each live phone localId not already cached, find
-    /// the unambiguous non-trashed server row whose `deviceAssetId`
-    /// equals the localId, and write its checksum as `imputed = true`.
-    /// The hash pass that runs next will skip these via the modDate-
-    /// match path. Verify-on-touch re-hashes before any deletion that
-    /// resolves through an imputed row.
+    /// Trust-seed `LocalHashStore` by matching phone assets to server
+    /// assets on `(originalFileName, fileCreatedAt)`.
     ///
-    /// Applies the near-zero-hit safety: on libraries of more than
-    /// ~100 assets, if matched-and-seedable is <5% of total phone
-    /// assets, skip imputation entirely (likely a fresh-phone restore
-    /// where localIds rotated — the join would produce thousands of
-    /// false misses).
+    /// History: this originally joined on `deviceAssetId`, which the
+    /// Immich mobile uploader stamped with `PHAsset.localIdentifier`.
+    /// Immich dropped that column from the asset schema in migration
+    /// `1776263790468` (Apr 2026) as part of moving to content-based
+    /// identity (`x-immich-checksum`). With deviceAssetId gone from
+    /// every response on any current Immich server, we pivoted to
+    /// the closest stable proxy: filename + capture timestamp.
+    ///
+    /// For phone assets uploaded by Immich's mobile app from this
+    /// iPhone, the pair round-trips exactly — the uploader sends
+    /// `PHAsset.creationDate` as `fileCreatedAt` and PHAsset
+    /// resource's `originalFilename` as `originalFileName`. The join
+    /// is heuristic where deviceAssetId was rigorous, so we layer
+    /// more safety:
+    ///
+    /// - Strict unambiguity: a candidate key must map to exactly one
+    ///   non-trashed server row. Any collision falls through to
+    ///   local hashing.
+    /// - Second-precision timestamps so ISO-8601 / Float drift
+    ///   doesn't break the match.
+    /// - Near-zero-hit fallback: <5% hit rate on >100-asset libraries
+    ///   skips imputation entirely (probable fresh-phone restore or
+    ///   server-from-elsewhere).
+    /// - Existing modDate-skip path verifies on edit; existing
+    ///   imputed-deletion telemetry surfaces the count for support.
+    /// - Worst case from a bad imputed value: cairn trashes the
+    ///   wrong server row when the user has already asked for *some*
+    ///   delete; recoverable via Immich Trash's 30-day window.
     ///
     /// See `docs/active-design/fast-initial-scan-plan.md`.
     @MainActor
     fileprivate func runImputationPass(serverAssets: [ServerAsset]) async throws -> ImputationOutcome {
-        // 1. Build deviceAssetId → ServerAsset map. Skip trashed rows
-        //    (deletion-bound; would impute a checksum that's about to
-        //    disappear) and ambiguous ids (reinstall scenarios produce
-        //    multiple non-trashed rows with the same deviceAssetId but
-        //    different deviceIds — we can't tell which is "current").
-        var byDeviceAssetId: [String: ServerAsset] = [:]
-        var ambiguous = Set<String>()
+        // 1. Build (filename, second-truncated fileCreatedAt) →
+        //    ServerAsset map. Skip trashed rows (deletion-bound) and
+        //    skip rows missing either field (no usable join key).
+        //    Ambiguous keys (multiple non-trashed rows on the same
+        //    filename + capture-second) get dropped entirely so
+        //    those localIds fall through to local hashing.
+        struct JoinKey: Hashable {
+            let filename: String
+            let secondsSince1970: Int
+        }
+        var byKey: [JoinKey: ServerAsset] = [:]
+        var ambiguous = Set<JoinKey>()
         for asset in serverAssets where !asset.isTrashed {
-            guard let did = asset.deviceAssetId, !did.isEmpty else { continue }
-            if byDeviceAssetId[did] != nil {
-                ambiguous.insert(did)
+            guard let filename = asset.originalFileName, !filename.isEmpty,
+                  let created = asset.fileCreatedAt else { continue }
+            let key = JoinKey(filename: filename, secondsSince1970: Int(created.timeIntervalSince1970))
+            if byKey[key] != nil {
+                ambiguous.insert(key)
             } else {
-                byDeviceAssetId[did] = asset
+                byKey[key] = asset
             }
         }
         let ambiguousCount = ambiguous.count
-        for did in ambiguous { byDeviceAssetId.removeValue(forKey: did) }
+        for key in ambiguous { byKey.removeValue(forKey: key) }
 
-        // 2. Snapshot phone (localId, modDate). Run the PHAsset fetch
-        //    on a detached task — PhotoKit enumeration off the main
-        //    actor avoids holding the UI thread.
-        let phoneEntries: [(String, Date?)] = await Task.detached(priority: .userInitiated) {
-            let opts = PHFetchOptions()
-            opts.includeHiddenAssets = false
-            opts.includeAssetSourceTypes = [.typeUserLibrary]
-            let fetch = PHAsset.fetchAssets(with: opts)
-            var out: [(String, Date?)] = []
-            out.reserveCapacity(fetch.count)
-            fetch.enumerateObjects { asset, _, _ in
-                out.append((asset.localIdentifier, asset.modificationDate))
-            }
-            return out
-        }.value
+        // 2. Snapshot phone (localId, modDate, creationDate, filename).
+        //    PHAssetResource.assetResources(for:) is a synchronous
+        //    metadata-only call (no original-bytes download), but it
+        //    runs per-asset — ~milliseconds each. For 6k assets ~few
+        //    seconds total. Run off the main actor to keep the UI
+        //    responsive. Filter resources to the primary (.photo /
+        //    .video / .audio) so Live Photo's paired motion video
+        //    doesn't pollute the filename slot — we want the still
+        //    photo's filename here.
+        let phoneEntries: [(localId: String, modDate: Date?, creationDate: Date?, filename: String?)] =
+            await Task.detached(priority: .userInitiated) {
+                let opts = PHFetchOptions()
+                opts.includeHiddenAssets = false
+                opts.includeAssetSourceTypes = [.typeUserLibrary]
+                let fetch = PHAsset.fetchAssets(with: opts)
+                var out: [(localId: String, modDate: Date?, creationDate: Date?, filename: String?)] = []
+                out.reserveCapacity(fetch.count)
+                fetch.enumerateObjects { asset, _, _ in
+                    let resources = PHAssetResource.assetResources(for: asset)
+                    let primary = resources.first { r in
+                        r.type == .photo || r.type == .video || r.type == .audio
+                    }
+                    out.append((
+                        asset.localIdentifier,
+                        asset.modificationDate,
+                        asset.creationDate,
+                        primary?.originalFilename
+                    ))
+                }
+                return out
+            }.value
         let totalPhone = phoneEntries.count
 
         // 3. Skip localIds already in LocalHashStore. Imputation only
@@ -1126,21 +1167,25 @@ final class AppDependencies {
 
         var seedable: [(localId: String, checksum: Checksum, modDate: Date?)] = []
         var alreadyCachedMatches = 0
-        for (localId, modDate) in phoneEntries {
-            guard let serverAsset = byDeviceAssetId[localId] else { continue }
-            if cachedIds.contains(localId) {
+        for entry in phoneEntries {
+            guard let filename = entry.filename, !filename.isEmpty,
+                  let created = entry.creationDate else { continue }
+            let key = JoinKey(filename: filename, secondsSince1970: Int(created.timeIntervalSince1970))
+            guard let serverAsset = byKey[key] else { continue }
+            if cachedIds.contains(entry.localId) {
                 alreadyCachedMatches += 1
                 continue
             }
-            seedable.append((localId, serverAsset.checksum, modDate))
+            seedable.append((entry.localId, serverAsset.checksum, entry.modDate))
         }
         let hits = seedable.count + alreadyCachedMatches
 
         // 4. Near-zero-hit fallback. On a library with more than 100
         //    assets, if hits/total < 5% the user is likely on a fresh
-        //    phone (restored from backup → all localIds rotated).
-        //    Producing imputed entries here would silently miss
-        //    thousands of assets; safer to fall back to full hashing.
+        //    phone (restored from backup) or has a server library
+        //    that wasn't uploaded from this device. Imputing the
+        //    handful of matches buys little and accepting heuristic
+        //    risk for negligible reward isn't worth it; bail.
         if totalPhone > 100, hits > 0, Double(hits) / Double(totalPhone) < 0.05 {
             return ImputationOutcome(
                 imputed: 0,

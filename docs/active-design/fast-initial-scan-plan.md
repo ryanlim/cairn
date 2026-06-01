@@ -1,9 +1,50 @@
-# Fast initial scan via Immich `deviceAssetId`
+# Fast initial scan via `(filename, fileCreatedAt)` match
 
 Planning document for short-circuiting cairn's initial-hash pass when
-the local asset was uploaded to Immich from this same phone.
+the local asset already exists on the Immich server.
 
-Written 2026-05-29. Status: design; ready to execute.
+Written 2026-05-29; pivoted 2026-06-01. Status: shipped, post-pivot.
+
+## 2026-06-01 pivot note
+
+Originally this feature joined phone↔server on `deviceAssetId` — the
+field Immich's mobile uploader stamped with `PHAsset.localIdentifier`.
+Immich removed both `deviceAssetId` and `deviceId` from the asset
+schema in migration `1776263790468-DropDeviceIdAndDeviceAssetId`
+(Apr 15 2026), part of the broader shift to checksum-as-identity
+(uploads now carry `x-immich-checksum` for content-based dedup).
+Without that column, every server response after the migration has
+no per-device upload identifier.
+
+Pivoted to `(originalFileName, fileCreatedAt)` as the closest stable
+proxy. For photos uploaded by the Immich mobile app from this iPhone,
+both values round-trip exactly: the uploader sends
+`PHAsset.creationDate` as `fileCreatedAt` and the asset's
+PHAssetResource `originalFilename` as `originalFileName`. The new
+join is heuristic where the old one was rigorous (filenames + EXIF
+timestamps can theoretically collide), so the safety story leans
+harder on:
+
+- **Strict unambiguity**: exactly one non-trashed server row per
+  `(filename, second-precision fileCreatedAt)` key, else the asset
+  falls through to local hashing.
+- **Second-precision date bucketing**: absorbs any ISO-8601 /
+  Float drift across the upload→server→cairn round-trip.
+- **Existing near-zero-hit fallback**, edit-driven re-hash via
+  modDate, and imputed-deletion telemetry — all unchanged.
+- **Recovery floor**: a bad imputed value can only cause the wrong
+  server row to land in Immich Trash on a subsequent user-initiated
+  delete, recoverable within Immich's 30-day Trash window.
+
+The PHAsset primary-resource filter (only `.photo` / `.video` /
+`.audio` types) ensures Live Photo's paired motion video doesn't
+pollute the filename slot — we want the still photo's filename.
+
+The rest of this doc was written for the deviceAssetId version;
+where it talks about that join key, substitute `(filename,
+fileCreatedAt)` mentally. The infrastructure (settings toggle,
+onboarding step, UI surfacing, telemetry, export/import IDFV gate)
+is unchanged.
 
 ## Architectural prerequisites — verified
 
