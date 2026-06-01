@@ -443,7 +443,23 @@ public final class CairnAppModel {
 
     /// Append `entry` to `syncActivity`, capped at `syncActivityCap`.
     /// Newest first — the sheet renders top-down.
+    ///
+    /// Coalesces consecutive `.hashed` entries: the throttled hash-
+    /// progress callback emits a fresh entry per tick whose detail
+    /// is the current `N / total`. Each new tick supersedes the
+    /// previous one (same kind, more up-to-date count), so we
+    /// replace the head rather than insert. Without this, a long
+    /// scan can fill the feed with hundreds of near-identical hash
+    /// rows that drown out everything else. Any non-`.hashed` entry
+    /// arriving in between "breaks the run" — the next `.hashed`
+    /// inserts fresh, then re-enters coalesce mode.
     public func appendSyncActivity(_ entry: SyncActivity) {
+        if entry.kind == .hashed,
+           let first = syncActivity.first,
+           first.kind == .hashed {
+            syncActivity[0] = entry
+            return
+        }
         syncActivity.insert(entry, at: 0)
         if syncActivity.count > Self.syncActivityCap {
             syncActivity.removeLast()

@@ -148,8 +148,13 @@ public struct SyncDetailSheet: View {
                             .font(.cairnScaled(size: 12, design: .monospaced))
                             .foregroundStyle(t.textMuted)
                     }
-                    if isSyncing && phase == .hashing, let item = spotlightedHash {
-                        spotlightedHashRow(item, at: context.date)
+                    // Spotlight row stays reserved during hashing so the
+                    // card doesn't shrink-and-grow each time `spotlightedHash`
+                    // flickers between assets. The row content swaps from a
+                    // filename to an "idle" placeholder of the same height —
+                    // no jump for UI elements below the card.
+                    if isSyncing && phase == .hashing {
+                        spotlightedHashRow(spotlightedHash, at: context.date)
                     }
                 }
                 .padding(16)
@@ -161,37 +166,50 @@ public struct SyncDetailSheet: View {
     /// Render the longest-running in-flight hash: filename + size,
     /// elapsed (once ≥3s — quick local hashes don't need a label that
     /// flashes for 80ms), and an iCloud download bar when the
-    /// resource reports progress. Hidden by the call site when not in
-    /// hashing phase or when nothing's in flight.
+    /// resource reports progress. When `item` is nil (between hashing
+    /// items, or at the start/end of the phase before iCloud bytes
+    /// land), renders an "idle" placeholder of the same height so the
+    /// containing card doesn't bounce.
     @ViewBuilder
-    private func spotlightedHashRow(_ item: CairnAppModel.HashingItem, at now: Date) -> some View {
-        let elapsed = now.timeIntervalSince(item.startedAt)
+    private func spotlightedHashRow(_ item: CairnAppModel.HashingItem?, at now: Date) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Rectangle()
                 .fill(t.divider)
                 .frame(height: 0.5)
                 .padding(.vertical, 2)
-            HStack(spacing: 8) {
-                Image(systemName: "doc")
-                    .font(.cairnScaled(size: 11))
-                    .foregroundStyle(t.textHint)
-                Text(item.filename)
-                    .font(.cairnScaled(size: 12, design: .monospaced))
-                    .foregroundStyle(t.text)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Spacer(minLength: 6)
-                if item.sizeBytes > 0 {
-                    Text(byteFormatter.string(fromByteCount: item.sizeBytes))
-                        .font(.cairnScaled(size: 11, design: .monospaced))
-                        .foregroundStyle(t.textMuted)
-                }
-            }
-            if elapsed >= 3 {
+            if let item {
+                let elapsed = now.timeIntervalSince(item.startedAt)
                 HStack(spacing: 8) {
-                    Text("Elapsed \(elapsedShort(elapsed))")
-                        .font(.cairnScaled(size: 11, design: .monospaced))
-                        .foregroundStyle(t.textMuted)
+                    Image(systemName: "doc")
+                        .font(.cairnScaled(size: 11))
+                        .foregroundStyle(t.textHint)
+                    Text(item.filename)
+                        .font(.cairnScaled(size: 12, design: .monospaced))
+                        .foregroundStyle(t.text)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer(minLength: 6)
+                    if item.sizeBytes > 0 {
+                        Text(byteFormatter.string(fromByteCount: item.sizeBytes))
+                            .font(.cairnScaled(size: 11, design: .monospaced))
+                            .foregroundStyle(t.textMuted)
+                    }
+                }
+                // Always-rendered elapsed/download line so the row's
+                // height stays constant regardless of whether the
+                // current hash is fast or stalled on iCloud.
+                HStack(spacing: 8) {
+                    if elapsed >= 3 {
+                        Text("Elapsed \(elapsedShort(elapsed))")
+                            .font(.cairnScaled(size: 11, design: .monospaced))
+                            .foregroundStyle(t.textMuted)
+                    } else {
+                        // Invisible spacer of equivalent line height so
+                        // the row doesn't pop a few pixels taller at the
+                        // 3-second elapsed threshold.
+                        Text(" ")
+                            .font(.cairnScaled(size: 11, design: .monospaced))
+                    }
                     if let fraction = item.downloadFraction {
                         Spacer(minLength: 6)
                         Text("Downloading \(Int(fraction * 100))%")
@@ -199,9 +217,27 @@ public struct SyncDetailSheet: View {
                             .foregroundStyle(t.textMuted)
                     }
                 }
-            }
-            if let fraction = item.downloadFraction {
-                progressBar(fraction: fraction)
+                if let fraction = item.downloadFraction {
+                    progressBar(fraction: fraction)
+                } else {
+                    // Reserve the progressBar's vertical footprint so the
+                    // appearance/disappearance of iCloud-download progress
+                    // doesn't bounce the card height.
+                    progressBar(fraction: 0).opacity(0)
+                }
+            } else {
+                HStack(spacing: 8) {
+                    Image(systemName: "doc")
+                        .font(.cairnScaled(size: 11))
+                        .foregroundStyle(t.textHint.opacity(0.5))
+                    Text("Idle between hashes…")
+                        .font(.cairnScaled(size: 12, design: .monospaced))
+                        .foregroundStyle(t.textMuted)
+                    Spacer(minLength: 6)
+                }
+                Text(" ")
+                    .font(.cairnScaled(size: 11, design: .monospaced))
+                progressBar(fraction: 0).opacity(0)
             }
         }
     }

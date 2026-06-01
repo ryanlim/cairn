@@ -1060,12 +1060,44 @@ final class AppDependencies {
 
     /// Outcome of one imputation pass.
     fileprivate struct ImputationOutcome {
-        let imputed: Int        // entries written to LocalHashStore as imputed
-        let hits: Int           // localIds that matched a server (filename, fileCreatedAt) pair
-        let ambiguous: Int      // (filename, fileCreatedAt) pairs that matched >1 server row
-        let alreadyCached: Int  // matched localIds that were already in LocalHashStore
-        let totalPhone: Int     // total live phone localIds enumerated
-        let fellBack: Bool      // true if near-zero-hit fallback kicked in
+        let imputed: Int             // entries written to LocalHashStore as imputed
+        let hits: Int                // localIds that matched a server (filename, fileCreatedAt) pair
+        let ambiguous: Int           // (filename, fileCreatedAt) pairs that matched >1 server row
+        let alreadyCached: Int       // matched localIds that were already in LocalHashStore
+        let totalPhone: Int          // total live phone localIds enumerated
+        let fellBack: Bool           // true if near-zero-hit fallback kicked in
+        // Per-skip-reason breakdown of phone assets that fell through
+        // to local hashing instead of being trust-seeded. Visible in
+        // the activity feed so the user can see why their residue
+        // size is what it is (filename-missing vs collision vs
+        // server doesn't have it at all).
+        let missingFilename: Int     // PHAssetResource didn't yield an originalFilename
+        let missingCreationDate: Int // PHAsset.creationDate was nil
+        let noServerMatch: Int       // valid phone key, no matching server row
+        let ambiguousPhoneSide: Int  // phone key hit an ambiguous server bucket
+    }
+
+    /// Render the imputation outcome's skip-reason categories as a
+    /// list of short `"N reason"` strings, in priority order. Empty
+    /// when every phone asset was either trust-seeded or already
+    /// cached (nothing falling through to local hashing for an
+    /// interesting reason). The caller joins these with `", "` and
+    /// prefixes "Hashing locally:" for the activity feed.
+    fileprivate static func imputationBreakdownParts(outcome: ImputationOutcome) -> [String] {
+        var parts: [String] = []
+        if outcome.noServerMatch > 0 {
+            parts.append("\(outcome.noServerMatch.formatted(.number)) not on Immich")
+        }
+        if outcome.ambiguousPhoneSide > 0 {
+            parts.append("\(outcome.ambiguousPhoneSide.formatted(.number)) ambiguous (filename + date collision)")
+        }
+        if outcome.missingFilename > 0 {
+            parts.append("\(outcome.missingFilename.formatted(.number)) no filename")
+        }
+        if outcome.missingCreationDate > 0 {
+            parts.append("\(outcome.missingCreationDate.formatted(.number)) no capture date")
+        }
+        return parts
     }
 
     /// Trust-seed `LocalHashStore` by matching phone assets to server
@@ -1163,17 +1195,46 @@ final class AppDependencies {
 
         // 3. Skip localIds already in LocalHashStore. Imputation only
         //    fills gaps — it never downgrades a verified entry.
+        //    Track per-skip-reason counts so the activity feed can
+        //    explain *why* the residue is the size it is.
         let cachedIds = (try? await self.localHashStore.allLocalIdentifiers()) ?? []
 
         var seedable: [(localId: String, checksum: Checksum, modDate: Date?)] = []
         var alreadyCachedMatches = 0
+        var missingFilename = 0
+        var missingCreationDate = 0
+        var noServerMatch = 0
+        var ambiguousPhoneSide = 0
         for entry in phoneEntries {
-            guard let filename = entry.filename, !filename.isEmpty,
-                  let created = entry.creationDate else { continue }
-            let key = JoinKey(filename: filename, secondsSince1970: Int(created.timeIntervalSince1970))
-            guard let serverAsset = byKey[key] else { continue }
+            // Skip rows already in the cache before counting skip
+            // reasons — those aren't residue, they're already done.
             if cachedIds.contains(entry.localId) {
-                alreadyCachedMatches += 1
+                // Only count as alreadyCachedMatches if it would have
+                // matched. Cheaper to compute the key first if metadata
+                // is present, but if it isn't, it's still cache-resident
+                // so no skip-reason category applies.
+                if let filename = entry.filename, !filename.isEmpty,
+                   let created = entry.creationDate,
+                   byKey[JoinKey(filename: filename, secondsSince1970: Int(created.timeIntervalSince1970))] != nil {
+                    alreadyCachedMatches += 1
+                }
+                continue
+            }
+            guard let filename = entry.filename, !filename.isEmpty else {
+                missingFilename += 1
+                continue
+            }
+            guard let created = entry.creationDate else {
+                missingCreationDate += 1
+                continue
+            }
+            let key = JoinKey(filename: filename, secondsSince1970: Int(created.timeIntervalSince1970))
+            if ambiguous.contains(key) {
+                ambiguousPhoneSide += 1
+                continue
+            }
+            guard let serverAsset = byKey[key] else {
+                noServerMatch += 1
                 continue
             }
             seedable.append((entry.localId, serverAsset.checksum, entry.modDate))
@@ -1193,7 +1254,11 @@ final class AppDependencies {
                 ambiguous: ambiguousCount,
                 alreadyCached: alreadyCachedMatches,
                 totalPhone: totalPhone,
-                fellBack: true
+                fellBack: true,
+                missingFilename: missingFilename,
+                missingCreationDate: missingCreationDate,
+                noServerMatch: noServerMatch,
+                ambiguousPhoneSide: ambiguousPhoneSide
             )
         }
 
@@ -1217,7 +1282,11 @@ final class AppDependencies {
             ambiguous: ambiguousCount,
             alreadyCached: alreadyCachedMatches,
             totalPhone: totalPhone,
-            fellBack: false
+            fellBack: false,
+            missingFilename: missingFilename,
+            missingCreationDate: missingCreationDate,
+            noServerMatch: noServerMatch,
+            ambiguousPhoneSide: ambiguousPhoneSide
         )
     }
 
@@ -1369,12 +1438,13 @@ final class AppDependencies {
             let serverPrefetch = try await serverAssetsTask.value
             let outcome = try await runImputationPass(serverAssets: serverPrefetch.assets)
             let imputeMs = Int(Date().timeIntervalSince(imputeStart) * 1000)
-            syncLog.info("[cairn.impute] seeded=\(outcome.imputed) hits=\(outcome.hits) ambiguous=\(outcome.ambiguous) alreadyCached=\(outcome.alreadyCached) totalPhone=\(outcome.totalPhone) fellBack=\(outcome.fellBack) durationMs=\(imputeMs)")
+            syncLog.info("[cairn.impute] seeded=\(outcome.imputed) hits=\(outcome.hits) ambiguous=\(outcome.ambiguous) alreadyCached=\(outcome.alreadyCached) totalPhone=\(outcome.totalPhone) fellBack=\(outcome.fellBack) missingFilename=\(outcome.missingFilename) missingCreationDate=\(outcome.missingCreationDate) noServerMatch=\(outcome.noServerMatch) ambiguousPhoneSide=\(outcome.ambiguousPhoneSide) durationMs=\(imputeMs)")
             model.syncTimeline.append(.init(
                 phase: .imputingFromServer,
                 startedAt: imputeStart,
                 durationMs: imputeMs
             ))
+            // Main summary line.
             let detail: String
             if outcome.fellBack {
                 detail = "Trust-seeding skipped — only \(outcome.hits.formatted(.number))/\(outcome.totalPhone.formatted(.number)) matched (full local hashing)"
@@ -1384,6 +1454,20 @@ final class AppDependencies {
                 detail = "Trust-seeded \(outcome.imputed.formatted(.number)) of \(outcome.totalPhone.formatted(.number)) from server"
             }
             model.appendSyncActivity(.init(kind: .note, detail: detail))
+            // Skip-reason breakdown: surface as a follow-up activity
+            // entry so curious users can see *why* the residue is the
+            // size it is. Each category is a real, distinct cause:
+            // ambiguous = filename + capture-date collision on server;
+            // no server match = simply not on Immich; missing metadata
+            // = PHAsset lacks one of the join-key fields. Only emit
+            // when there's something to say.
+            let breakdownParts = Self.imputationBreakdownParts(outcome: outcome)
+            if !breakdownParts.isEmpty {
+                model.appendSyncActivity(.init(
+                    kind: .note,
+                    detail: "Hashing locally: " + breakdownParts.joined(separator: ", ")
+                ))
+            }
             // Surface the imputed count onto syncProgress so it survives
             // through the hash pass and the InitialScanScreen stats strip
             // can render "imputed Y" alongside "hashed X of Z". The hash
