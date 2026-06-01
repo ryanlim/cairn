@@ -130,6 +130,10 @@ public struct SettingsScreen: View {
     @State private var pendingClearRecentServers: Bool = false
     @State private var pendingClearExclusions: Bool = false
     @State private var howItWorksExpanded: Bool = false
+    /// Search query bound to the NavigationStack's `.searchable`
+    /// modifier. Empty string = show the regular root list; non-empty
+    /// = render filtered search results in place.
+    @State private var searchText: String = ""
     @State private var showExportPicker = false
     @State private var showImportPicker = false
     @State private var showAbout = false
@@ -213,9 +217,13 @@ public struct SettingsScreen: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
                         Color.clear.frame(height: 0).id(Self.scrollTopAnchor)
-                        quickSettingsCard
-                        rootList
-                        footer
+                        if searchText.isEmpty {
+                            quickSettingsCard
+                            rootList
+                            footer
+                        } else {
+                            searchResults
+                        }
                     }
                 }
                 .onChange(of: scrollResetToken) { _, _ in
@@ -227,6 +235,12 @@ public struct SettingsScreen: View {
             .navigationTitle("Settings")
             .cairnNavigationTitleDisplayMode(.large)
             .background(t.bg)
+            // Search bar at the navigation stack root. Default
+            // placement = `.automatic` resolves to the search drawer
+            // under the large title on iOS. Skipping the iOS-only
+            // `.navigationBarDrawer` placement so the same source
+            // compiles for macOS tooling / preview builds too.
+            .searchable(text: $searchText, prompt: "Search settings")
         // Keyboard dismissal: drag down on the list to interactively
         // drag the keyboard away, or tap any empty chrome outside
         // the focused field. Together these replace the explicit
@@ -372,6 +386,222 @@ public struct SettingsScreen: View {
     /// what cairn watches; Safety & limits is everything about how
     /// aggressive it gets; Recovery is everything about getting back
     /// to a known-good state; etc.
+    // MARK: - Search
+
+    /// Sub-pages reachable from search results. Maps each entry's
+    /// destination so the search row knows where to push.
+    private enum SettingsPage {
+        case connection
+        case library
+        case safetyLimits
+        case appearance
+        case dataAndRecovery
+        case advanced
+        case about
+    }
+
+    /// One indexed row. Title is the user-visible name; breadcrumb is
+    /// the sub-page label rendered as a secondary line. Keywords are
+    /// the alternate names users might type — synonyms, partial
+    /// phrases, related concepts. Match is case-insensitive substring
+    /// against title + keywords.
+    private struct SearchEntry: Identifiable {
+        let id: String
+        let title: String
+        let breadcrumb: String
+        let keywords: [String]
+        let page: SettingsPage
+    }
+
+    /// Flat index of every settable surface across all sub-pages.
+    /// Keep in sync as new rows ship; missing entries here means the
+    /// search bar won't find them. Title strings stay close to the
+    /// row's actual label so a literal-match search ("strictness",
+    /// "Reset index") works without typing keywords.
+    private static let searchIndex: [SearchEntry] = [
+        // Connection
+        .init(id: "conn.url", title: "Immich server URL", breadcrumb: "Connection",
+              keywords: ["url", "server", "host", "immich"], page: .connection),
+        .init(id: "conn.apikey", title: "API key", breadcrumb: "Connection",
+              keywords: ["api", "key", "token", "credential"], page: .connection),
+        .init(id: "conn.status", title: "Connection status", breadcrumb: "Connection",
+              keywords: ["latency", "ping", "healthy", "offline", "ms"], page: .connection),
+
+        // Library
+        .init(id: "lib.photos", title: "Photos access", breadcrumb: "Library",
+              keywords: ["photokit", "permission", "limited", "denied", "full"], page: .library),
+        .init(id: "lib.bgrefresh", title: "Background refresh", breadcrumb: "Library",
+              keywords: ["background", "ios", "permission"], page: .library),
+        .init(id: "lib.scope", title: "Indexing scope", breadcrumb: "Library",
+              keywords: ["album", "albums", "selected albums", "full library"], page: .library),
+        .init(id: "lib.fastscan", title: "Trust server checksums", breadcrumb: "Library",
+              keywords: ["fast initial scan", "imputed", "trust", "deviceassetid"], page: .library),
+        .init(id: "lib.cache", title: "Cache breakdown", breadcrumb: "Library",
+              keywords: ["imputed", "verified", "hashed", "trust-seeded"], page: .library),
+        .init(id: "lib.rehash", title: "Re-hash imputed entries", breadcrumb: "Library",
+              keywords: ["verify", "rehash", "imputed", "trust-seeded"], page: .library),
+        .init(id: "lib.excluded", title: "Excluded assets", breadcrumb: "Library",
+              keywords: ["exclude", "protected", "exclusions"], page: .library),
+
+        // Safety & limits
+        .init(id: "safety.percent", title: "Percent threshold", breadcrumb: "Safety & limits",
+              keywords: ["mass delete", "abort", "rail", "fraction"], page: .safetyLimits),
+        .init(id: "safety.strictness", title: "Deletion strictness", breadcrumb: "Safety & limits",
+              keywords: ["strict", "trusting", "auto", "autonomous"], page: .safetyLimits),
+        .init(id: "safety.quarantine", title: "Quarantine window", breadcrumb: "Safety & limits",
+              keywords: ["days", "hold", "aging", "quarantine"], page: .safetyLimits),
+        .init(id: "safety.icloud", title: "iCloud download limit", breadcrumb: "Safety & limits",
+              keywords: ["soft limit", "icloud", "mb"], page: .safetyLimits),
+        .init(id: "safety.ceiling", title: "Never-touch ceiling", breadcrumb: "Safety & limits",
+              keywords: ["hard ceiling", "never touch", "icloud", "mb"], page: .safetyLimits),
+        .init(id: "safety.maxage", title: "Don't propagate old deletes", breadcrumb: "Safety & limits",
+              keywords: ["age cutoff", "max age", "old photos", "creation date"], page: .safetyLimits),
+        .init(id: "safety.retry", title: "Max retry attempts", breadcrumb: "Safety & limits",
+              keywords: ["retry", "queue", "attempts"], page: .safetyLimits),
+        .init(id: "safety.alert", title: "Alert on aborted run", breadcrumb: "Safety & limits",
+              keywords: ["notification", "alert", "abort"], page: .safetyLimits),
+        .init(id: "safety.backlog", title: "Backlog alert threshold", breadcrumb: "Safety & limits",
+              keywords: ["banner", "backlog", "notification", "threshold"], page: .safetyLimits),
+
+        // Appearance
+        .init(id: "appearance.theme", title: "Appearance", breadcrumb: "Appearance",
+              keywords: ["light", "dark", "system", "theme"], page: .appearance),
+        .init(id: "appearance.time", title: "Time format", breadcrumb: "Appearance",
+              keywords: ["12 hour", "24 hour", "clock"], page: .appearance),
+
+        // Data & recovery
+        .init(id: "data.export", title: "Export data", breadcrumb: "Data & recovery",
+              keywords: ["backup", "share", "export", "json"], page: .dataAndRecovery),
+        .init(id: "data.import", title: "Import data", breadcrumb: "Data & recovery",
+              keywords: ["restore", "import", "backup"], page: .dataAndRecovery),
+        .init(id: "data.missed", title: "Find missed deletions", breadcrumb: "Data & recovery",
+              keywords: ["scan", "missed deletions", "recovery"], page: .dataAndRecovery),
+        .init(id: "data.deferred", title: "Deferred queue", breadcrumb: "Data & recovery",
+              keywords: ["deferred", "queue", "icloud", "large", "drain"], page: .dataAndRecovery),
+        .init(id: "data.rescan", title: "Rescan library", breadcrumb: "Data & recovery",
+              keywords: ["re-enumerate", "rescan"], page: .dataAndRecovery),
+        .init(id: "data.clearhash", title: "Clear hash cache", breadcrumb: "Data & recovery",
+              keywords: ["force re-hash", "drop cache", "rebuild"], page: .dataAndRecovery),
+        .init(id: "data.verbose", title: "Verbose journal", breadcrumb: "Data & recovery",
+              keywords: ["logging", "journal", "diagnostic"], page: .dataAndRecovery),
+
+        // Advanced
+        .init(id: "adv.countfloor", title: "Count floor", breadcrumb: "Advanced",
+              keywords: ["minimum", "batch", "floor"], page: .advanced),
+        .init(id: "adv.thumbnail", title: "Thumbnail cache cap", breadcrumb: "Advanced",
+              keywords: ["thumbnail", "cache", "mb"], page: .advanced),
+        .init(id: "adv.thumbhash", title: "Thumbhash cache cap", breadcrumb: "Advanced",
+              keywords: ["thumbhash", "placeholder"], page: .advanced),
+        .init(id: "adv.incsync", title: "Incremental server sync", breadcrumb: "Advanced",
+              keywords: ["stream", "incremental", "sync"], page: .advanced),
+        .init(id: "adv.signin", title: "Sign in to Immich", breadcrumb: "Advanced",
+              keywords: ["session", "email password", "login"], page: .advanced),
+        .init(id: "adv.resetindex", title: "Reset index", breadcrumb: "Advanced › Danger zone",
+              keywords: ["wipe", "danger", "reset"], page: .advanced),
+        .init(id: "adv.clearjournal", title: "Clear journal", breadcrumb: "Advanced › Danger zone",
+              keywords: ["wipe", "danger", "journal"], page: .advanced),
+        .init(id: "adv.clearexcl", title: "Clear excluded assets", breadcrumb: "Advanced › Danger zone",
+              keywords: ["wipe", "danger", "exclusions"], page: .advanced),
+        .init(id: "adv.signout", title: "Sign out", breadcrumb: "Advanced › Danger zone",
+              keywords: ["sign out", "danger", "logout"], page: .advanced),
+
+        // About
+        .init(id: "about.version", title: "App version", breadcrumb: "About",
+              keywords: ["build", "marketing version", "about"], page: .about),
+    ]
+
+    /// Filtered + sorted entries for the current `searchText`.
+    /// Case-insensitive substring match on title (priority) + any
+    /// keyword. Title matches sort first so typing the exact label
+    /// surfaces the canonical row at the top.
+    private var filteredSearchEntries: [SearchEntry] {
+        let q = searchText.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !q.isEmpty else { return [] }
+        var titleHits: [SearchEntry] = []
+        var keywordHits: [SearchEntry] = []
+        for entry in Self.searchIndex {
+            if entry.title.lowercased().contains(q) {
+                titleHits.append(entry)
+            } else if entry.keywords.contains(where: { $0.lowercased().contains(q) }) {
+                keywordHits.append(entry)
+            }
+        }
+        return titleHits + keywordHits
+    }
+
+    /// Search result rows rendered in place of the regular root list
+    /// while `searchText` is non-empty. Each row is a NavigationLink
+    /// that pushes the entry's sub-page. We don't scroll-to-row inside
+    /// the destination — Phase 3 just gets you to the right page; the
+    /// row is visible there.
+    @ViewBuilder
+    private var searchResults: some View {
+        let entries = filteredSearchEntries
+        if entries.isEmpty {
+            VStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .font(.cairnScaled(size: 28, weight: .regular))
+                    .foregroundStyle(t.textHint)
+                Text("No settings match “\(searchText)”")
+                    .font(.cairnScaled(size: 14))
+                    .foregroundStyle(t.textMuted)
+                    .multilineTextAlignment(.center)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.top, 60)
+            .padding(.horizontal, 24)
+        } else {
+            CairnCard {
+                ForEach(Array(entries.enumerated()), id: \.element.id) { idx, entry in
+                    NavigationLink {
+                        page(for: entry.page)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(entry.title)
+                                .font(.cairnScaled(size: 15))
+                                .foregroundStyle(t.textBody)
+                            Text(entry.breadcrumb)
+                                .font(.cairnScaled(size: 12))
+                                .foregroundStyle(t.textMuted)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 12)
+                        .contentShape(Rectangle())
+                        .overlay(alignment: .trailing) {
+                            Image(systemName: "chevron.right")
+                                .font(.cairnScaled(size: 12, weight: .semibold))
+                                .foregroundStyle(t.textHint)
+                                .padding(.trailing, 14)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    if idx < entries.count - 1 {
+                        RowDivider()
+                    }
+                }
+            }
+            .padding(.top, 16)
+        }
+    }
+
+    /// Resolves a SettingsPage to its destination view. Mirrors the
+    /// `SettingsCategoryRow { … }` destination block on the root list
+    /// so search-result navigation lands in the same place as
+    /// category-row navigation.
+    @ViewBuilder
+    private func page(for page: SettingsPage) -> some View {
+        switch page {
+        case .connection: connectionPage
+        case .library: libraryPage
+        case .safetyLimits: safetyLimitsPage
+        case .appearance: appearancePage
+        case .dataAndRecovery: dataAndRecoveryPage
+        case .advanced: advancedPage
+        case .about: aboutPage
+        }
+    }
+
     // MARK: - Quick settings
 
     /// Pinned at the top of the Settings root: the two safety knobs
