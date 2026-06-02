@@ -863,4 +863,125 @@ struct ReconciliationEngineTests {
         // Sha1s 5 and 6 are the missing 2 — they're the limbo set.
         #expect(limbo == Set(allSix.suffix(2)))
     }
+
+    // MARK: - Alive-on-phone safety check
+
+    /// Helper that builds a `ServerAsset` with the filename + capture
+    /// date fields populated. Default isTrashed false; default
+    /// livePhotoVideoId nil.
+    private func capturedAsset(
+        _ id: String,
+        _ checksum: String,
+        filename: String,
+        createdAt: Date
+    ) -> ServerAsset {
+        ServerAsset(
+            id: id,
+            checksum: Checksum(base64: checksum),
+            originalFileName: filename,
+            fileCreatedAt: createdAt
+        )
+    }
+
+    @Test("alive-on-phone safety: server asset matching a live phone (filename, capture-second) is NOT a candidate")
+    func aliveOnPhoneSuppressesCandidate() {
+        let captureDate = Date(timeIntervalSince1970: 1_700_000_000)
+        let serverAsset = capturedAsset("s1", "RENDERED_HASH", filename: "IMG_1554.MOV", createdAt: captureDate)
+        let aliveKey = AlivePhoneAssetKey(
+            filename: "IMG_1554.MOV",
+            secondsSince1970: Int(captureDate.timeIntervalSince1970)
+        )
+        let output = ReconciliationEngine.compute(.init(
+            serverAssets: [serverAsset],
+            currentLocalChecksums: checksums("ORIGINAL_HASH"),
+            observedChecksums: checksums("RENDERED_HASH", "ORIGINAL_HASH"),
+            alivePhoneAssetKeys: [aliveKey]
+        ))
+        #expect(output.deleteCandidates.isEmpty)
+        #expect(output.pendingReviewCandidates.isEmpty)
+        #expect(output.aliveOnPhoneCandidateCount == 1)
+    }
+
+    @Test("alive-on-phone safety: filename match with different capture-second still proposes for deletion")
+    func aliveOnPhoneDifferentCaptureSecond() {
+        let serverAsset = capturedAsset(
+            "s1", "X",
+            filename: "IMG_1554.MOV",
+            createdAt: Date(timeIntervalSince1970: 1_700_000_000)
+        )
+        // Same filename but different capture second on the phone —
+        // not the same asset, the server entry IS a real candidate.
+        let differentSecondKey = AlivePhoneAssetKey(
+            filename: "IMG_1554.MOV",
+            secondsSince1970: 1_700_000_999
+        )
+        let output = ReconciliationEngine.compute(.init(
+            serverAssets: [serverAsset],
+            currentLocalChecksums: [],
+            observedChecksums: checksums("X"),
+            alivePhoneAssetKeys: [differentSecondKey]
+        ))
+        #expect(output.deleteCandidates.map(\.id) == ["s1"])
+        #expect(output.aliveOnPhoneCandidateCount == 0)
+    }
+
+    @Test("alive-on-phone safety: server asset missing originalFileName falls through to normal candidate logic")
+    func aliveOnPhoneMissingFilenameNoOp() {
+        let captureDate = Date(timeIntervalSince1970: 1_700_000_000)
+        let serverAsset = ServerAsset(
+            id: "s1",
+            checksum: Checksum(base64: "X"),
+            originalFileName: nil,
+            fileCreatedAt: captureDate
+        )
+        // Even with a matching alive key, the server asset can't be
+        // joined because filename is missing → goes through normal
+        // candidate path.
+        let output = ReconciliationEngine.compute(.init(
+            serverAssets: [serverAsset],
+            currentLocalChecksums: [],
+            observedChecksums: checksums("X"),
+            alivePhoneAssetKeys: [
+                AlivePhoneAssetKey(filename: "anything", secondsSince1970: Int(captureDate.timeIntervalSince1970))
+            ]
+        ))
+        #expect(output.deleteCandidates.map(\.id) == ["s1"])
+    }
+
+    @Test("alive-on-phone safety: nil alivePhoneAssetKeys preserves prior behavior (no filter)")
+    func aliveOnPhoneNilDisabled() {
+        // Same scenario as `aliveOnPhoneSuppressesCandidate` but
+        // without passing the alive set → should propose for deletion.
+        let captureDate = Date(timeIntervalSince1970: 1_700_000_000)
+        let serverAsset = capturedAsset("s1", "RENDERED_HASH", filename: "IMG_1554.MOV", createdAt: captureDate)
+        let output = ReconciliationEngine.compute(.init(
+            serverAssets: [serverAsset],
+            currentLocalChecksums: checksums("ORIGINAL_HASH"),
+            observedChecksums: checksums("RENDERED_HASH", "ORIGINAL_HASH")
+        ))
+        #expect(output.deleteCandidates.map(\.id) == ["s1"])
+        #expect(output.aliveOnPhoneCandidateCount == 0)
+    }
+
+    @Test("alive-on-phone safety: protected counter only includes assets that would-be-candidates, not arbitrary matches")
+    func aliveOnPhoneCounterScope() {
+        let captureDate = Date(timeIntervalSince1970: 1_700_000_000)
+        // s1: a candidate that gets protected
+        // s2: matches alive key but ISN'T a candidate (still in local)
+        //     — should NOT increment the counter
+        let s1 = capturedAsset("s1", "RENDERED", filename: "IMG_A.MOV", createdAt: captureDate)
+        let s2 = capturedAsset("s2", "STILL_LOCAL", filename: "IMG_B.MOV", createdAt: captureDate)
+        let aliveKeys: Set<AlivePhoneAssetKey> = [
+            AlivePhoneAssetKey(filename: "IMG_A.MOV", secondsSince1970: Int(captureDate.timeIntervalSince1970)),
+            AlivePhoneAssetKey(filename: "IMG_B.MOV", secondsSince1970: Int(captureDate.timeIntervalSince1970)),
+        ]
+        let output = ReconciliationEngine.compute(.init(
+            serverAssets: [s1, s2],
+            currentLocalChecksums: checksums("ORIGINAL_A", "STILL_LOCAL"),
+            observedChecksums: checksums("RENDERED", "STILL_LOCAL", "ORIGINAL_A"),
+            alivePhoneAssetKeys: aliveKeys
+        ))
+        #expect(output.deleteCandidates.isEmpty)
+        #expect(output.aliveOnPhoneCandidateCount == 1)
+    }
 }

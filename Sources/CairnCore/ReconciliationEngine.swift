@@ -1,5 +1,27 @@
 import Foundation
 
+/// Identifier for a phone asset that's currently alive in the Photos
+/// library, used for an out-of-band safety check against falsely
+/// proposing deletions for assets whose bytes diverged between phone
+/// and server (edit-revert, re-import, cross-device upload) but where
+/// the asset itself is still present on the device.
+///
+/// The pair `(filename, secondsSince1970)` is sufficient to identify
+/// a capture event uniquely in practice — two distinct phone assets
+/// almost never share both their original filename and creation
+/// timestamp to the second. The engine treats any server asset whose
+/// `(originalFileName, fileCreatedAt)` matches an alive phone asset
+/// as "still here, bytes differ" rather than "deleted."
+public struct AlivePhoneAssetKey: Hashable, Sendable {
+    public let filename: String
+    public let secondsSince1970: Int
+
+    public init(filename: String, secondsSince1970: Int) {
+        self.filename = filename
+        self.secondsSince1970 = secondsSince1970
+    }
+}
+
 /// Everything `ReconciliationEngine.compute` needs to decide which server
 /// assets are candidates to trash. Assembled by the caller from four sources:
 /// the live server response, a scan of the local photo library, the
@@ -63,6 +85,20 @@ public struct ReconciliationInput: Sendable {
     /// excluded regardless of new confirmed-delete signals.
     public let excludedAtByChecksum: [Checksum: Date]?
 
+    /// `(filename, fileCreatedAt-second)` keys for every PHAsset
+    /// currently alive in the user's Photos library. The engine uses
+    /// this as an out-of-band safety check: a server asset whose
+    /// `(originalFileName, fileCreatedAt)` matches an alive phone
+    /// asset can't be a deletion candidate — the user hasn't deleted
+    /// it; its phone-side bytes just diverged (e.g. an edit was
+    /// uploaded then reverted on the phone). Suppresses both the
+    /// candidate proposal in `compute()` and the upstream limbo stamp.
+    ///
+    /// `nil` (the default) disables the check — preserves prior
+    /// behavior for callers that don't yet supply the alive-asset
+    /// snapshot. Tests that don't care can omit it.
+    public let alivePhoneAssetKeys: Set<AlivePhoneAssetKey>?
+
     public init(
         serverAssets: [ServerAsset],
         currentLocalChecksums: Set<Checksum>,
@@ -74,7 +110,8 @@ public struct ReconciliationInput: Sendable {
         strictness: DeletionStrictness = .trusting,
         observedAlbumTags: [Checksum: Set<String>]? = nil,
         selectedAlbumScope: Set<String>? = nil,
-        excludedAtByChecksum: [Checksum: Date]? = nil
+        excludedAtByChecksum: [Checksum: Date]? = nil,
+        alivePhoneAssetKeys: Set<AlivePhoneAssetKey>? = nil
     ) {
         self.serverAssets = serverAssets
         self.currentLocalChecksums = currentLocalChecksums
@@ -87,6 +124,7 @@ public struct ReconciliationInput: Sendable {
         self.observedAlbumTags = observedAlbumTags
         self.selectedAlbumScope = selectedAlbumScope
         self.excludedAtByChecksum = excludedAtByChecksum
+        self.alivePhoneAssetKeys = alivePhoneAssetKeys
     }
 }
 
@@ -128,6 +166,12 @@ public struct ReconciliationOutput: Sendable, Equatable {
     /// keeps the exclusion (and stamps a fresh `addedAt` so the same
     /// signal doesn't re-fire next sync).
     public let recycledExclusionCandidates: [ServerAsset]
+    /// Count of would-be candidates filtered out by the alive-phone
+    /// safety check (a server asset whose `(originalFileName,
+    /// fileCreatedAt)` matched a currently-alive phone asset).
+    /// Informational; surfaces the edit-revert protection in
+    /// telemetry without exposing user filenames.
+    public let aliveOnPhoneCandidateCount: Int
 
     public init(
         deleteCandidates: [ServerAsset],
@@ -136,7 +180,8 @@ public struct ReconciliationOutput: Sendable, Equatable {
         excludedCandidateCount: Int = 0,
         pendingReviewCandidates: [ServerAsset] = [],
         heldByQuarantineCandidates: [ServerAsset] = [],
-        recycledExclusionCandidates: [ServerAsset] = []
+        recycledExclusionCandidates: [ServerAsset] = [],
+        aliveOnPhoneCandidateCount: Int = 0
     ) {
         self.deleteCandidates = deleteCandidates
         self.newlyObservedChecksums = newlyObservedChecksums
@@ -145,6 +190,7 @@ public struct ReconciliationOutput: Sendable, Equatable {
         self.pendingReviewCandidates = pendingReviewCandidates
         self.heldByQuarantineCandidates = heldByQuarantineCandidates
         self.recycledExclusionCandidates = recycledExclusionCandidates
+        self.aliveOnPhoneCandidateCount = aliveOnPhoneCandidateCount
     }
 
     /// Move every `deleteCandidate` into `pendingReviewCandidates`. Used
@@ -163,7 +209,8 @@ public struct ReconciliationOutput: Sendable, Equatable {
             excludedCandidateCount: excludedCandidateCount,
             pendingReviewCandidates: deleteCandidates + pendingReviewCandidates,
             heldByQuarantineCandidates: heldByQuarantineCandidates,
-            recycledExclusionCandidates: recycledExclusionCandidates
+            recycledExclusionCandidates: recycledExclusionCandidates,
+            aliveOnPhoneCandidateCount: aliveOnPhoneCandidateCount
         )
     }
 }
@@ -253,10 +300,46 @@ public enum ReconciliationEngine {
         let newlyObserved = input.currentLocalChecksums.subtracting(effectiveObserved)
 
         // Pass 1: would-be candidates, ignoring exclusions/quarantine/strictness.
-        let wouldBeCandidates = input.serverAssets.filter { asset in
+        // Includes the alive-on-phone safety check: when the caller
+        // supplies `alivePhoneAssetKeys`, a server asset whose
+        // `(originalFileName, fileCreatedAt)` matches a currently-alive
+        // phone asset is treated as "still here, bytes diverged" rather
+        // than deleted. This is the defense against false-positive
+        // candidates that arise when an upload-time-edit was later
+        // reverted on the phone — server has the rendered bytes, phone
+        // has the original bytes, neither has actually been deleted.
+        let aliveProtectedKeys = input.alivePhoneAssetKeys
+        let wouldBeCandidatesRaw = input.serverAssets.filter { asset in
             guard !asset.isTrashed else { return false }
             return effectiveObserved.contains(asset.checksum)
                 && !input.currentLocalChecksums.contains(asset.checksum)
+        }
+        let wouldBeCandidates: [ServerAsset]
+        let aliveProtectedCount: Int
+        if let aliveProtectedKeys {
+            var kept: [ServerAsset] = []
+            kept.reserveCapacity(wouldBeCandidatesRaw.count)
+            var dropped = 0
+            for asset in wouldBeCandidatesRaw {
+                if let filename = asset.originalFileName, !filename.isEmpty,
+                   let created = asset.fileCreatedAt,
+                   aliveProtectedKeys.contains(
+                       AlivePhoneAssetKey(
+                           filename: filename,
+                           secondsSince1970: Int(created.timeIntervalSince1970)
+                       )
+                   )
+                {
+                    dropped += 1
+                } else {
+                    kept.append(asset)
+                }
+            }
+            wouldBeCandidates = kept
+            aliveProtectedCount = dropped
+        } else {
+            wouldBeCandidates = wouldBeCandidatesRaw
+            aliveProtectedCount = 0
         }
 
         // Pass 2a: detect "recycled" exclusions — checksums the user
@@ -348,7 +431,8 @@ public enum ReconciliationEngine {
             excludedCandidateCount: excludedCount,
             pendingReviewCandidates: pending,
             heldByQuarantineCandidates: held,
-            recycledExclusionCandidates: recycledCandidates
+            recycledExclusionCandidates: recycledCandidates,
+            aliveOnPhoneCandidateCount: aliveProtectedCount
         )
     }
 }
