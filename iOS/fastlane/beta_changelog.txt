@@ -1,7 +1,13 @@
-Fast-initial-scan now retries on partial completion instead of locking out after one interrupted sync.
+Live progress for the server-fetch step of large-library syncs.
 
-The prior gate ("run imputation only if the change token is nil") had a failure mode: if a sync started fresh (token nil → imputation runs), got interrupted partway through the matching pass, then later resumed and managed to complete the full PhotoKit enumeration (which is what saves the token), the token-only check would consider that partition "done" — even though imputation never finished its walk. The user's only recovery was a manual Clear hash cache.
+End-user report: a 100k+ Immich library sat on the "Preparing" stage for 16+ minutes with no visible activity. The `.preparing` phase silently runs the paginated `listAllAssets` call, which on a slow self-hosted Immich can take 100+ round trips (8-16 minutes is plausible for that library size).
 
-This build adds an explicit per-partition imputation-completion marker stored in UserDefaults (cairn.imputation.completedAt.<partition>). The marker is set only when runImputationPass walks end-to-end without throwing, and gates the next sync's imputation block alongside the token check: imputation re-runs if either (a) the token is nil OR (b) imputation hasn't been marked complete for this partition. Clear hash cache, Verify imputed checksums, and Sign out all clear the marker.
+This build:
 
-Net effect: a sync interrupted during Matching from server will retry imputation on the next attempt instead of silently skipping straight to local hashing for the residue. No change to successful-completion behavior — once the marker is set, repeat syncs continue to bypass imputation, same as before.
+- ImmichClient.listAllAssets gains an `onPageLoaded(Int)` callback (fired after each successful page) and an `expectedTotal: Int?` capacity hint to skip ~17 Array reallocations on a 100k fetch.
+- A parallel `assetStatistics()` fetch populates the expected denominator before the first paginated page returns.
+- InitialScanScreen now renders a "X / Y server assets fetched" line under the prep label whenever the count is non-zero. When the total is known, shows the proportional count; otherwise the open-ended counter alone — either way, motion replaces apparent freeze.
+
+Diagnostic value: the line tells you exactly which subsystem is slow. If the count ticks at a steady rate but slowly, the bottleneck is Immich's pagination throughput. If the count is stuck at 0, the bottleneck is elsewhere (DNS, TLS, app launch, statistics endpoint, etc.) and we know to look there.
+
+A follow-up build will add bounded-concurrency parallel page fetch (4-8x speedup potential when Immich's pagination is offset-stable) — wanted to ship the visibility fix first so we can verify the bottleneck is actually pagination throughput on real reports.
