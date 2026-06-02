@@ -264,7 +264,7 @@ public struct PhotoKitPhotoEnumerator: PhotoEnumerator {
         return selectResourcesToHash(from: all)
     }
 
-    private static func logResourceAmbiguity(asset: PHAsset, resources: [PHAssetResource]) {
+    public static func logResourceAmbiguity(asset: PHAsset, resources: [PHAssetResource]) {
         let hasVideo = resources.contains { $0.type == .video }
         let hasFullSizeVideo = resources.contains { $0.type == .fullSizeVideo }
         let hasPhoto = resources.contains { $0.type == .photo }
@@ -279,6 +279,7 @@ public struct PhotoKitPhotoEnumerator: PhotoEnumerator {
             return "{type=\(resourceTypeName(res.type)) current=\(isCurrent) size=\(size)}"
         }.joined(separator: " ")
         resourcePickLog.notice("ambiguity localId=\(asset.localIdentifier, privacy: .public) name=\(filename, privacy: .public) resources=\(details, privacy: .public)")
+        NSLog("cairn-ambiguity localId=%@ name=%@ resources=%@", asset.localIdentifier, filename, details)
     }
 
     private static func resourceTypeName(_ type: PHAssetResourceType) -> String {

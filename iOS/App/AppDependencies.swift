@@ -1193,6 +1193,7 @@ final class AppDependencies {
                 out.reserveCapacity(fetch.count)
                 fetch.enumerateObjects { asset, _, _ in
                     let resources = PHAssetResource.assetResources(for: asset)
+                    PhotoKitPhotoEnumerator.logResourceAmbiguity(asset: asset, resources: resources)
                     let primary = resources.first { r in
                         r.type == .photo || r.type == .video || r.type == .audio
                     }
