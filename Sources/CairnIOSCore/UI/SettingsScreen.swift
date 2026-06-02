@@ -373,7 +373,13 @@ public struct SettingsScreen: View {
             onCompletion: { result in
                 switch result {
                 case .success(let url):
-                    onImportData(url, true)
+                    // applySettings: false — restore the cache / observed
+                    // / exclusions / journal from the payload, but
+                    // preserve the user's current in-app settings
+                    // (toggles, thresholds, etc). Otherwise importing a
+                    // backup made before any settings change reverts the
+                    // user's UI state silently.
+                    onImportData(url, false)
                 case .failure:
                     break
                 }
