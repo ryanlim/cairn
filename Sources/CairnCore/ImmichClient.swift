@@ -336,9 +336,18 @@ public struct ImmichClient: Sendable {
         includeTrashed: Bool = false,
         visibility: AssetVisibility? = nil,
         pageSize: Int = 1000,
-        maxRetries: Int = 2
+        maxRetries: Int = 2,
+        expectedTotal: Int? = nil,
+        onPageLoaded: (@Sendable (Int) async -> Void)? = nil
     ) async throws -> [ServerAsset] {
         var out: [ServerAsset] = []
+        // Reserve capacity up front when the caller can supply a hint
+        // (typically from `assetStatistics()`). On a 100k-asset library
+        // this avoids ~17 Array reallocations as `out.append` grows the
+        // backing storage, which compound over a multi-minute fetch.
+        if let expectedTotal, expectedTotal > 0 {
+            out.reserveCapacity(expectedTotal)
+        }
         var page = 1
         while true {
             try Task.checkCancellation()
@@ -356,6 +365,16 @@ public struct ImmichClient: Sendable {
                 do {
                     let result: SearchResponseDTO = try await postJSON(path: "search/metadata", jsonObject: body)
                     out.append(contentsOf: result.assets.items.map(\.asServerAsset))
+                    // Tick the caller's progress signal after each page
+                    // so a multi-minute paginated fetch on a 100k+
+                    // library surfaces motion in the UI instead of
+                    // looking frozen during the `.preparing` phase.
+                    // Fire-and-await — the closure's MainActor hop is
+                    // microseconds and we want it serialized with the
+                    // next request so the UI gets a consistent count.
+                    if let onPageLoaded {
+                        await onPageLoaded(out.count)
+                    }
                     guard let nextString = result.assets.nextPage, let nextPage = Int(nextString) else { return out }
                     page = nextPage
                     lastError = nil

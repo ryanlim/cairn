@@ -61,6 +61,17 @@ public struct InitialScanScreen: View {
     /// `.hashing` (the existing X / Y counter is more informative)
     /// or when idle.
     public let phase: CairnAppModel.SyncPhase
+    /// Live count of server assets received via paginated
+    /// `listAllAssets`. Ticks up per page. Surfaced under the
+    /// pre-phase label during `.preparing` on large libraries where
+    /// the server fetch dominates wall-clock time and would
+    /// otherwise look frozen for tens of seconds to many minutes.
+    public let serverAssetsFetched: Int
+    /// Best-known total server asset count (from `assetStatistics()`),
+    /// when available. When non-nil, the fetched-count line shows
+    /// "X / Y assets" with a proportional bar instead of an open
+    /// counter.
+    public let serverAssetsExpected: Int?
     @Binding public var settings: CairnSettings
     public let onStart: () -> Void
     public let onCancel: () -> Void
@@ -139,6 +150,8 @@ public struct InitialScanScreen: View {
         initialHashed: Int = 0,
         persistedRate: Double? = nil,
         phase: CairnAppModel.SyncPhase = .idle,
+        serverAssetsFetched: Int = 0,
+        serverAssetsExpected: Int? = nil,
         settings: Binding<CairnSettings> = .constant(.defaults),
         onStart: @escaping () -> Void = {},
         onCancel: @escaping () -> Void = {},
@@ -156,6 +169,8 @@ public struct InitialScanScreen: View {
         self.initialHashed = initialHashed
         self.persistedRate = persistedRate
         self.phase = phase
+        self.serverAssetsFetched = serverAssetsFetched
+        self.serverAssetsExpected = serverAssetsExpected
         self._settings = settings
         self.onStart = onStart
         self.onCancel = onCancel
@@ -548,10 +563,55 @@ public struct InitialScanScreen: View {
                 if imputed > 0 {
                     trustSeededLine
                 }
+                if serverFetchLineVisible {
+                    serverFetchLine
+                }
                 timingStrip
             }
             .padding(18)
         }
+    }
+
+    /// Whether the server-fetch counter belongs on screen right now.
+    /// Shows during the pre-hashing phases (where the X/Y processed
+    /// counter hasn't taken over yet) any time we've received at
+    /// least one server page. Hidden during `.hashing` and friends
+    /// so it doesn't crowd the more-informative live counter.
+    private var serverFetchLineVisible: Bool {
+        guard serverAssetsFetched > 0 else { return false }
+        switch phase {
+        case .preparing, .fetchingServer, .imputingFromServer, .reconciling, .finalizing:
+            return true
+        case .hashing, .idle:
+            return false
+        }
+    }
+
+    /// One-line caption: "Fetched X server assets" (or "X / Y server
+    /// assets" when we know the denominator). Reuses the
+    /// `trustSeededLine` shape (icon + bold count + muted suffix) so
+    /// the progress card reads as a coherent stat strip.
+    private var serverFetchLine: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "server.rack")
+                .font(.cairnScaled(size: 10))
+                .foregroundStyle(t.info)
+            if let expected = serverAssetsExpected, expected > 0 {
+                Text("\(serverAssetsFetched.formatted(.number)) / \(expected.formatted(.number)) server assets fetched")
+                    .font(.cairnScaled(size: 12, weight: .medium))
+                    .foregroundStyle(t.textBody)
+            } else {
+                Text("\(serverAssetsFetched.formatted(.number)) server assets fetched")
+                    .font(.cairnScaled(size: 12, weight: .medium))
+                    .foregroundStyle(t.textBody)
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(
+            serverAssetsExpected.map {
+                "Fetched \(serverAssetsFetched) of \($0) server assets"
+            } ?? "Fetched \(serverAssetsFetched) server assets"
+        )
     }
 
     /// One-line caption shown when the fast-initial-scan path

@@ -1404,8 +1404,32 @@ final class AppDependencies {
         }
 
         serverChecksumSet = nil
+        // Reset the server-fetch progress counters so a fresh sync
+        // shows "0 fetched" before pages start arriving rather than
+        // the trailing value from a prior sync. `serverAssetsExpected`
+        // gets populated by the `assetStatistics()` call kicked off
+        // in parallel.
+        model.serverAssetsFetched = 0
+        model.serverAssetsExpected = nil
         let hashStoreRef = self.localHashStore
         let serverFetchStart = Date()
+        // Fire-and-forget assetStatistics to populate the expected
+        // total so the UI can render a proportional progress bar
+        // during the paginated fetch below. Independent of the
+        // `model.library.with(server:)` update task above — that one
+        // is informational; this one feeds an in-flight progress UI.
+        Task { [weak self] in
+            guard let stats = try? await client.assetStatistics() else { return }
+            await MainActor.run { self?.model.serverAssetsExpected = stats.total }
+        }
+        // Page-loaded callback: hops to the MainActor to update
+        // `model.serverAssetsFetched`. Called once per successful
+        // page inside `listAllAssets`; cheap (microseconds per hop).
+        let onServerPage: @Sendable (Int) async -> Void = { [weak self] count in
+            await MainActor.run {
+                self?.model.serverAssetsFetched = count
+            }
+        }
         // Snapshot the feature-flag + coordinator/cache refs onto the
         // Task's locals so the closure doesn't re-touch MainActor state
         // mid-flight. The closure decides bootstrap-vs-incremental
@@ -1466,15 +1490,15 @@ final class AppDependencies {
                         }
                         syncLog.warning("[cairn.session] server returned 401 with session token — cleared local token, surfaced .sessionExpired banner")
                     }
-                    assets = try await client.listAllAssets()
+                    assets = try await client.listAllAssets(onPageLoaded: onServerPage)
                     outcome = .paginated(fallbackReason: reason)
                 } catch {
                     syncLog.warning("[cairn.sync.stream] failed (\(String(describing: error), privacy: .public)) — falling back to paginated")
-                    assets = try await client.listAllAssets()
+                    assets = try await client.listAllAssets(onPageLoaded: onServerPage)
                     outcome = .paginated(fallbackReason: "stream error")
                 }
             } else {
-                assets = try await client.listAllAssets()
+                assets = try await client.listAllAssets(onPageLoaded: onServerPage)
                 outcome = .paginated(fallbackReason: nil)
             }
             let checksums = Set(assets.map(\.checksum))

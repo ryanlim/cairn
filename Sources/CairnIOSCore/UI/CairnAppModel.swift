@@ -675,6 +675,22 @@ public final class CairnAppModel {
     /// up from the start for new credentials.
     public var hasDismissedInitialScan: Bool = false
 
+    /// Live count of server assets fetched during the current sync's
+    /// paginated `listAllAssets` call. Ticks per page so the otherwise-
+    /// silent `.preparing` phase has at least one moving signal on
+    /// libraries large enough for the server fetch to dominate wall-
+    /// clock time (100k+ assets can mean 8-16 minutes of paginated
+    /// requests under poor server throughput). Reset to 0 at sync
+    /// start; left at the final count after sync completes so the
+    /// user can see what was fetched if they re-open the screen.
+    public var serverAssetsFetched: Int = 0
+    /// Best-known estimate of total server assets at the start of
+    /// this fetch, sourced from `assetStatistics()`. `nil` when the
+    /// statistics call hasn't returned yet (it runs in parallel) or
+    /// errored. When present, the UI can show a denominator and a
+    /// proportional progress bar instead of an open-ended counter.
+    public var serverAssetsExpected: Int? = nil
+
     /// Non-nil when a scan is paused: the elapsed work time captured
     /// at cancel, frozen so the UI shows "244 of 500 · 12s" rather
     /// than a ticking timer against a frozen `syncStartedAt` (which
