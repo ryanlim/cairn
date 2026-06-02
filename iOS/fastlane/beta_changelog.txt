@@ -1,7 +1,7 @@
-Import no longer silently overwrites your in-app settings.
+Fast-initial-scan now retries on partial completion instead of locking out after one interrupted sync.
 
-Settings → Data & recovery → Import data was hard-wired to apply the settings block from the imported payload, overwriting whatever toggles you had set in the app. The behavior was visible during fast-initial-scan testing: clearing the hash cache and re-importing an older backup silently reverted the "Trust Immich's hashes" toggle to its pre-feature default, because the backup was created before the toggle existed.
+The prior gate ("run imputation only if the change token is nil") had a failure mode: if a sync started fresh (token nil → imputation runs), got interrupted partway through the matching pass, then later resumed and managed to complete the full PhotoKit enumeration (which is what saves the token), the token-only check would consider that partition "done" — even though imputation never finished its walk. The user's only recovery was a manual Clear hash cache.
 
-Now: import restores the cache, observed checksums, exclusions, journal, and per-server state from the payload (the parts you actually want when restoring), but preserves your current in-app settings (toggles, thresholds, indexing scope, etc). The action remains otherwise identical.
+This build adds an explicit per-partition imputation-completion marker stored in UserDefaults (cairn.imputation.completedAt.<partition>). The marker is set only when runImputationPass walks end-to-end without throwing, and gates the next sync's imputation block alongside the token check: imputation re-runs if either (a) the token is nil OR (b) imputation hasn't been marked complete for this partition. Clear hash cache, Verify imputed checksums, and Sign out all clear the marker.
 
-Settings restoration during cross-device migration was the original intent of bundling settings into the export, but that flow doesn't go through this UI affordance anyway — the migration path runs through onboarding's "Restore from another device" route.
+Net effect: a sync interrupted during Matching from server will retry imputation on the next attempt instead of silently skipping straight to local hashing for the residue. No change to successful-completion behavior — once the marker is set, repeat syncs continue to bypass imputation, same as before.
