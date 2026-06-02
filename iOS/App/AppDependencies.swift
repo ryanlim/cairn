@@ -1183,14 +1183,33 @@ final class AppDependencies {
         //    .video / .audio) so Live Photo's paired motion video
         //    doesn't pollute the filename slot — we want the still
         //    photo's filename here.
+        //
+        //    Progress updates: posts `(scanned, total)` to syncProgress
+        //    every 200 assets via a fire-and-forget MainActor hop, so
+        //    the InitialScanScreen's "X / Y processed" line ticks live
+        //    during this otherwise-silent phase. Tens of seconds on a
+        //    17k-asset library otherwise looks frozen to the user.
+        let progressEmitter: @Sendable (Int, Int) -> Void = { [weak self] scanned, total in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.model.syncProgress = .init(
+                    hashed: scanned,
+                    total: total,
+                    initialHashed: 0,
+                    imputed: self.model.syncProgress?.imputed ?? 0
+                )
+            }
+        }
         let phoneEntries: [(localId: String, modDate: Date?, creationDate: Date?, filename: String?)] =
             await Task.detached(priority: .userInitiated) {
                 let opts = PHFetchOptions()
                 opts.includeHiddenAssets = false
                 opts.includeAssetSourceTypes = [.typeUserLibrary]
                 let fetch = PHAsset.fetchAssets(with: opts)
+                let fetchCount = fetch.count
                 var out: [(localId: String, modDate: Date?, creationDate: Date?, filename: String?)] = []
-                out.reserveCapacity(fetch.count)
+                out.reserveCapacity(fetchCount)
+                var scanned = 0
                 fetch.enumerateObjects { asset, _, _ in
                     let resources = PHAssetResource.assetResources(for: asset)
                     PhotoKitPhotoEnumerator.logResourceAmbiguity(asset: asset, resources: resources)
@@ -1203,6 +1222,10 @@ final class AppDependencies {
                         asset.creationDate,
                         primary?.originalFilename
                     ))
+                    scanned += 1
+                    if scanned % 200 == 0 || scanned == fetchCount {
+                        progressEmitter(scanned, fetchCount)
+                    }
                 }
                 return out
             }.value
