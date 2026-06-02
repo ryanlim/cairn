@@ -1305,6 +1305,10 @@ final class AppDependencies {
         // 5. Seed LocalHashStore. setImputed replaces any prior entries
         //    for the localId (no-op for the just-checked "not cached"
         //    case but keeps the API symmetric with `set`).
+        //    Progress posts every 50 writes (and once at end) so the
+        //    "Matching from server…" phase no longer sits silent — the
+        //    InitialScanScreen's trustSeededLine renders the imputed
+        //    count and ticks live as setImputed finishes each batch.
         var imputedCount = 0
         for entry in seedable {
             try Task.checkCancellation()
@@ -1314,6 +1318,19 @@ final class AppDependencies {
                 modificationDate: entry.modDate
             )
             imputedCount += 1
+            if imputedCount % 50 == 0 || imputedCount == seedable.count {
+                let snapshot = imputedCount
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    let prev = self.model.syncProgress
+                    self.model.syncProgress = .init(
+                        hashed: prev?.hashed ?? 0,
+                        total: prev?.total ?? 0,
+                        initialHashed: prev?.initialHashed ?? 0,
+                        imputed: snapshot
+                    )
+                }
+            }
         }
 
         return ImputationOutcome(
