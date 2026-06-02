@@ -1,7 +1,7 @@
-Live progress during the phone-library scan portion of Matching from server.
+Import no longer silently overwrites your in-app settings.
 
-The imputation pass has two slow steps: (1) enumerating every PHAsset to build the (filename, capture-date) join table, and (2) writing the matched entries into the local hash store. Build 101 added a counter for step 2, but for libraries large enough to make this matter, step 1 is what dominates wall-clock time (PHAssetResource.assetResources per asset is a few ms; 17k assets is ~30-60 seconds with zero UI signal).
+Settings → Data & recovery → Import data was hard-wired to apply the settings block from the imported payload, overwriting whatever toggles you had set in the app. The behavior was visible during fast-initial-scan testing: clearing the hash cache and re-importing an older backup silently reverted the "Trust Immich's hashes" toggle to its pre-feature default, because the backup was created before the toggle existed.
 
-This build streams a "scanned / total" count from inside the PHAsset enumeration loop (every 200 assets, fire-and-forget MainActor hop) into the existing syncProgress.hashed/total fields. The InitialScanScreen's "X / Y processed" line now ticks live throughout the Matching from server phase instead of sitting at 0 / 0 until the entire scan completes.
+Now: import restores the cache, observed checksums, exclusions, journal, and per-server state from the payload (the parts you actually want when restoring), but preserves your current in-app settings (toggles, thresholds, indexing scope, etc). The action remains otherwise identical.
 
-No behavior change to imputation or reconciliation.
+Settings restoration during cross-device migration was the original intent of bundling settings into the export, but that flow doesn't go through this UI affordance anyway — the migration path runs through onboarding's "Restore from another device" route.
