@@ -1,13 +1,5 @@
-Live progress for the server-fetch step of large-library syncs.
+Remove leftover resource-pick diagnostic instrumentation.
 
-End-user report: a 100k+ Immich library sat on the "Preparing" stage for 16+ minutes with no visible activity. The `.preparing` phase silently runs the paginated `listAllAssets` call, which on a slow self-hosted Immich can take 100+ round trips (8-16 minutes is plausible for that library size).
+Builds 99-100 added a Logger.notice + NSLog pair fired from `resourcesToHash(for:)` and the imputation pass enumeration loop whenever a PHAsset's resource set carried both .photo+.fullSizePhoto or both .video+.fullSizeVideo — used to investigate the original "5 phantom .MOVs in Aging Out" hypothesis. That investigation concluded back at build 102 (resource selection isn't the cause; the actual fix was the alive-on-phone safety check in the reconciliation engine), but the diagnostic stayed in place running ~165 log lines per imputation pass.
 
-This build:
-
-- ImmichClient.listAllAssets gains an `onPageLoaded(Int)` callback (fired after each successful page) and an `expectedTotal: Int?` capacity hint to skip ~17 Array reallocations on a 100k fetch.
-- A parallel `assetStatistics()` fetch populates the expected denominator before the first paginated page returns.
-- InitialScanScreen now renders a "X / Y server assets fetched" line under the prep label whenever the count is non-zero. When the total is known, shows the proportional count; otherwise the open-ended counter alone — either way, motion replaces apparent freeze.
-
-Diagnostic value: the line tells you exactly which subsystem is slow. If the count ticks at a steady rate but slowly, the bottleneck is Immich's pagination throughput. If the count is stuck at 0, the bottleneck is elsewhere (DNS, TLS, app launch, statistics endpoint, etc.) and we know to look there.
-
-A follow-up build will add bounded-concurrency parallel page fetch (4-8x speedup potential when Immich's pagination is offset-stable) — wanted to ship the visibility fix first so we can verify the bottleneck is actually pagination throughput on real reports.
+This build strips it: removes the `OSLog` import, the `resourcePickLog` Logger, the `logResourceAmbiguity` helper, the `resourceTypeName` enum-pretty-printer, and both call sites (PhotoKitPhotoEnumerator.resourcesToHash and AppDependencies.runImputationPass). Pure observation code — no behavioral change, no test impact (662 tests pass unchanged).
