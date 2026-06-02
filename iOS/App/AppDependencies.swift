@@ -1621,6 +1621,30 @@ final class AppDependencies {
             totalVisibleAssets = cap
         }
 
+        // Build a `(filename, fileCreatedAt-second)` set for every
+        // alive phone asset. The engine uses this as a safety check
+        // to suppress deletion candidates for server assets whose
+        // capture-identity matches a phone asset that's still present
+        // — the "edit-revert, bytes diverged" class of false positives.
+        // Same set is unioned into the limbo `excluded` parameter so
+        // those checksums also don't get pre-stamped via the
+        // missed-deletion recovery path. KVC-fast PHAsset properties
+        // (no PHAssetResource enumeration); ~tens-of-ms even on a 50k
+        // library.
+        var alivePhoneAssetKeys = Set<AlivePhoneAssetKey>()
+        alivePhoneAssetKeys.reserveCapacity(visibleFetch.count)
+        visibleFetch.enumerateObjects { asset, _, _ in
+            guard let filename = asset.value(forKey: "filename") as? String,
+                  !filename.isEmpty,
+                  let created = asset.creationDate else { return }
+            alivePhoneAssetKeys.insert(
+                AlivePhoneAssetKey(
+                    filename: filename,
+                    secondsSince1970: Int(created.timeIntervalSince1970)
+                )
+            )
+        }
+
         syncLog.info("[cairn.sync] local checksums fetched in \(Int(Date().timeIntervalSince(t1) * 1000))ms (\(indexedCount) entries)")
 
         // Bulk metadata backfill: cairn's observer-time metadata path
@@ -1808,12 +1832,30 @@ final class AppDependencies {
         // Idempotent: a SHA1 that's already in confirmedMap is excluded
         // upfront, and `ConfirmedDeletedStore.union` is first-write-wins
         // so a parallel-path stamp can't reset the clock.
+        // Alive-on-phone safety: any server asset whose `(filename,
+        // fileCreatedAt-second)` matches a live phone asset gets
+        // protected. Collect those checksums so limbo recovery
+        // doesn't stamp them and the engine knows to suppress them
+        // as deletion candidates downstream.
+        var aliveOnPhoneServerChecksums = Set<Checksum>()
+        for asset in serverAssets where !asset.isTrashed {
+            guard let filename = asset.originalFileName, !filename.isEmpty,
+                  let created = asset.fileCreatedAt else { continue }
+            let key = AlivePhoneAssetKey(
+                filename: filename,
+                secondsSince1970: Int(created.timeIntervalSince1970)
+            )
+            if alivePhoneAssetKeys.contains(key) {
+                aliveOnPhoneServerChecksums.insert(asset.checksum)
+            }
+        }
+
         let limboNow = Date()
         let limbo = ReconciliationEngine.limboChecksums(
             observed: observedSet,
             currentLocal: extendedLocal,
             confirmedDeleted: Set(confirmedMap.keys),
-            excluded: exclusionSet
+            excluded: exclusionSet.union(aliveOnPhoneServerChecksums)
         )
         if !limbo.isEmpty {
             syncLog.notice("[cairn.recover] limbo: \(limbo.count, privacy: .public) observed-not-local-not-confirmed checksum(s) stamping to ConfirmedDeleted with now — starts a fresh quarantine clock")
@@ -1844,9 +1886,10 @@ final class AppDependencies {
             strictness: effectiveStrictness,
             observedAlbumTags: observedAlbumTags,
             selectedAlbumScope: selectedAlbumScope,
-            excludedAtByChecksum: exclusionAddedAt
+            excludedAtByChecksum: exclusionAddedAt,
+            alivePhoneAssetKeys: alivePhoneAssetKeys
         ))
-        syncLog.notice("[cairn.engine] output: delete=\(result.deleteCandidates.count, privacy: .public) pending=\(result.pendingReviewCandidates.count, privacy: .public) held=\(result.heldByQuarantineCandidates.count, privacy: .public) recycled=\(result.recycledExclusionCandidates.count, privacy: .public) excludedCount=\(result.excludedCandidateCount, privacy: .public)")
+        syncLog.notice("[cairn.engine] output: delete=\(result.deleteCandidates.count, privacy: .public) pending=\(result.pendingReviewCandidates.count, privacy: .public) held=\(result.heldByQuarantineCandidates.count, privacy: .public) recycled=\(result.recycledExclusionCandidates.count, privacy: .public) excludedCount=\(result.excludedCandidateCount, privacy: .public) aliveOnPhone=\(result.aliveOnPhoneCandidateCount, privacy: .public)")
 
         // Per-candidate diagnostic dump for the delete bucket. Tells us
         // whether each candidate landed there via:
