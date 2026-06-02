@@ -1,9 +1,7 @@
-Diagnostic build (round 2): logs from imputation path + NSLog for syslog visibility.
+Counter for "Matching from server" + ongoing resource-pick diagnostic.
 
-Changes from build 99:
-1. The ambiguity check now also fires from the imputation pass (where every PHAsset is enumerated once at the start to gather filename + fileCreatedAt). This means the 5 phantom .MOVs get inspected even when imputation matches them server-side and bypasses local hashing.
-2. Added NSLog alongside Logger so the diagnostic also lands in legacy syslog (visible to idevicesyslog), not just the unified-logging stream (which only Console.app filters reliably surface).
+Counter: during the Matching from server phase, the trust-seeded count now ticks live as setImputed writes complete (every 50 entries). Previously the imputed count stayed at 0 until the entire pass finished, then jumped to the total — which made the phase feel like it was sitting still even on libraries where it was making real progress.
 
-To capture: clear hash cache + sync (toggle on or off, doesn't matter — imputation pass runs regardless). Stream device logs with `idevicesyslog -m cairn-ambiguity` or filter Console.app on "cairn-ambiguity" / "resource-pick".
+Diagnostic logging (carried over from build 100): every PHAsset enumerated during imputation gets inspected for resource-type ambiguity (both .video AND .fullSizeVideo, or both .photo AND .fullSizePhoto). Logs via Logger.notice AND NSLog so they're visible in both Console.app (subsystem app.cairn.ios, category resource-pick) and the legacy syslog stream (idevicesyslog -m "cairn-ambiguity").
 
-No behavior change. Observation-only.
+No behavior change to identity/hashing logic.
