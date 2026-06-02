@@ -1,9 +1,7 @@
-Fix for the phantom-quarantine bug on edit-history-divergent assets.
+Live progress during the phone-library scan portion of Matching from server.
 
-The user-reported "5 .MOVs aging out in quarantine after running fast-initial-scan then re-importing a cache backup" was deeper than the original resource-pick hypothesis. Real root cause: these assets had been edited and uploaded to Immich at some point, then the edits were reverted on the phone. Server kept the bytes from the rendered (edited) upload; phone reverted to the original. Hash divergence resulted, and cairn's limbo recovery + reconciliation engine treated the rendered hash as a deletion signal — even though the asset is still very much alive on the phone, just with different bytes.
+The imputation pass has two slow steps: (1) enumerating every PHAsset to build the (filename, capture-date) join table, and (2) writing the matched entries into the local hash store. Build 101 added a counter for step 2, but for libraries large enough to make this matter, step 1 is what dominates wall-clock time (PHAssetResource.assetResources per asset is a few ms; 17k assets is ~30-60 seconds with zero UI signal).
 
-This build adds an alive-on-phone safety check: before proposing any server asset for deletion, the engine checks whether a currently-live phone asset shares the server entry's (originalFileName, fileCreatedAt-second). If yes, the server asset is suppressed from both deletion candidates AND from the limbo-stamping path. The check is a single fast PHAsset enumeration per sync (KVC reads, no PHAssetResource calls) and runs alongside the existing visibleFetch.
+This build streams a "scanned / total" count from inside the PHAsset enumeration loop (every 200 assets, fire-and-forget MainActor hop) into the existing syncProgress.hashed/total fields. The InitialScanScreen's "X / Y processed" line now ticks live throughout the Matching from server phase instead of sitting at 0 / 0 until the entire scan completes.
 
-Net effect: edit-revert and bytes-diverged-but-asset-alive scenarios no longer surface as phantom Aging Out entries. Existing phantom stamps in ConfirmedDeletedStore stay until manually dismissed (one-time cleanup); going forward, the same conditions won't re-stamp.
-
-Engine output gains aliveOnPhoneCandidateCount (counts of would-be candidates filtered by this check) for telemetry. 5 new engine tests cover the new path; full 662-test suite passes.
+No behavior change to imputation or reconciliation.
