@@ -4,9 +4,6 @@ import CairnCore
 #if canImport(Photos)
 import Photos
 import CryptoKit
-import OSLog
-
-private let resourcePickLog = Logger(subsystem: "app.cairn.ios", category: "resource-pick")
 
 /// PhotoKit-backed `PhotoEnumerator`. Hashes every relevant
 /// `PHAssetResource` in the user's Photos library and returns the
@@ -260,45 +257,7 @@ public struct PhotoKitPhotoEnumerator: PhotoEnumerator {
     /// selection logic in `selectResourcesToHash(from:)`.
     static func resourcesToHash(for asset: PHAsset) -> [PHAssetResource] {
         let all = PHAssetResource.assetResources(for: asset)
-        logResourceAmbiguity(asset: asset, resources: all)
         return selectResourcesToHash(from: all)
-    }
-
-    public static func logResourceAmbiguity(asset: PHAsset, resources: [PHAssetResource]) {
-        let hasVideo = resources.contains { $0.type == .video }
-        let hasFullSizeVideo = resources.contains { $0.type == .fullSizeVideo }
-        let hasPhoto = resources.contains { $0.type == .photo }
-        let hasFullSizePhoto = resources.contains { $0.type == .fullSizePhoto }
-        let videoAmbiguous = hasVideo && hasFullSizeVideo
-        let photoAmbiguous = hasPhoto && hasFullSizePhoto
-        guard videoAmbiguous || photoAmbiguous else { return }
-        let filename = resources.first?.originalFilename ?? "?"
-        let details = resources.map { res in
-            let isCurrent = (res.value(forKey: "isCurrent") as? Bool) ?? false
-            let size = (res.value(forKey: "fileSize") as? NSNumber)?.int64Value ?? -1
-            return "{type=\(resourceTypeName(res.type)) current=\(isCurrent) size=\(size)}"
-        }.joined(separator: " ")
-        resourcePickLog.notice("ambiguity localId=\(asset.localIdentifier, privacy: .public) name=\(filename, privacy: .public) resources=\(details, privacy: .public)")
-        NSLog("cairn-ambiguity localId=%@ name=%@ resources=%@", asset.localIdentifier, filename, details)
-    }
-
-    private static func resourceTypeName(_ type: PHAssetResourceType) -> String {
-        switch type {
-        case .photo: return "photo"
-        case .fullSizePhoto: return "fullSizePhoto"
-        case .alternatePhoto: return "alternatePhoto"
-        case .video: return "video"
-        case .fullSizeVideo: return "fullSizeVideo"
-        case .pairedVideo: return "pairedVideo"
-        case .fullSizePairedVideo: return "fullSizePairedVideo"
-        case .adjustmentData: return "adjustmentData"
-        case .adjustmentBasePhoto: return "adjustmentBasePhoto"
-        case .adjustmentBaseVideo: return "adjustmentBaseVideo"
-        case .adjustmentBasePairedVideo: return "adjustmentBasePairedVideo"
-        case .photoProxy: return "photoProxy"
-        case .audio: return "audio"
-        @unknown default: return "unknown(\(type.rawValue))"
-        }
     }
 
     /// Selection logic factored out of PhotoKit so tests can drive it
