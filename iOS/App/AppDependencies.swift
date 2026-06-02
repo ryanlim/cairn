@@ -1523,7 +1523,21 @@ final class AppDependencies {
         // the load-bearing signal because every place that resets the
         // hash cache also clears the token.
         let isBootstrapScan = (try? await tokenStore?.load()) == nil
-        if model.settings.fastInitialScan && isBootstrapScan {
+        // Imputation-completion gate: a partition that has never run a
+        // full imputation pass to completion gets another shot, even
+        // if the token is already set. This catches the failure mode
+        // where the user starts a sync (token nil → imputation runs),
+        // sync gets interrupted partway through, but a subsequent full
+        // enumeration completes and saves the token. Under a
+        // token-only gate that asset cache would be locked out of
+        // server matching until the user manually wiped it. The
+        // marker lives in UserDefaults keyed by partition; see
+        // `imputationCompletionKey(for:)`.
+        let imputationPreviouslyCompleted: Bool = {
+            guard let partition = self.currentPartitionKey else { return false }
+            return Self.imputationCompletedAt(for: partition) != nil
+        }()
+        if model.settings.fastInitialScan && (isBootstrapScan || !imputationPreviouslyCompleted) {
             model.transitionSyncPhase(to: .imputingFromServer)
             let imputeStart = Date()
             let serverPrefetch = try await serverAssetsTask.value
@@ -1558,6 +1572,19 @@ final class AppDependencies {
                     kind: .note,
                     detail: "Hashing locally: " + breakdownParts.joined(separator: ", ")
                 ))
+            }
+            // Mark imputation completed for this partition. Reaching
+            // this point means `runImputationPass` ran end-to-end
+            // without throwing — every matchable phone localId got
+            // its server checksum seeded (or was skipped for a
+            // documented reason: Live Photo, already-cached,
+            // ambiguous, missing metadata, no server match). Future
+            // syncs on the same cache skip the imputation phase
+            // entirely until the marker is cleared via
+            // `clearHashCache`, `verifyImputedChecksums`, or
+            // sign-out.
+            if let partition = self.currentPartitionKey {
+                Self.markImputationCompleted(for: partition)
             }
             // Surface the imputed count onto syncProgress so it survives
             // through the hash pass and the InitialScanScreen stats strip
@@ -2881,6 +2908,40 @@ final class AppDependencies {
 
     nonisolated fileprivate static func markLimitedPhotosNoticeShown() {
         UserDefaults.standard.set(true, forKey: limitedPhotosNoticeKey)
+    }
+
+    /// UserDefaults key prefix for the per-partition imputation
+    /// completion marker. The full key is
+    /// `cairn.imputation.completedAt.<partition.directoryName>`.
+    /// Stores an ISO-ish timestamp (just for forensics; presence/absence
+    /// is the load-bearing signal). Distinct from `tokenStore` because:
+    /// the token signals "PhotoKit scan reached a save checkpoint,"
+    /// whereas the imputation marker signals "fast-initial-scan
+    /// matching pass walked the full library successfully." A cancelled
+    /// imputation followed by a successful full enum (which can happen
+    /// when the user resumes a sync mid-run) would leave the token set
+    /// but the imputation incomplete — under the prior gate
+    /// (`isBootstrapScan` alone) that asset cache would never get
+    /// another shot at server-side matching without a manual cache
+    /// wipe. Tracking imputation completion separately fixes that.
+    nonisolated private static let imputationCompletionKeyPrefix = "cairn.imputation.completedAt."
+
+    nonisolated fileprivate static func imputationCompletionKey(for partition: ServerPartitionKey) -> String {
+        return "\(imputationCompletionKeyPrefix)\(partition.directoryName)"
+    }
+
+    nonisolated fileprivate static func imputationCompletedAt(for partition: ServerPartitionKey) -> Date? {
+        let raw = UserDefaults.standard.double(forKey: imputationCompletionKey(for: partition))
+        guard raw > 0 else { return nil }
+        return Date(timeIntervalSince1970: raw)
+    }
+
+    nonisolated fileprivate static func markImputationCompleted(for partition: ServerPartitionKey, at date: Date = Date()) {
+        UserDefaults.standard.set(date.timeIntervalSince1970, forKey: imputationCompletionKey(for: partition))
+    }
+
+    nonisolated fileprivate static func clearImputationCompletion(for partition: ServerPartitionKey) {
+        UserDefaults.standard.removeObject(forKey: imputationCompletionKey(for: partition))
     }
 
     nonisolated fileprivate static func resetLimitedPhotosNotice() {
@@ -4384,6 +4445,15 @@ final class AppDependencies {
                 // sign-out is the documented exit path back to real
                 // onboarding.
                 AppDependencies.setReviewModeActive(false)
+                // Drop the imputation-completion marker for the
+                // partition we're signing out of, so the next user
+                // (or this user re-signing-in) starts with a clean
+                // bootstrap signal even if they hit the same partition
+                // key. Per-partition state cleanup; doesn't touch
+                // other partitions' markers.
+                if let partition = await MainActor.run(body: { self?.currentPartitionKey }) {
+                    AppDependencies.clearImputationCompletion(for: partition)
+                }
                 await self?.thumbnailLoader?.clearCache()
                 await MainActor.run {
                     guard let self else { return }
@@ -4482,6 +4552,13 @@ final class AppDependencies {
                     let detail = failures.map { "\($0.label): \(Self.describeSyncError($0.error))" }.joined(separator: "; ")
                     syncLog.error("[cairn.clearhash] partial failure: \(detail, privacy: .public)")
                 }
+                // Reset the imputation-completion marker for the
+                // active partition so the next sync re-runs fast-
+                // initial-scan from scratch. The hash cache is empty
+                // again — every server match is a fresh seed.
+                if let partition = await MainActor.run(body: { self.currentPartitionKey }) {
+                    Self.clearImputationCompletion(for: partition)
+                }
                 await MainActor.run {
                     self.model.hasCompletedInitialScan = false
                     self.model.reconciliation = nil
@@ -4532,6 +4609,14 @@ final class AppDependencies {
                 if !failures.isEmpty {
                     let detail = failures.map { "\($0.label): \(Self.describeSyncError($0.error))" }.joined(separator: "; ")
                     syncLog.error("[cairn.verify] partial failure: \(detail, privacy: .public)")
+                }
+                // Reset imputation completion so the next sync
+                // re-runs the matching pass on the now-empty imputed
+                // set; otherwise the dropped rows would just fall to
+                // local hashing without another shot at server-side
+                // matching.
+                if let partition = await MainActor.run(body: { self.currentPartitionKey }) {
+                    Self.clearImputationCompletion(for: partition)
                 }
                 syncLog.info("[cairn.verify] dropped \(imputedIds.count) imputed row(s) — next sync will re-hash")
                 await MainActor.run {
