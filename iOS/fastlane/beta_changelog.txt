@@ -1,7 +1,9 @@
-Diagnostic build: investigating the standalone-.MOV phantom-quarantine bug.
+Diagnostic build (round 2): logs from imputation path + NSLog for syslog visibility.
 
-Adds a debug log when cairn enumerates an asset that has both .video and .fullSizeVideo resources (or both .photo and .fullSizePhoto). Logs each resource's type, isCurrent flag, and byte size, so we can confirm whether cairn and Immich are picking different resources for the same asset.
+Changes from build 99:
+1. The ambiguity check now also fires from the imputation pass (where every PHAsset is enumerated once at the start to gather filename + fileCreatedAt). This means the 5 phantom .MOVs get inspected even when imputation matches them server-side and bypasses local hashing.
+2. Added NSLog alongside Logger so the diagnostic also lands in legacy syslog (visible to idevicesyslog), not just the unified-logging stream (which only Console.app filters reliably surface).
 
-Hypothesis: for the 5 phantom .MOVs reported on build 97, the .isCurrent flag is set on .video while cairn currently always prefers .fullSizeVideo. Immich's mobile native hasher AND its upload path (via photo_manager.originFile) both honor .isCurrent first. If cairn picks .fullSizeVideo while Immich uploads .video, the server's stored SHA1 won't match cairn's local SHA1 — and imputation surfaces that mismatch as a phantom in ObservedStore. Logs will be visible via Console.app or idevicesyslog filtered on subsystem "app.cairn.ios" and category "resource-pick".
+To capture: clear hash cache + sync (toggle on or off, doesn't matter — imputation pass runs regardless). Stream device logs with `idevicesyslog -m cairn-ambiguity` or filter Console.app on "cairn-ambiguity" / "resource-pick".
 
-No behavior change. No fix yet.
+No behavior change. Observation-only.
