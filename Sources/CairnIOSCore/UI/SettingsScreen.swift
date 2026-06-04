@@ -235,6 +235,17 @@ public struct SettingsScreen: View {
             .navigationTitle("Settings")
             .cairnNavigationTitleDisplayMode(.large)
             .background(t.bg)
+            // Value-based navigation destination for search results.
+            // Closure-form NavigationLinks (used by SettingsCategoryRow
+            // on the root list) interleave destination body computation
+            // with the push animation, which on a page with several
+            // sections produces a visible "partial render → brief lag
+            // → full populate" stagger when tapped from a .searchable
+            // result (where the search-dismiss animation runs at the
+            // same time). Registering `.navigationDestination(for:)`
+            // lets SwiftUI build the destination off the animation
+            // critical path so the push reads as smooth.
+            .navigationDestination(for: SettingsPage.self) { page(for: $0) }
             // Search bar at the navigation stack root. Default
             // placement = `.automatic` resolves to the search drawer
             // under the large title on iOS. Skipping the iOS-only
@@ -566,9 +577,13 @@ public struct SettingsScreen: View {
         } else {
             CairnCard {
                 ForEach(Array(entries.enumerated()), id: \.element.id) { idx, entry in
-                    NavigationLink {
-                        page(for: entry.page)
-                    } label: {
+                    // Value-based push (paired with the NavigationStack's
+                    // `.navigationDestination(for: SettingsPage.self)`).
+                    // Lighter than the closure-destination form during
+                    // the .searchable dismiss + push animation, which
+                    // is when the "partial render then lag" stagger was
+                    // most visible.
+                    NavigationLink(value: entry.page) {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(entry.title)
                                 .font(.cairnScaled(size: 15))
