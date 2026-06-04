@@ -1139,6 +1139,12 @@ public struct SettingsScreen: View {
                         sub: "For phone photos that match a server asset by filename and capture date, use the server's SHA1 instead of re-hashing locally. Ambiguous matches (multiple server photos with the same filename and date) fall through to local hashing. Off = always hash locally.",
                         value: $settings.fastInitialScan
                     )
+                    RowDivider()
+                    ToggleRow(
+                        "Keep screen on during sync",
+                        sub: "Prevents Auto-Lock while a sync is running so the foreground hashing pass doesn't stall when the device sleeps. On by default for the first sync; auto-disables after that. Re-enable for big follow-up runs (large onboarding, bulk delete) when you want to leave the phone unattended without it locking.",
+                        value: $settings.keepScreenAwakeDuringSync
+                    )
                     if library.imputed > 0 {
                         RowDivider()
                         cachedHashDiagnosticRow

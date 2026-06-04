@@ -742,6 +742,12 @@ public struct InitialScanScreen: View {
                     iCloudLimitRow
                     RowDivider()
                     InitialScanHardCeilingRow(mb: $settings.iCloudMaxEverBytesMB)
+                    RowDivider()
+                    ToggleRow(
+                        "Keep screen on during sync",
+                        sub: "Prevents Auto-Lock while the sync is running. On by default for the first scan — the foreground hashing pass stalls if the device sleeps. Auto-disables after the first scan completes; re-enable from Settings → Library → Initial scan for any later big run.",
+                        value: $settings.keepScreenAwakeDuringSync
+                    )
                 }
             }
         }

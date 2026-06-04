@@ -2111,7 +2111,21 @@ final class AppDependencies {
         // Don't reassign here.
         model.inferredOrphanCount = inferredOrphanLocalIds.count
         model.lastScanWasTokenExpiryFullEnum = wasTokenExpiry
+        // Detect the false→true transition on the initial-scan flag
+        // so we can flip `keepScreenAwakeDuringSync` off automatically
+        // on first successful completion. Default-on is calibrated
+        // for the first-scan case; subsequent incremental syncs are
+        // seconds-long and don't warrant the battery cost. Users who
+        // want it back on for a specific big run (post-onboarding,
+        // bulk delete) can re-enable in Settings → Library → Initial
+        // scan, and that explicit re-enable persists through future
+        // syncs.
+        let wasFirstScanCompletion = (model.hasCompletedInitialScan == false)
         model.hasCompletedInitialScan = true
+        if wasFirstScanCompletion && model.settings.keepScreenAwakeDuringSync {
+            model.settings.keepScreenAwakeDuringSync = false
+            Task { try? await self.settingsStore.save(self.model.settings) }
+        }
         model.lastCheckedAt = model.reconciliation?.computedAt
         await persistSnapshotFromModel()
 
@@ -3273,6 +3287,16 @@ final class AppDependencies {
             requestSync: { [weak self] trigger in
                 guard let self else { return }
                 let resolvedTrigger: JournalEntry.SyncTrigger = trigger ?? .manualForeground
+                // Single cleanup point for the keep-screen-awake hold,
+                // fires no matter which path the closure exits through
+                // (success, cancellation, error, or an early return
+                // from one of the dependency guards). Idempotent — the
+                // controller no-ops if it wasn't holding the flag.
+                defer {
+                    Task { @MainActor in
+                        IdleTimerController.setEnabled(false)
+                    }
+                }
                 await MainActor.run {
                     self.model.lastSyncTrigger = resolvedTrigger
                     self.model.isSyncing = true
@@ -3294,6 +3318,18 @@ final class AppDependencies {
                     } else {
                         self.model.syncProgress = nil
                         self.model.syncStartedAt = Date()
+                    }
+                    // Hold the iOS idle timer for the duration of the
+                    // foreground sync when the user has opted in. Auto-
+                    // Lock would otherwise pause the sync (cairn gets
+                    // ~30s of background grace after lock, then
+                    // suspends), so the default-on behavior trades a
+                    // bit of battery for a continuous initial-scan run.
+                    // The cleanup paths below all clear it; the
+                    // scene-phase observer also force-clears on
+                    // backgrounding as a belt-and-suspenders.
+                    if self.model.settings.keepScreenAwakeDuringSync {
+                        IdleTimerController.setEnabled(true)
                     }
                 }
 

@@ -246,6 +246,36 @@ struct CairnSettingsTests {
         #expect(CairnSettings.propagationMaxAgeDaysRange == 30...3650)
     }
 
+    @Test("keepScreenAwakeDuringSync defaults to true (on for first sync)")
+    func keepScreenAwakeDuringSyncDefaultsTrue() {
+        #expect(CairnSettings.defaults.keepScreenAwakeDuringSync == true)
+    }
+
+    @Test("legacy JSON without keepScreenAwakeDuringSync decodes as true (matches fresh-install behavior)")
+    func legacyJSONMissingKeepScreenAwakeDecodesTrue() throws {
+        let legacyJSON = """
+        {
+            "maxDeletePercent": 1.0,
+            "minDeleteFloor": 5,
+            "notifyOnAbort": true,
+            "verboseLogging": false,
+            "deletionStrictness": "trusting"
+        }
+        """
+        let decoded = try JSONDecoder().decode(CairnSettings.self, from: Data(legacyJSON.utf8))
+        #expect(decoded.keepScreenAwakeDuringSync == true)
+    }
+
+    @Test("keepScreenAwakeDuringSync round-trips both true and false")
+    func keepScreenAwakeDuringSyncRoundTrips() throws {
+        for value in [true, false] {
+            let original = CairnSettings(keepScreenAwakeDuringSync: value)
+            let data = try JSONEncoder().encode(original)
+            let decoded = try JSONDecoder().decode(CairnSettings.self, from: data)
+            #expect(decoded.keepScreenAwakeDuringSync == value)
+        }
+    }
+
     @Test("legacy JSON without indexingScope decodes as .fullLibrary")
     func legacyJSONMissingIndexingScopeUsesFullLibrary() throws {
         let legacyJSON = """

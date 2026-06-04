@@ -114,6 +114,13 @@ struct CairnApp: App {
     /// parent body re-renders, which the singleton write didn't trigger.
     private func handleScenePhaseChange(_ oldPhase: ScenePhase, _ newPhase: ScenePhase) {
         if newPhase == .background {
+            // Force-clear the idle-timer hold on background. iOS would
+            // naturally resume Auto-Lock for whatever's foreground
+            // now, so functionally this is belt-and-suspenders — but
+            // it keeps the `IdleTimerController.isHeld` cache honest
+            // so a re-enter to foreground starts from a known state
+            // rather than carrying stale-true across a launch cycle.
+            IdleTimerController.forceClear()
             Self.scheduleNextBackgroundRefresh()
             // Always submit a BGProcessingTask too, not just when
             // there's pending initial-scan/hash work. iOS only fires

@@ -250,6 +250,25 @@ public struct CairnSettings: Sendable, Codable, Equatable {
     /// Design: `docs/active-design/fast-initial-scan-plan.md`.
     public var fastInitialScan: Bool
 
+    /// Override iOS Auto-Lock while a sync is foreground-active.
+    /// Sets `UIApplication.shared.isIdleTimerDisabled = true` for the
+    /// duration of the sync; clears it when the sync ends (success,
+    /// cancel, or error) and on app backgrounding. Only affects the
+    /// auto-lock timer — pressing the side button to lock manually
+    /// still works.
+    ///
+    /// Default **on**. The factory default is calibrated for the
+    /// first-sync case (large library, multi-minute server fetch +
+    /// imputation + local hashing, where letting the screen go dark
+    /// pauses the foreground sync after iOS's ~30-second background
+    /// grace expires). On first successful completion of the initial
+    /// scan, cairn auto-flips this to `false` for the user — the
+    /// per-sync battery cost isn't worth it for the seconds-long
+    /// incremental syncs that follow. Users who later run a big
+    /// onboarding round or bulk deletion can re-enable manually
+    /// from Settings to keep the screen alive for that work.
+    public var keepScreenAwakeDuringSync: Bool
+
     public init(
         maxDeletePercent: Double = 1.0,
         minDeleteFloor: Int = 5,
@@ -268,7 +287,8 @@ public struct CairnSettings: Sendable, Codable, Equatable {
         timeDisplayFormat: TimeDisplayFormat = .system,
         useIncrementalServerSync: Bool = false,
         fastInitialScan: Bool = false,
-        propagationMaxAgeDays: Int? = nil
+        propagationMaxAgeDays: Int? = nil,
+        keepScreenAwakeDuringSync: Bool = true
     ) {
         self.maxDeletePercent = maxDeletePercent
         self.minDeleteFloor = minDeleteFloor
@@ -288,6 +308,7 @@ public struct CairnSettings: Sendable, Codable, Equatable {
         self.useIncrementalServerSync = useIncrementalServerSync
         self.fastInitialScan = fastInitialScan
         self.propagationMaxAgeDays = propagationMaxAgeDays
+        self.keepScreenAwakeDuringSync = keepScreenAwakeDuringSync
     }
 
     /// The factory defaults. Kept as a single constant so tests and the
@@ -309,6 +330,7 @@ public struct CairnSettings: Sendable, Codable, Equatable {
         case useIncrementalServerSync
         case fastInitialScan
         case propagationMaxAgeDays
+        case keepScreenAwakeDuringSync
     }
 
     public init(from decoder: Decoder) throws {
@@ -332,6 +354,7 @@ public struct CairnSettings: Sendable, Codable, Equatable {
         self.useIncrementalServerSync = try c.decodeIfPresent(Bool.self, forKey: .useIncrementalServerSync) ?? d.useIncrementalServerSync
         self.fastInitialScan = try c.decodeIfPresent(Bool.self, forKey: .fastInitialScan) ?? d.fastInitialScan
         self.propagationMaxAgeDays = try c.decodeIfPresent(Int.self, forKey: .propagationMaxAgeDays) ?? d.propagationMaxAgeDays
+        self.keepScreenAwakeDuringSync = try c.decodeIfPresent(Bool.self, forKey: .keepScreenAwakeDuringSync) ?? d.keepScreenAwakeDuringSync
     }
 }
 
