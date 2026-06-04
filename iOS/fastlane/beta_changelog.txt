@@ -1,12 +1,9 @@
-Keep-screen-on toggle for long-running syncs, on by default for the first scan.
+Build-110 upgrade fix: existing installs auto-disable Keep-screen-on after upgrade.
 
-Initial syncs on large libraries (50k+ assets) can run for tens of minutes — long enough that Auto-Lock kicks in, iOS suspends cairn after its ~30-second background grace, and the foreground hashing pass stalls until the user wakes the device. The tester then sees what looks like a stuck sync, and progress appears to "restart" when they relaunch (it's actually resuming from cache, but the UI doesn't telegraph that yet).
+Build 110 added a default-on `keepScreenAwakeDuringSync` toggle calibrated for the first sync, with an auto-disable that fires on the `hasCompletedInitialScan: false → true` transition. Users upgrading from a pre-110 build whose initial scan was *already complete* never hit that transition, so the toggle stayed on indefinitely and burned battery on every incremental sync.
 
-This build adds `keepScreenAwakeDuringSync` to settings. When on, cairn holds the iOS idle timer for the duration of a foreground sync via `UIApplication.shared.isIdleTimerDisabled = true`. Auto-Lock is suppressed; manual lock (side-button press) and app-switching still work. Cleared on every sync exit path (success, cancel, error) and force-cleared on scene-phase → background.
+This build adds a one-shot UserDefaults-gated migration that runs once during bootstrap. If the upgrade is detected (initial scan already complete + toggle still at factory default `true` + migration flag not yet set), cairn flips the toggle off, persists, and sets the flag. The fresh-install case is unaffected — on a new install the auto-disable still happens at first-scan completion as designed.
 
-Default behavior:
-- Factory default ON, so a fresh install's first sync runs without lock-pause interruptions.
-- After the first sync's `hasCompletedInitialScan` flips true, cairn auto-flips this toggle off — incremental syncs are seconds-long and don't justify the battery cost.
-- Users can re-enable from Settings → Library → Initial scan → "Keep screen on during sync" for any later big run (post-onboarding restore, bulk delete, etc). Manual re-enables persist; the auto-disable only happens once on first-ever completion.
+The migration flag also gets set unconditionally on first bootstrap of this build, so a user who manually re-enables Keep-screen-on after the upgrade isn't blindsided by the migration re-firing on a subsequent bootstrap. Manual re-enables persist as expected.
 
-Surfaced in two places: Initial scan screen → Scan options card (so the user sees it during onboarding), and Settings → Library → Initial scan (post-onboarding).
+If your initial scan was already complete when you upgraded to 110 and you've been seeing the screen stay on through incremental syncs since, 111 will silently flip it off the next time the app launches. Re-enable from Settings → Library → Initial scan for any big follow-up run.
