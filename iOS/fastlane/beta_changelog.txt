@@ -1,11 +1,12 @@
-In-app diagnostic log export for external testers.
+Keep-screen-on toggle for long-running syncs, on by default for the first scan.
 
-Settings → Advanced → "Export diagnostic logs" now queries the system log store for cairn's recent entries (subsystems `app.cairn` and `app.cairn.ios`), formats them into a plain-text file in cairn's temp directory, and presents the system share sheet. The tester can then email, AirDrop, or save the file to share with support.
+Initial syncs on large libraries (50k+ assets) can run for tens of minutes — long enough that Auto-Lock kicks in, iOS suspends cairn after its ~30-second background grace, and the foreground hashing pass stalls until the user wakes the device. The tester then sees what looks like a stuck sync, and progress appears to "restart" when they relaunch (it's actually resuming from cache, but the UI doesn't telegraph that yet).
 
-File header carries the marketing version, build number, device model (raw identifier — `iPhone15,2` etc), and iOS version so the receiver doesn't have to ask. Body is sorted oldest-first, one line per entry: `HH:mm:ss.fff [<category>] <message>`. Time window defaults to 48 hours.
+This build adds `keepScreenAwakeDuringSync` to settings. When on, cairn holds the iOS idle timer for the duration of a foreground sync via `UIApplication.shared.isIdleTimerDisabled = true`. Auto-Lock is suppressed; manual lock (side-button press) and app-switching still work. Cleared on every sync exit path (success, cancel, error) and force-cleared on scene-phase → background.
 
-Important scope limitation, documented inline: `OSLogStore` only grants third-party apps access to their own current-process log entries. Quitting cairn before exporting wipes the in-process buffer. Recommended flow when triaging a bug: reproduce the issue → immediately go to Settings → Advanced → Export, without backgrounding cairn first.
+Default behavior:
+- Factory default ON, so a fresh install's first sync runs without lock-pause interruptions.
+- After the first sync's `hasCompletedInitialScan` flips true, cairn auto-flips this toggle off — incremental syncs are seconds-long and don't justify the battery cost.
+- Users can re-enable from Settings → Library → Initial scan → "Keep screen on during sync" for any later big run (post-onboarding restore, bulk delete, etc). Manual re-enables persist; the auto-disable only happens once on first-ever completion.
 
-Zero data collection on Anthropic's or maintainer's side — the file goes wherever the tester sends it, no servers in between. The export action also doesn't transmit anything itself; it just opens the iOS share sheet.
-
-No changes to sync, indexing, or reconciliation behavior.
+Surfaced in two places: Initial scan screen → Scan options card (so the user sees it during onboarding), and Settings → Library → Initial scan (post-onboarding).
