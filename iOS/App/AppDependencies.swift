@@ -758,6 +758,33 @@ final class AppDependencies {
         let tokenExists = (try? await tokenStore?.load()) != nil
         model.hasCompletedInitialScan = tokenExists
 
+        // Build-110 upgrade migration: existing installs that already
+        // completed their initial scan before this build shipped never
+        // hit the false→true `hasCompletedInitialScan` transition that
+        // auto-flips `keepScreenAwakeDuringSync` off after first run.
+        // They'd be stuck holding the screen on every incremental sync
+        // forever without intervention. One-shot UserDefaults-gated
+        // fix-up: if the initial scan is already complete AND the
+        // toggle is still at its factory default true AND we haven't
+        // migrated yet, flip and persist. Manual re-enables after this
+        // ran are preserved — the flag is set unconditionally so
+        // future bootstraps no-op.
+        if tokenExists,
+           model.settings.keepScreenAwakeDuringSync,
+           !Self.hasMigratedKeepScreenAwake()
+        {
+            model.settings.keepScreenAwakeDuringSync = false
+            try? await settingsStore.save(model.settings)
+            syncLog.notice("[cairn.migration] keepScreenAwakeDuringSync auto-disabled on first bootstrap after build-110 upgrade (initial scan was already complete)")
+        }
+        // Always mark migrated after first bootstrap on a build that
+        // ships this code path, so users who happened to land on the
+        // exact toggle = false / scan-incomplete state still avoid
+        // having the migration block any subsequent re-enable.
+        if !Self.hasMigratedKeepScreenAwake() {
+            Self.markKeepScreenAwakeMigrated()
+        }
+
         await refreshLibrarySizeStats()
 
         // Restore last-known status counts so Status doesn't render
@@ -2983,6 +3010,34 @@ final class AppDependencies {
 
     nonisolated fileprivate static func resetLimitedPhotosNotice() {
         UserDefaults.standard.removeObject(forKey: limitedPhotosNoticeKey)
+    }
+
+    /// One-shot migration marker for the build-110 introduction of
+    /// `keepScreenAwakeDuringSync`. The setting's factory default is
+    /// `true` (calibrated for the first-sync case), and the
+    /// `performLiveReconciliation` auto-flip-to-false fires only on
+    /// the `hasCompletedInitialScan: false → true` transition.
+    ///
+    /// Users upgrading from a pre-110 build with a long-completed
+    /// initial scan never hit that transition, so without an explicit
+    /// migration they'd land on the new toggle defaulted-on
+    /// indefinitely — burning battery on every incremental sync that
+    /// follows. This flag lets bootstrap detect the upgrade case
+    /// once, flip the toggle to off (matching what a same-state
+    /// fresh install would land on after first-scan completion), and
+    /// then never touch the setting again. Subsequent manual
+    /// re-enables persist; the migration only runs on the very first
+    /// bootstrap after the build-110 update on a previously-onboarded
+    /// install.
+    nonisolated private static let keepScreenAwakeUpgradeMigrationKey =
+        "cairn.migration.keepScreenAwake.afterFirstScan"
+
+    nonisolated fileprivate static func hasMigratedKeepScreenAwake() -> Bool {
+        UserDefaults.standard.bool(forKey: keepScreenAwakeUpgradeMigrationKey)
+    }
+
+    nonisolated fileprivate static func markKeepScreenAwakeMigrated() {
+        UserDefaults.standard.set(true, forKey: keepScreenAwakeUpgradeMigrationKey)
     }
 
     /// Persisted per-asset hash duration (milliseconds) from the most
