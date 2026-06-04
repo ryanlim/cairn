@@ -1,5 +1,11 @@
-Smoother navigation push from Settings search results.
+In-app diagnostic log export for external testers.
 
-Tapping a search result was showing a visible "partial render → brief lag → full populate" stagger on its way into the destination sub-page. Closure-form NavigationLinks interleave destination body computation with the push animation; on a sub-page with several KeylineSection cards full of sliders + HelpPopovers (Library, Safety & limits), that's enough work to break the animation budget — especially while the .searchable search-bar dismiss is running concurrently.
+Settings → Advanced → "Export diagnostic logs" now queries the system log store for cairn's recent entries (subsystems `app.cairn` and `app.cairn.ios`), formats them into a plain-text file in cairn's temp directory, and presents the system share sheet. The tester can then email, AirDrop, or save the file to share with support.
 
-This build switches the search-result rows to value-based navigation (`NavigationLink(value: SettingsPage.x)` paired with a NavigationStack-level `.navigationDestination(for:)`). SwiftUI builds the destination off the animation critical path, so the push reads as smooth. Root-list rows are unchanged — they didn't exhibit the lag and the destination view is identical either way.
+File header carries the marketing version, build number, device model (raw identifier — `iPhone15,2` etc), and iOS version so the receiver doesn't have to ask. Body is sorted oldest-first, one line per entry: `HH:mm:ss.fff [<category>] <message>`. Time window defaults to 48 hours.
+
+Important scope limitation, documented inline: `OSLogStore` only grants third-party apps access to their own current-process log entries. Quitting cairn before exporting wipes the in-process buffer. Recommended flow when triaging a bug: reproduce the issue → immediately go to Settings → Advanced → Export, without backgrounding cairn first.
+
+Zero data collection on Anthropic's or maintainer's side — the file goes wherever the tester sends it, no servers in between. The export action also doesn't transmit anything itself; it just opens the iOS share sheet.
+
+No changes to sync, indexing, or reconciliation behavior.
