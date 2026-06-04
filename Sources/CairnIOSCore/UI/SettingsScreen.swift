@@ -105,6 +105,12 @@ public struct SettingsScreen: View {
     /// Drops the persisted session token. Wired to the "Sign out"
     /// row that appears when `hasSessionToken == true`.
     public let onSignOutSession: () -> Void
+    /// Triggers a fresh on-device extraction of cairn's recent log
+    /// lines into a `.txt` file and presents the system share sheet
+    /// so the tester can email or AirDrop the file to support. The
+    /// host (CairnAppRoot) drives the actual `LogExporter.export()`
+    /// call + share sheet — this row just fires the closure.
+    public let onExportDiagnosticLogs: () -> Void
     /// `true` when a session-auth token is persisted in Keychain.
     /// Switches the row label between "Sign in" and "Signed in ·
     /// Sign out".
@@ -171,6 +177,7 @@ public struct SettingsScreen: View {
         onFireBackgroundRefresh: @escaping () -> Void = {},
         onOpenSessionSignIn: @escaping () -> Void = {},
         onSignOutSession: @escaping () -> Void = {},
+        onExportDiagnosticLogs: @escaping () -> Void = {},
         hasSessionToken: Bool = false,
         scrollResetToken: Int = 0,
         photoAuthStatus: SetupScreen.PhotoAuthOutcome? = nil
@@ -206,6 +213,7 @@ public struct SettingsScreen: View {
         self.onFireBackgroundRefresh = onFireBackgroundRefresh
         self.onOpenSessionSignIn = onOpenSessionSignIn
         self.onSignOutSession = onSignOutSession
+        self.onExportDiagnosticLogs = onExportDiagnosticLogs
         self.hasSessionToken = hasSessionToken
         self.scrollResetToken = scrollResetToken
         self.photoAuthStatus = photoAuthStatus
@@ -1482,6 +1490,13 @@ public struct SettingsScreen: View {
                             onTap: onOpenSessionSignIn
                         )
                     }
+                    RowDivider()
+                    KeyValRow(
+                        "Export diagnostic logs",
+                        value: { Text("Save & share").foregroundStyle(t.infoInk) },
+                        chevron: true,
+                        onTap: onExportDiagnosticLogs
+                    )
                     #if DEBUG
                     RowDivider()
                     KeyValRow(

@@ -179,6 +179,26 @@ public struct CairnAppRoot: View {
     /// status alongside the existing observed/exclusions/journal/
     /// settings tally so the user sees whether their (often expensive)
     /// SHA1 cache came back or was skipped — and if skipped, why.
+    /// Tester-facing log export entry point. Gated to UIKit because
+    /// `LogExporter` depends on `UIDevice` + `OSLogStore`; in the
+    /// macOS-only build context the helper compiles down to a no-op
+    /// so `SettingsScreen`'s closure-typed parameter still has
+    /// something to bind to.
+    private var exportDiagnosticLogsAction: () -> Void {
+        {
+            #if canImport(UIKit) && canImport(OSLog)
+            Task { @MainActor in
+                do {
+                    let url = try await LogExporter.export()
+                    exportedFileURL = url
+                } catch {
+                    model.lastError = "Couldn't export logs: \(error.localizedDescription)"
+                }
+            }
+            #endif
+        }
+    }
+
     private func importResultMessage(for result: CairnImportResult) -> String {
         var parts: [String] = []
         parts.append("\(result.serverCount) server\(result.serverCount == 1 ? "" : "s") processed.")
@@ -646,6 +666,7 @@ public struct CairnAppRoot: View {
                 onSignOutSession: {
                     Task { await model.actions.signOutSession() }
                 },
+                onExportDiagnosticLogs: exportDiagnosticLogsAction,
                 hasSessionToken: model.hasSessionToken,
                 scrollResetToken: scrollResetTokens["settings"] ?? 0,
                 photoAuthStatus: model.photoAuthStatus
