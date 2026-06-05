@@ -1,16 +1,15 @@
-Alive-on-phone safety: ±1 second tolerance on the capture-time match.
+Triage tool: Settings → Advanced → "Inspect asset by filename".
 
-The user-reported still-flagged video confirmed on phone + Immich with matching filename and (visibly) matching timestamp turned out NOT to be a Live Photo — a standalone minutes-long .MOV. That ruled out the build-117 paired-motion-video fix and left rounded-second divergence between phone and server as the most plausible remaining mechanism:
+End-user case after build 118 — 19 items still in quarantine that don't fit any of the divergence axes we've now covered (115/116/117/118). Rather than keep iterating on speculative axes, this build adds a debug action so any future case can be triaged from the actual data instead of from guesses.
 
-- Phone reads `PHAsset.creationDate` directly, full precision.
-- Server's `fileCreatedAt` round-trips through ISO8601 + JSON encoding to get to cairn; somewhere in that chain (Immich's mobile uploader, the Postgres timestamp column's precision setting, the SDK's date encoder) a fractional-second value could have been rounded.
-- Both sides truncate `Date.timeIntervalSince1970` via `Int(...)`, which truncates toward zero. If one side has `.999` and the other has `.000` after the round, the integer seconds differ by 1.
-- Exact-match `Set.contains` lookup misses, asset slips into `wouldBeCandidates`.
+Settings → Advanced → "Inspect asset by filename" opens an alert with a text field. Enter a filename (e.g. `IMG_1234.MOV`) → tap Inspect → cairn dumps a side-by-side view to the persistent log:
 
-This build widens the engine's lookup to check `[baseSecond - 1, baseSecond, baseSecond + 1]` against the alive-key set. Three set lookups per server-asset candidate instead of one; negligible overhead (set lookups are O(1) and there are O(thousands) of candidates max).
+- Every phone-side PHAsset matching the filename case-insensitively on either `PHAsset.value(forKey: "filename")` OR any of its PHAssetResource `originalFilename` values. Per-match row: `localId`, KVC filename, per-resource type+filename list, `creationDate` (ISO8601 with fractional seconds + integer seconds), modification seconds, `isHidden`, source type, `mediaSubtypes.photoLive` flag.
+- Every Immich server asset matching the filename. Per-match row: id, `originalFileName`, `fileCreatedAt` (ISO8601 + integer seconds), checksum, `livePhotoVideoId`.
+- Verdict per server match: whether the engine's *current* alive-on-phone filter (with ±1s tolerance) would suppress it.
 
-False-positive risk: two distinct phone assets sharing both their filename AND an adjacent capture-second. Realistically near-zero — iPhone Camera doesn't produce same-named files in adjacent seconds, and user-imported files don't typically cluster that tightly. The safety direction (suppress more) favors widening here.
+The fetch enumerates all source types and hidden assets, so a Hidden/CloudShared/iTunesSynced match isn't accidentally excluded. The server query goes through `search/metadata` with `originalFileName` filter; bounded to 1000 results (per-asset triage, not full enumeration).
 
-3 new engine test cases cover the tolerance: `+1s match` (suppress), `-1s match` (suppress), `+2s no match` (still a candidate; tolerance is bounded). Full 667 test suite passes including the new cases.
+Output lands in the persistent log (build 113), which survives process restarts, so the next diagnostic export shows the side-by-side. To use: install 119 → Settings → Advanced → Inspect asset by filename → enter the filename of a stuck quarantine entry → Settings → Advanced → Export diagnostic logs → share.
 
-Combined with builds 115 (case + metadata-store source), 116 (broadened source types + hidden), and 117 (Live Photo paired motion video), this rounds out the divergence shapes we've observed in real end-user reports.
+No behavior change to sync, indexing, or reconciliation.
