@@ -1057,8 +1057,6 @@ final class AppDependencies {
         let needle = filename.lowercased()
         syncLog.notice("[cairn.diag] inspect: starting query='\(filename, privacy: .public)' (case-insensitive)")
 
-        // Phone-side scan — unfiltered fetch so the dump captures
-        // every conceivable source / hidden / shared / synced match.
         struct PhoneMatch {
             let localId: String
             let kvcName: String?
@@ -1069,23 +1067,40 @@ final class AppDependencies {
             let sourceType: PHAssetSourceType
             let isLivePhoto: Bool
         }
+
+        // Phone-side scan. Two-pass strategy because
+        // `PHAssetResource.assetResources(for:)` is ~30 ms per asset
+        // on real hardware — a naive "check every asset's resources"
+        // loop blows past an hour on a 100k-asset library, which is
+        // exactly the library size that needs the most diagnostic help.
+        //
+        // Pass 1: KVC `filename` only (fast — pure in-memory property
+        //   access, ~0.1 ms per asset). Catches the common case where
+        //   the asset's name and the server's `originalFileName` agree
+        //   on the same string.
+        // Pass 2 (only if pass 1 finds nothing): enumerate
+        //   PHAssetResource for every asset and match on any resource's
+        //   `originalFilename`. Slow but covers the rare divergence
+        //   case where the phone-side asset has a different KVC name
+        //   from the resource that was uploaded.
         let phoneMatches: [PhoneMatch] = await Task.detached(priority: .userInitiated) {
             let opts = PHFetchOptions()
             opts.includeHiddenAssets = true
             opts.includeAssetSourceTypes = [.typeUserLibrary, .typeCloudShared, .typeiTunesSynced]
             let fetch = PHAsset.fetchAssets(with: opts)
+            let total = fetch.count
+            syncLog.notice("[cairn.diag] inspect: enumerating \(total, privacy: .public) phone assets (KVC pass first)")
             var matches: [PhoneMatch] = []
+
+            // ---- Pass 1: KVC-only filter ----
+            var pass1Scanned = 0
             fetch.enumerateObjects { asset, _, _ in
                 let kvc = asset.value(forKey: "filename") as? String
-                let resources = PHAssetResource.assetResources(for: asset)
-                let resNames: [(type: String, name: String)] = resources.map { res in
-                    (Self.resourceTypeName(res.type), res.originalFilename)
-                }
-                // Match on either KVC filename OR any resource
-                // originalFilename, case-insensitive.
-                let kvcMatches = (kvc ?? "").lowercased() == needle
-                let resMatches = resNames.contains { $0.name.lowercased() == needle }
-                if kvcMatches || resMatches {
+                if let k = kvc, k.lowercased() == needle {
+                    let resources = PHAssetResource.assetResources(for: asset)
+                    let resNames: [(type: String, name: String)] = resources.map { res in
+                        (Self.resourceTypeName(res.type), res.originalFilename)
+                    }
                     matches.append(PhoneMatch(
                         localId: asset.localIdentifier,
                         kvcName: kvc,
@@ -1097,6 +1112,41 @@ final class AppDependencies {
                         isLivePhoto: asset.mediaSubtypes.contains(.photoLive)
                     ))
                 }
+                pass1Scanned += 1
+                if pass1Scanned % 20_000 == 0 {
+                    syncLog.notice("[cairn.diag] inspect: KVC pass at \(pass1Scanned, privacy: .public)/\(total, privacy: .public)")
+                }
+            }
+            syncLog.notice("[cairn.diag] inspect: KVC pass complete — \(matches.count, privacy: .public) match(es)")
+
+            // ---- Pass 2: resource-level fallback ----
+            if matches.isEmpty {
+                syncLog.notice("[cairn.diag] inspect: KVC found nothing — running resource-level scan (slow, ~30 ms per asset × \(total, privacy: .public) = up to ~\(Int(Double(total) * 0.03), privacy: .public)s)")
+                var pass2Scanned = 0
+                fetch.enumerateObjects { asset, _, _ in
+                    let resources = PHAssetResource.assetResources(for: asset)
+                    let resNames: [(type: String, name: String)] = resources.map { res in
+                        (Self.resourceTypeName(res.type), res.originalFilename)
+                    }
+                    if resNames.contains(where: { $0.name.lowercased() == needle }) {
+                        let kvc = asset.value(forKey: "filename") as? String
+                        matches.append(PhoneMatch(
+                            localId: asset.localIdentifier,
+                            kvcName: kvc,
+                            resourceNames: resNames,
+                            createdDate: asset.creationDate,
+                            modDate: asset.modificationDate,
+                            isHidden: asset.isHidden,
+                            sourceType: asset.sourceType,
+                            isLivePhoto: asset.mediaSubtypes.contains(.photoLive)
+                        ))
+                    }
+                    pass2Scanned += 1
+                    if pass2Scanned % 5_000 == 0 {
+                        syncLog.notice("[cairn.diag] inspect: resource pass at \(pass2Scanned, privacy: .public)/\(total, privacy: .public) — \(matches.count, privacy: .public) match(es) so far")
+                    }
+                }
+                syncLog.notice("[cairn.diag] inspect: resource pass complete — \(matches.count, privacy: .public) match(es) total")
             }
             return matches
         }.value
