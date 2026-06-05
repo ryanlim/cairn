@@ -1241,8 +1241,19 @@ final class AppDependencies {
         let phoneEntries: [(localId: String, modDate: Date?, creationDate: Date?, filename: String?, fileSize: Int64?)] =
             await Task.detached(priority: .userInitiated) {
                 let opts = PHFetchOptions()
-                opts.includeHiddenAssets = false
-                opts.includeAssetSourceTypes = [.typeUserLibrary]
+                // Match the broadened `visibleFetch` filter (Hidden +
+                // CloudShared + iTunesSynced + UserLibrary). The
+                // piggyback metadata write below feeds the alive-on-
+                // phone safety check via `LocalAssetMetadataStore`; if
+                // the enumeration here filters to `.typeUserLibrary`
+                // only but the alive-key build pulls from this same
+                // metadata store, an iCloud-shared or hidden phone
+                // asset's metadata row is missing, the alive-key set
+                // doesn't see it, and the server entry can wrongly
+                // surface as a deletion candidate. Real end-user
+                // report on build 115 matched this exact shape.
+                opts.includeHiddenAssets = true
+                opts.includeAssetSourceTypes = [.typeUserLibrary, .typeCloudShared, .typeiTunesSynced]
                 let fetch = PHAsset.fetchAssets(with: opts)
                 let fetchCount = fetch.count
                 var out: [(localId: String, modDate: Date?, creationDate: Date?, filename: String?, fileSize: Int64?)] = []
@@ -1749,8 +1760,22 @@ final class AppDependencies {
         async let confirmedSnapshotTask = confirmed.snapshot()
         async let visibleFetchTask: PHFetchResult<PHAsset> = Task.detached(priority: .userInitiated) {
             let opts = PHFetchOptions()
-            opts.includeHiddenAssets = false
-            opts.includeAssetSourceTypes = [.typeUserLibrary]
+            // Include hidden + every PhotoKit source type for the
+            // alive-on-phone safety check. An asset that's still
+            // physically present in any form on the device — Hidden
+            // album, iCloud Shared Library, iTunes-synced, etc — is
+            // alive from cairn's deletion-detection perspective,
+            // even though some of those sources can't be trashed by
+            // the user from Photos.app. Filtering to .typeUserLibrary
+            // only (the prior behavior) means a server-stored asset
+            // whose `(filename, fileCreatedAt)` matched a Hidden or
+            // CloudShared phone asset would slip past the alive-on-
+            // phone filter, land in `wouldBeCandidates`, and surface
+            // as a quarantine entry the user can't easily explain
+            // (it's right there in Photos.app). Real end-user report
+            // matched exactly this shape.
+            opts.includeHiddenAssets = true
+            opts.includeAssetSourceTypes = [.typeUserLibrary, .typeCloudShared, .typeiTunesSynced]
             return PHAsset.fetchAssets(with: opts)
         }.value
 
