@@ -332,15 +332,43 @@ public enum ReconciliationEngine {
             kept.reserveCapacity(wouldBeCandidatesRaw.count)
             var dropped = 0
             for asset in wouldBeCandidatesRaw {
-                if let filename = asset.originalFileName, !filename.isEmpty,
-                   let created = asset.fileCreatedAt,
-                   aliveProtectedKeys.contains(
-                       AlivePhoneAssetKey(
-                           filename: filename,
-                           secondsSince1970: Int(created.timeIntervalSince1970)
-                       )
-                   )
-                {
+                guard let filename = asset.originalFileName, !filename.isEmpty,
+                      let created = asset.fileCreatedAt
+                else {
+                    kept.append(asset)
+                    continue
+                }
+                // ±1 second tolerance on the capture-time match. Both
+                // sides truncate `Date.timeIntervalSince1970` via
+                // `Int(...)` (truncates toward zero), but they're
+                // truncating from possibly-different fractional
+                // values: the phone reads `PHAsset.creationDate`
+                // directly (full precision), while the server's
+                // `fileCreatedAt` round-trips through ISO8601 + JSON
+                // and may have been rounded somewhere along the way
+                // (Immich's mobile uploader, the Postgres timestamp
+                // column's precision setting, the SDK's date encoder,
+                // etc). Real end-user case: a standalone non-edited
+                // MOV with displayed-identical timestamps in
+                // Photos.app and Immich was still missing the
+                // alive-on-phone filter, and rounded-second drift was
+                // the remaining plausible mechanism after Live Photos,
+                // case, source type, and filename source were all
+                // covered. The tolerance is bounded — adjacent seconds
+                // are realistically the only failure window — so the
+                // false-positive risk (two distinct phone assets
+                // sharing filename and adjacent capture-seconds) is
+                // vanishingly small.
+                let baseSecond = Int(created.timeIntervalSince1970)
+                let aliveOnAnyAdjacent = (baseSecond - 1...baseSecond + 1).contains { sec in
+                    aliveProtectedKeys.contains(
+                        AlivePhoneAssetKey(
+                            filename: filename,
+                            secondsSince1970: sec
+                        )
+                    )
+                }
+                if aliveOnAnyAdjacent {
                     dropped += 1
                 } else {
                     kept.append(asset)

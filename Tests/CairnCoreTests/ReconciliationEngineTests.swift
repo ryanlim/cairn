@@ -987,6 +987,53 @@ struct ReconciliationEngineTests {
         #expect(output.aliveOnPhoneCandidateCount == 1)
     }
 
+    @Test("alive-on-phone safety: ±1 second tolerance on capture-time match (covers ISO8601 round-trip rounding)")
+    func aliveOnPhoneAdjacentSecondTolerance() {
+        let captureSecond = 1_700_000_000
+        let serverCaptureDate = Date(timeIntervalSince1970: Double(captureSecond))
+        let serverAsset = capturedAsset("s1", "X", filename: "IMG_9999.MOV", createdAt: serverCaptureDate)
+        // Phone alive-key is 1 second later than server (simulating
+        // round-trip rounding having shifted server's truncated value).
+        let aliveKeyPlusOne = AlivePhoneAssetKey(
+            filename: "IMG_9999.MOV",
+            secondsSince1970: captureSecond + 1
+        )
+        let output1 = ReconciliationEngine.compute(.init(
+            serverAssets: [serverAsset],
+            currentLocalChecksums: checksums("ORIGINAL"),
+            observedChecksums: checksums("X", "ORIGINAL"),
+            alivePhoneAssetKeys: [aliveKeyPlusOne]
+        ))
+        #expect(output1.deleteCandidates.isEmpty)
+        #expect(output1.aliveOnPhoneCandidateCount == 1)
+        // Same setup but key 1 second EARLIER also matches.
+        let aliveKeyMinusOne = AlivePhoneAssetKey(
+            filename: "IMG_9999.MOV",
+            secondsSince1970: captureSecond - 1
+        )
+        let output2 = ReconciliationEngine.compute(.init(
+            serverAssets: [serverAsset],
+            currentLocalChecksums: checksums("ORIGINAL"),
+            observedChecksums: checksums("X", "ORIGINAL"),
+            alivePhoneAssetKeys: [aliveKeyMinusOne]
+        ))
+        #expect(output2.deleteCandidates.isEmpty)
+        #expect(output2.aliveOnPhoneCandidateCount == 1)
+        // 2 seconds out → no match (tolerance is bounded).
+        let aliveKeyPlusTwo = AlivePhoneAssetKey(
+            filename: "IMG_9999.MOV",
+            secondsSince1970: captureSecond + 2
+        )
+        let output3 = ReconciliationEngine.compute(.init(
+            serverAssets: [serverAsset],
+            currentLocalChecksums: checksums("ORIGINAL"),
+            observedChecksums: checksums("X", "ORIGINAL"),
+            alivePhoneAssetKeys: [aliveKeyPlusTwo]
+        ))
+        #expect(output3.deleteCandidates.map(\.id) == ["s1"])
+        #expect(output3.aliveOnPhoneCandidateCount == 0)
+    }
+
     @Test("alive-on-phone safety: AlivePhoneAssetKey is case-insensitive on filename (normalize on init)")
     func alivePhoneAssetKeyNormalizesCase() {
         let s = Int(Date().timeIntervalSince1970)
