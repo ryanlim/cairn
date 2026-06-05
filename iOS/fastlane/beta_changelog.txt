@@ -1,10 +1,14 @@
-Alive-on-phone safety: include hidden + iCloud-shared + iTunes-synced assets in the alive set.
+Alive-on-phone safety: include Live Photo paired motion video filenames in the alive-key set.
 
-Spot-check after build 115 still flagged a video that's confirmed alive in Photos.app — same filename, same timestamp on both phone and Immich. Diagnosis: the PHAsset fetch that builds the alive-key set was filtering to `.typeUserLibrary` only and excluding hidden assets. An older video that ends up in iCloud Shared Library or was synced via iTunes/Finder historically would slip past the filter, the alive-key set wouldn't see it, the engine's `wouldBeCandidates` filter would let it through, and quarantine.
+The fix shape on builds 115 and 116 still didn't catch one user-confirmed-alive-on-phone video. Diagnosis traced to Live Photos:
 
-Other cairn paths (notably orphan sweep at `PhotoKitPersistentChangeReconciler.swift:1190`) already include `.typeCloudShared` — the filter narrowness was specific to this fetch site. This build broadens both:
+- PhotoKit treats a Live Photo as ONE `PHAsset` with multiple resources: `.photo` (e.g. `IMG_1234.HEIC`) and `.pairedVideo` (e.g. `IMG_1234.MOV`). Same `creationDate` for both.
+- Immich uploads them as TWO separate server assets, each with its own `originalFileName`: the HEIC for the photo, the MOV for the motion video.
+- Cairn's alive-key build was only emitting the primary filename per asset (the photo half via `asset.value(forKey: "filename")` and `selectPrimaryResource.originalFilename`). The motion video's filename never entered the alive-key set.
+- Result: server's `IMG_1234.MOV` entry has matching `(filename, fileCreatedAt-second)` with the phone's Live Photo, but cairn's lookup misses because the alive-key set has `IMG_1234.HEIC` instead. The MOV server entry slips into `wouldBeCandidates`, becomes a quarantine entry, and the user sees it in Pending Review despite the Live Photo being right there in Photos.app.
 
-- `visibleFetch` in `performLiveReconciliation` — `includeHiddenAssets = true`, `includeAssetSourceTypes = [.typeUserLibrary, .typeCloudShared, .typeiTunesSynced]`. Same downstream uses (liveLocalIds, editRetirementHeld, alive-key set) — all benefit from the broader view.
-- Imputation's PHAsset enumeration in `runImputationPass` — same broadening. Keeps the piggyback metadata write current for hidden/shared/synced assets too, so the alive-key set's metadata-store source (build 115) catches the filename-source-divergence cases for these asset classes as well.
+This build emits the paired motion video's resource filename into the alive-key set for any `PHAsset` whose `mediaSubtypes.contains(.photoLive)`. Both `.pairedVideo` and `.fullSizePairedVideo` resource filenames are added — the latter covers Live Photos that were edited at some point (the rendered motion video could have a slightly different filename if the resource set was altered).
 
-No behavior change for deletion proposals already in progress — these source-types still can't be deleted from Photos.app, so cairn doesn't propose to trash their server counterparts either. The change is strictly in the "is this still on phone" safety direction.
+The `mediaSubtypes` guard means the per-asset `PHAssetResource.assetResources` call (~10 ms) only fires for actual Live Photos. A library of ~1k Live Photos pays ~10 s of extra enumeration; libraries with few or no Live Photos see no measurable cost.
+
+End-user impact on stuck quarantine entries: existing stamps from prior runs persist until dismissed via Pending Review (they pre-date the fix), but new instances of this class won't be created. Combined with builds 115 (case normalization + metadata-store source) and 116 (broadened source types + hidden assets), the alive-on-phone filter now covers all the divergence shapes we've observed.
