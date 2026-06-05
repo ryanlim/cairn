@@ -400,6 +400,26 @@ public struct ImmichClient: Sendable {
         }
     }
 
+    /// Diagnostic helper for the "Inspect asset by filename" Settings
+    /// action: query Immich for assets whose `originalFileName`
+    /// exactly matches the given string. Goes through `search/metadata`
+    /// the same way `listAllAssets` does, but with the filename as a
+    /// filter so only matches return. Bounded to one page (1000
+    /// results) — the use case is per-asset triage, not full
+    /// enumeration; if the user has 1000+ assets sharing a single
+    /// filename they have a different problem.
+    public func searchByOriginalFilename(_ filename: String) async throws -> [ServerAsset] {
+        let body: [String: Any] = [
+            "page": 1,
+            "size": 1000,
+            "originalFileName": filename,
+            "withDeleted": true,
+            "withExif": false,
+        ]
+        let result: SearchResponseDTO = try await postJSON(path: "search/metadata", jsonObject: body)
+        return result.assets.items.map(\.asServerAsset)
+    }
+
     // MARK: - Server-side statistics (fast count)
 
     /// Decoded body of `GET /api/assets/statistics`. `total == images +

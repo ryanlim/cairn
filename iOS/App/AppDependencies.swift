@@ -1030,6 +1030,167 @@ final class AppDependencies {
         return try await reconciler.drainDeferred()
     }
 
+    /// "Inspect asset by filename" debug helper. Triggered from
+    /// Settings → Advanced. Dumps everything cairn knows about the
+    /// given filename across phone library + Immich to the persistent
+    /// log so the next diagnostic export shows a side-by-side view
+    /// for triaging "alive-on-phone filter didn't catch this asset"
+    /// reports without us needing to guess at divergence axes.
+    ///
+    /// Output shape (all `[cairn.diag]`-prefixed for grep):
+    ///
+    ///   - 1 summary line: query string, phone-match count,
+    ///     server-match count
+    ///   - N phone lines: `phone[i] localId=... kvc='...' res='...'
+    ///     resTypes=[...] created='ISO' createdSec=N modSec=N
+    ///     hidden=Bool sourceType=N mediaSubtypes=[...]`
+    ///   - M server lines: `server[i] id=... name='...' created='ISO'
+    ///     createdSec=N checksum=...`
+    ///   - 1 verdict line per server entry: whether the current
+    ///     alive-on-phone filter (engine ±1s tolerance) would suppress
+    ///
+    /// Case-insensitive filename match across both PHAsset KVC and
+    /// PHAssetResource originalFilename. All PHAsset source types +
+    /// hidden assets are enumerated so a Hidden/CloudShared/iTunes-
+    /// synced match isn't accidentally excluded from the dump.
+    fileprivate func inspectAssetByFilenameImpl(filename: String) async {
+        let needle = filename.lowercased()
+        syncLog.notice("[cairn.diag] inspect: starting query='\(filename, privacy: .public)' (case-insensitive)")
+
+        // Phone-side scan — unfiltered fetch so the dump captures
+        // every conceivable source / hidden / shared / synced match.
+        struct PhoneMatch {
+            let localId: String
+            let kvcName: String?
+            let resourceNames: [(type: String, name: String)]
+            let createdDate: Date?
+            let modDate: Date?
+            let isHidden: Bool
+            let sourceType: PHAssetSourceType
+            let isLivePhoto: Bool
+        }
+        let phoneMatches: [PhoneMatch] = await Task.detached(priority: .userInitiated) {
+            let opts = PHFetchOptions()
+            opts.includeHiddenAssets = true
+            opts.includeAssetSourceTypes = [.typeUserLibrary, .typeCloudShared, .typeiTunesSynced]
+            let fetch = PHAsset.fetchAssets(with: opts)
+            var matches: [PhoneMatch] = []
+            fetch.enumerateObjects { asset, _, _ in
+                let kvc = asset.value(forKey: "filename") as? String
+                let resources = PHAssetResource.assetResources(for: asset)
+                let resNames: [(type: String, name: String)] = resources.map { res in
+                    (Self.resourceTypeName(res.type), res.originalFilename)
+                }
+                // Match on either KVC filename OR any resource
+                // originalFilename, case-insensitive.
+                let kvcMatches = (kvc ?? "").lowercased() == needle
+                let resMatches = resNames.contains { $0.name.lowercased() == needle }
+                if kvcMatches || resMatches {
+                    matches.append(PhoneMatch(
+                        localId: asset.localIdentifier,
+                        kvcName: kvc,
+                        resourceNames: resNames,
+                        createdDate: asset.creationDate,
+                        modDate: asset.modificationDate,
+                        isHidden: asset.isHidden,
+                        sourceType: asset.sourceType,
+                        isLivePhoto: asset.mediaSubtypes.contains(.photoLive)
+                    ))
+                }
+            }
+            return matches
+        }.value
+
+        // Server-side scan — uses the same search/metadata endpoint
+        // imputation goes through for its (filename, captureSecond)
+        // join. Try exact filename; pagination unlikely needed at
+        // this query specificity.
+        var serverMatches: [ServerAsset] = []
+        if let client = await self.immichClient {
+            do {
+                // The search endpoint accepts originalFileName; reuse
+                // listAllAssets's pagination loop indirectly by going
+                // through the search API. For our diagnostic purpose
+                // we don't need full pagination — one page is enough
+                // to surface any matches; if there are >1000 server
+                // entries with the same filename, the user has bigger
+                // questions than this tool answers.
+                serverMatches = try await client.searchByOriginalFilename(filename)
+            } catch {
+                syncLog.error("[cairn.diag] server query failed: \(Self.describeSyncError(error), privacy: .public)")
+            }
+        }
+
+        syncLog.notice("[cairn.diag] inspect summary: phoneMatches=\(phoneMatches.count, privacy: .public) serverMatches=\(serverMatches.count, privacy: .public)")
+        for (i, m) in phoneMatches.enumerated() {
+            let createdIso = m.createdDate.map(Self.iso8601Diag) ?? "<nil>"
+            let createdSec = m.createdDate.map { Int($0.timeIntervalSince1970) } ?? -1
+            let modSec = m.modDate.map { Int($0.timeIntervalSince1970) } ?? -1
+            let resDump = m.resourceNames.map { "\($0.type)='\($0.name)'" }.joined(separator: ", ")
+            syncLog.notice("[cairn.diag] phone[\(i, privacy: .public)] localId=\(m.localId, privacy: .public) kvc='\(m.kvcName ?? "<nil>", privacy: .public)' resources=[\(resDump, privacy: .public)] created=\(createdIso, privacy: .public) createdSec=\(createdSec, privacy: .public) modSec=\(modSec, privacy: .public) hidden=\(m.isHidden, privacy: .public) sourceType=\(m.sourceType.rawValue, privacy: .public) livePhoto=\(m.isLivePhoto, privacy: .public)")
+        }
+        // Build the alive-key set the same way performLiveReconciliation
+        // does, then report per-server-asset whether the engine's
+        // current filter (with ±1s tolerance) would suppress it.
+        var aliveKeys = Set<AlivePhoneAssetKey>()
+        for m in phoneMatches {
+            guard let created = m.createdDate else { continue }
+            let sec = Int(created.timeIntervalSince1970)
+            if let n = m.kvcName, !n.isEmpty {
+                aliveKeys.insert(AlivePhoneAssetKey(filename: n, secondsSince1970: sec))
+            }
+            for r in m.resourceNames where !r.name.isEmpty {
+                aliveKeys.insert(AlivePhoneAssetKey(filename: r.name, secondsSince1970: sec))
+            }
+        }
+        for (i, s) in serverMatches.enumerated() {
+            let createdIso = s.fileCreatedAt.map(Self.iso8601Diag) ?? "<nil>"
+            let createdSec = s.fileCreatedAt.map { Int($0.timeIntervalSince1970) } ?? -1
+            let cks = String(s.checksum.base64.prefix(14))
+            let serverName = s.originalFileName ?? "<nil>"
+            // Verdict against the engine's current filter (±1s)
+            let aliveOnPhone: Bool = {
+                guard let name = s.originalFileName, !name.isEmpty,
+                      let date = s.fileCreatedAt else { return false }
+                let base = Int(date.timeIntervalSince1970)
+                return (base - 1...base + 1).contains { sec in
+                    aliveKeys.contains(AlivePhoneAssetKey(filename: name, secondsSince1970: sec))
+                }
+            }()
+            syncLog.notice("[cairn.diag] server[\(i, privacy: .public)] id=\(s.id, privacy: .public) name='\(serverName, privacy: .public)' created=\(createdIso, privacy: .public) createdSec=\(createdSec, privacy: .public) checksum=\(cks, privacy: .public) livePhotoVideoId=\(s.livePhotoVideoId ?? "<nil>", privacy: .public) wouldSuppressByAliveOnPhone=\(aliveOnPhone, privacy: .public)")
+        }
+        syncLog.notice("[cairn.diag] inspect complete: query='\(filename, privacy: .public)' — see logs above for side-by-side. Export logs (Settings → Advanced → Export diagnostic logs) to share.")
+    }
+
+    nonisolated(unsafe) private static let iso8601DiagFormatter: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+
+    nonisolated fileprivate static func iso8601Diag(_ d: Date) -> String {
+        iso8601DiagFormatter.string(from: d)
+    }
+
+    nonisolated fileprivate static func resourceTypeName(_ type: PHAssetResourceType) -> String {
+        switch type {
+        case .photo: return "photo"
+        case .video: return "video"
+        case .audio: return "audio"
+        case .alternatePhoto: return "alternatePhoto"
+        case .fullSizePhoto: return "fullSizePhoto"
+        case .fullSizeVideo: return "fullSizeVideo"
+        case .adjustmentData: return "adjustmentData"
+        case .adjustmentBasePhoto: return "adjustmentBasePhoto"
+        case .adjustmentBaseVideo: return "adjustmentBaseVideo"
+        case .pairedVideo: return "pairedVideo"
+        case .fullSizePairedVideo: return "fullSizePairedVideo"
+        case .adjustmentBasePairedVideo: return "adjustmentBasePairedVideo"
+        case .photoProxy: return "photoProxy"
+        @unknown default: return "unknown(\(type.rawValue))"
+        }
+    }
+
     /// Backfill `LocalAssetMetadataStore` for cached ids that are still
     /// alive in PhotoKit but missing from the metadata store. The
     /// observer-time eager handler only captures events while cairn is
@@ -4877,6 +5038,9 @@ final class AppDependencies {
                     }
                 }
                 await self.refreshLibrarySizeStats()
+            },
+            inspectAssetByFilename: { [weak self] filename in
+                await self?.inspectAssetByFilenameImpl(filename: filename)
             },
             persistSettings: { [weak self] settings in
                 guard let self else { return }

@@ -667,6 +667,9 @@ public struct CairnAppRoot: View {
                     Task { await model.actions.signOutSession() }
                 },
                 onExportDiagnosticLogs: exportDiagnosticLogsAction,
+                onInspectAssetByFilename: { filename in
+                    Task { await model.actions.inspectAssetByFilename(filename) }
+                },
                 hasSessionToken: model.hasSessionToken,
                 scrollResetToken: scrollResetTokens["settings"] ?? 0,
                 photoAuthStatus: model.photoAuthStatus

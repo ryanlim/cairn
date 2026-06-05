@@ -1170,6 +1170,23 @@ public struct CairnAppActions: Sendable {
     /// confirms.
     public var verifyImputedChecksums: @Sendable () async -> Void
 
+    /// Triage helper: dump everything cairn knows about a given
+    /// filename across the phone library and the Immich server to
+    /// the diagnostic logs. The user enters a filename (e.g.
+    /// `IMG_1234.MOV`) under Settings → Advanced → Inspect asset by
+    /// filename; the action enumerates every PHAsset whose KVC or
+    /// resource-level filename matches case-insensitively, every
+    /// Immich server asset matching by filename, and logs per-match
+    /// rows including `creationDate` at microsecond precision +
+    /// truncated-to-integer seconds, source type, hidden flag,
+    /// mediaSubtypes, and resource-by-resource filenames. The output
+    /// lands in the persistent log and survives across launches so
+    /// it shows up in the next export. Used to triage cases where
+    /// the alive-on-phone filter still surfaces a quarantine entry
+    /// for an asset the user confirms is on phone — the side-by-side
+    /// view tells us exactly which axis is diverging.
+    public var inspectAssetByFilename: @Sendable (String) async -> Void
+
     /// Persist the current `CairnSettings` to the on-device store.
     /// Called automatically when the settings binding mutates; there's
     /// no user-visible "save" button, so this runs in the background
@@ -1341,6 +1358,7 @@ public struct CairnAppActions: Sendable {
         rescanLibrary: @escaping @Sendable () async -> Void = {},
         clearHashCache: @escaping @Sendable () async -> Void = {},
         verifyImputedChecksums: @escaping @Sendable () async -> Void = {},
+        inspectAssetByFilename: @escaping @Sendable (String) async -> Void = { _ in },
         persistSettings: @escaping @Sendable (CairnSettings) async -> Void = { _ in },
         dismissInitialScan: @escaping @Sendable () async -> Void = {},
         startOverInitialScan: @escaping @Sendable () async -> Void = {},
@@ -1385,6 +1403,7 @@ public struct CairnAppActions: Sendable {
         self.rescanLibrary = rescanLibrary
         self.clearHashCache = clearHashCache
         self.verifyImputedChecksums = verifyImputedChecksums
+        self.inspectAssetByFilename = inspectAssetByFilename
         self.persistSettings = persistSettings
         self.dismissInitialScan = dismissInitialScan
         self.startOverInitialScan = startOverInitialScan

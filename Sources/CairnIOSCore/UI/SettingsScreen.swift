@@ -111,6 +111,13 @@ public struct SettingsScreen: View {
     /// host (CairnAppRoot) drives the actual `LogExporter.export()`
     /// call + share sheet — this row just fires the closure.
     public let onExportDiagnosticLogs: () -> Void
+    /// Triggers the "Inspect asset by filename" debug action. Host
+    /// (CairnAppRoot) wires this to call
+    /// `model.actions.inspectAssetByFilename(filename)` which dumps
+    /// a side-by-side phone-vs-server view for the given filename
+    /// into the persistent log, so the next diagnostic export shows
+    /// which divergence axis is in play.
+    public let onInspectAssetByFilename: (String) -> Void
     /// `true` when a session-auth token is persisted in Keychain.
     /// Switches the row label between "Sign in" and "Signed in ·
     /// Sign out".
@@ -143,6 +150,30 @@ public struct SettingsScreen: View {
     @State private var showExportPicker = false
     @State private var showImportPicker = false
     @State private var showAbout = false
+    @State private var showInspectAssetAlert = false
+    @State private var inspectAssetFilename: String = ""
+
+    /// Extracted from the alert closure to relieve type-checker
+    /// pressure — the SettingsScreen body has a long stack of
+    /// `.alert` modifiers and inlining one more pushes the implicit
+    /// `some View` resolution past Swift's reasonable-time budget.
+    @ViewBuilder
+    private var inspectAssetAlertActions: some View {
+        TextField("e.g. IMG_1234.MOV", text: $inspectAssetFilename)
+            .autocorrectionDisabled()
+        Button("Inspect") {
+            let trimmed = inspectAssetFilename.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return }
+            onInspectAssetByFilename(trimmed)
+            inspectAssetFilename = ""
+        }
+        Button("Cancel", role: .cancel) { inspectAssetFilename = "" }
+    }
+
+    @ViewBuilder
+    private var inspectAssetAlertMessage: some View {
+        Text("Dumps every phone-side PHAsset and Immich server entry matching this filename to the diagnostic log. Then export logs (above) to share for triage. Case-insensitive match against PHAsset's internal filename + every PHAssetResource originalFilename.")
+    }
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     public init(
@@ -178,6 +209,7 @@ public struct SettingsScreen: View {
         onOpenSessionSignIn: @escaping () -> Void = {},
         onSignOutSession: @escaping () -> Void = {},
         onExportDiagnosticLogs: @escaping () -> Void = {},
+        onInspectAssetByFilename: @escaping (String) -> Void = { _ in },
         hasSessionToken: Bool = false,
         scrollResetToken: Int = 0,
         photoAuthStatus: SetupScreen.PhotoAuthOutcome? = nil
@@ -214,6 +246,7 @@ public struct SettingsScreen: View {
         self.onOpenSessionSignIn = onOpenSessionSignIn
         self.onSignOutSession = onSignOutSession
         self.onExportDiagnosticLogs = onExportDiagnosticLogs
+        self.onInspectAssetByFilename = onInspectAssetByFilename
         self.hasSessionToken = hasSessionToken
         self.scrollResetToken = scrollResetToken
         self.photoAuthStatus = photoAuthStatus
@@ -385,6 +418,12 @@ public struct SettingsScreen: View {
             message: {
                 Text("Current server backs up only the active Immich account's state. All servers includes every (URL, user) partition on this device.")
             }
+        )
+        .alert(
+            "Inspect asset by filename",
+            isPresented: $showInspectAssetAlert,
+            actions: { inspectAssetAlertActions },
+            message: { inspectAssetAlertMessage }
         )
         .fileImporter(
             isPresented: $showImportPicker,
@@ -1502,6 +1541,13 @@ public struct SettingsScreen: View {
                         value: { Text("Save & share").foregroundStyle(t.infoInk) },
                         chevron: true,
                         onTap: onExportDiagnosticLogs
+                    )
+                    RowDivider()
+                    KeyValRow(
+                        "Inspect asset by filename",
+                        value: { Text("Triage").foregroundStyle(t.infoInk) },
+                        chevron: true,
+                        onTap: { showInspectAssetAlert = true }
                     )
                     #if DEBUG
                     RowDivider()
