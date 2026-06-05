@@ -1277,13 +1277,15 @@ final class AppDependencies {
             let resources = PHAssetResource.assetResources(for: asset)
             let primary = PhotoKitPhotoEnumerator.selectPrimaryResource(from: resources)
             let size = (primary?.value(forKey: "fileSize") as? NSNumber)?.int64Value
+            let allNames = resources.map(\.originalFilename).filter { !$0.isEmpty }
             entries.append(LocalAssetMetadata(
                 localIdentifier: asset.localIdentifier,
                 originalFileName: primary?.originalFilename,
                 creationDate: asset.creationDate,
                 modificationDate: asset.modificationDate,
                 fileSize: size,
-                observedAt: now
+                observedAt: now,
+                allResourceFilenames: allNames
             ))
         }
         do {
@@ -1449,44 +1451,39 @@ final class AppDependencies {
         // imputation progress, then a background transition). Capturing
         // metadata here once and persisting it lets the full-enum pass
         // skip the entire body of its per-asset loop.
-        let phoneEntries: [(localId: String, modDate: Date?, creationDate: Date?, filename: String?, fileSize: Int64?)] =
+        let phoneEntries: [(localId: String, modDate: Date?, creationDate: Date?, filename: String?, fileSize: Int64?, allResourceFilenames: [String])] =
             await Task.detached(priority: .userInitiated) {
                 let opts = PHFetchOptions()
-                // Match the broadened `visibleFetch` filter (Hidden +
-                // CloudShared + iTunesSynced + UserLibrary). The
-                // piggyback metadata write below feeds the alive-on-
-                // phone safety check via `LocalAssetMetadataStore`; if
-                // the enumeration here filters to `.typeUserLibrary`
-                // only but the alive-key build pulls from this same
-                // metadata store, an iCloud-shared or hidden phone
-                // asset's metadata row is missing, the alive-key set
-                // doesn't see it, and the server entry can wrongly
-                // surface as a deletion candidate. Real end-user
-                // report on build 115 matched this exact shape.
                 opts.includeHiddenAssets = true
                 opts.includeAssetSourceTypes = [.typeUserLibrary, .typeCloudShared, .typeiTunesSynced]
                 let fetch = PHAsset.fetchAssets(with: opts)
                 let fetchCount = fetch.count
-                var out: [(localId: String, modDate: Date?, creationDate: Date?, filename: String?, fileSize: Int64?)] = []
+                var out: [(localId: String, modDate: Date?, creationDate: Date?, filename: String?, fileSize: Int64?, allResourceFilenames: [String])] = []
                 out.reserveCapacity(fetchCount)
                 var scanned = 0
                 fetch.enumerateObjects { asset, _, _ in
                     let resources = PHAssetResource.assetResources(for: asset)
-                    // Use the canonical primary-resource selection so
-                    // the filename + size match what the full-enum
-                    // metadata pass would otherwise compute. The
-                    // simpler "first .photo/.video/.audio" filter the
-                    // imputation join uses is sufficient for the
-                    // matching key, but diverging here produces
-                    // inconsistent metadata rows.
                     let primary = PhotoKitPhotoEnumerator.selectPrimaryResource(from: resources)
                     let fileSize = primary.flatMap(PhotoKitPhotoEnumerator.resourceFileSize)
+                    // Collect EVERY resource's originalFilename — not
+                    // just the primary's. For edited assets the PHAsset
+                    // KVC filename becomes a UUID-style placeholder and
+                    // the primary picker returns the rendered edit's
+                    // name (`FullSizeRender.mov`), so Immich's
+                    // pre-edit-upload filename (e.g. `IMG_2999.MOV`)
+                    // ends up on one of the *other* resources. The
+                    // alive-on-phone safety check needs all of them
+                    // available downstream; capturing them once during
+                    // the existing PHAssetResource enumeration is
+                    // free relative to making the same call later.
+                    let allNames = resources.map(\.originalFilename).filter { !$0.isEmpty }
                     out.append((
                         asset.localIdentifier,
                         asset.modificationDate,
                         asset.creationDate,
                         primary?.originalFilename,
-                        fileSize
+                        fileSize,
+                        allNames
                     ))
                     scanned += 1
                     if scanned % 200 == 0 || scanned == fetchCount {
@@ -1514,7 +1511,8 @@ final class AppDependencies {
                     creationDate: entry.creationDate,
                     modificationDate: entry.modDate,
                     fileSize: entry.fileSize,
-                    observedAt: now
+                    observedAt: now,
+                    allResourceFilenames: entry.allResourceFilenames
                 )
             }
             try? await self.localAssetMetadataStore.record(metadataEntries)
@@ -2079,14 +2077,35 @@ final class AppDependencies {
         // suppress its real on-server hash.
         let metadataForAliveSet = (try? await self.localAssetMetadataStore.snapshot()) ?? []
         for entry in metadataForAliveSet where liveLocalIds.contains(entry.localIdentifier) {
-            guard let filename = entry.originalFileName, !filename.isEmpty,
-                  let created = entry.creationDate else { continue }
-            alivePhoneAssetKeys.insert(
-                AlivePhoneAssetKey(
-                    filename: filename,
-                    secondsSince1970: Int(created.timeIntervalSince1970)
+            guard let created = entry.creationDate else { continue }
+            let createdSecond = Int(created.timeIntervalSince1970)
+            // Primary filename (typically the rendered-edit name for
+            // edited assets, the original for untouched assets).
+            if let filename = entry.originalFileName, !filename.isEmpty {
+                alivePhoneAssetKeys.insert(
+                    AlivePhoneAssetKey(
+                        filename: filename,
+                        secondsSince1970: createdSecond
+                    )
                 )
-            )
+            }
+            // Every other resource filename observed at imputation
+            // time. For edited assets this is the key payload —
+            // Immich's server entry has the pre-edit upload's
+            // filename, which is one of the non-primary resources
+            // (`.video` for an edited video, etc).  Real end-user
+            // case at build 120: KVC='80EE02BF-...MOV',
+            // primary='FullSizeRender.mov', resource list included
+            // `video='IMG_2999.MOV'` which is exactly what the server
+            // had.
+            for resourceName in entry.allResourceFilenames where !resourceName.isEmpty {
+                alivePhoneAssetKeys.insert(
+                    AlivePhoneAssetKey(
+                        filename: resourceName,
+                        secondsSince1970: createdSecond
+                    )
+                )
+            }
         }
 
         syncLog.info("[cairn.sync] local checksums fetched in \(Int(Date().timeIntervalSince(t1) * 1000))ms (\(indexedCount) entries)")

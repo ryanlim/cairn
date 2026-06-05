@@ -165,6 +165,25 @@ final class StoredLocalAssetMetadata {
     var modificationDate: Date?
     var fileSize: Int64?
     var observedAt: Date
+    /// Comma-separated `originalFilename` strings collected from
+    /// EVERY `PHAssetResource` attached to the asset (in addition to
+    /// the primary one stored in `originalFileName`). For an edited
+    /// video the resource list typically contains the original
+    /// (`IMG_1234.MOV`), the rendered edit (`FullSizeRender.mov`), an
+    /// adjustment sidecar (`Adjustments.plist`), and sometimes a
+    /// `FullSizeRender.jpeg` poster. PhotoKit replaces the PHAsset's
+    /// KVC `filename` with a UUID-style placeholder for edited
+    /// assets, so neither the KVC name NOR the primary resource name
+    /// match what Immich originally uploaded — the source of truth
+    /// for the upload is one of the *other* resource filenames in
+    /// this list, and the engine's alive-on-phone safety check needs
+    /// to see all of them to suppress correctly.
+    ///
+    /// CSV chosen for SwiftData lightweight-migration friendliness
+    /// (just a `String` with a default value). `=""` default means
+    /// existing rows decode as "no extra filenames known" and the
+    /// alive-key build falls back to its other sources.
+    var allResourceFilenamesCSV: String = ""
 
     init(
         localIdentifier: String,
@@ -172,7 +191,8 @@ final class StoredLocalAssetMetadata {
         creationDate: Date?,
         modificationDate: Date?,
         fileSize: Int64?,
-        observedAt: Date
+        observedAt: Date,
+        allResourceFilenamesCSV: String = ""
     ) {
         self.localIdentifier = localIdentifier
         self.originalFileName = originalFileName
@@ -180,6 +200,7 @@ final class StoredLocalAssetMetadata {
         self.modificationDate = modificationDate
         self.fileSize = fileSize
         self.observedAt = observedAt
+        self.allResourceFilenamesCSV = allResourceFilenamesCSV
     }
 }
 
@@ -1253,6 +1274,7 @@ public actor SwiftDataLocalAssetMetadataStore: LocalAssetMetadataStore {
                 existing.creationDate = entry.creationDate
                 existing.modificationDate = entry.modificationDate
                 existing.fileSize = entry.fileSize
+                existing.allResourceFilenamesCSV = Self.encodeFilenames(entry.allResourceFilenames)
             } else {
                 context.insert(StoredLocalAssetMetadata(
                     localIdentifier: entry.localIdentifier,
@@ -1260,7 +1282,8 @@ public actor SwiftDataLocalAssetMetadataStore: LocalAssetMetadataStore {
                     creationDate: entry.creationDate,
                     modificationDate: entry.modificationDate,
                     fileSize: entry.fileSize,
-                    observedAt: entry.observedAt
+                    observedAt: entry.observedAt,
+                    allResourceFilenamesCSV: Self.encodeFilenames(entry.allResourceFilenames)
                 ))
             }
         }
@@ -1304,8 +1327,26 @@ public actor SwiftDataLocalAssetMetadataStore: LocalAssetMetadataStore {
             creationDate: row.creationDate,
             modificationDate: row.modificationDate,
             fileSize: row.fileSize,
-            observedAt: row.observedAt
+            observedAt: row.observedAt,
+            allResourceFilenames: Self.decodeFilenames(row.allResourceFilenamesCSV)
         )
+    }
+
+    /// Tab-separated, not comma — resource `originalFilename` strings
+    /// can legitimately contain commas (system-rendered exports
+    /// sometimes use them in their filenames), but tabs essentially
+    /// never appear in PhotoKit-emitted filenames. Slightly less
+    /// human-friendly to read in a raw DB inspection but unambiguous
+    /// on round-trip.
+    private static let filenameSeparator = "\t"
+
+    private static func encodeFilenames(_ names: [String]) -> String {
+        names.filter { !$0.isEmpty }.joined(separator: filenameSeparator)
+    }
+
+    private static func decodeFilenames(_ csv: String) -> [String] {
+        guard !csv.isEmpty else { return [] }
+        return csv.components(separatedBy: filenameSeparator).filter { !$0.isEmpty }
     }
 }
 
