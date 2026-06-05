@@ -1,18 +1,10 @@
-Fix: alive-on-phone safety check no longer misses assets when filename source diverges.
+Alive-on-phone safety: include hidden + iCloud-shared + iTunes-synced assets in the alive set.
 
-End-user report on build 113: a video confirmed still in their Photos library landed in quarantine, with matching filename and capture date — exactly the case the build-102 alive-on-phone filter was designed to suppress. Diagnosis exposed a brittleness: cairn was building the alive-key set from one filename source and matching against another.
+Spot-check after build 115 still flagged a video that's confirmed alive in Photos.app — same filename, same timestamp on both phone and Immich. Diagnosis: the PHAsset fetch that builds the alive-key set was filtering to `.typeUserLibrary` only and excluding hidden assets. An older video that ends up in iCloud Shared Library or was synced via iTunes/Finder historically would slip past the filter, the alive-key set wouldn't see it, the engine's `wouldBeCandidates` filter would let it through, and quarantine.
 
-- Imputation enumeration uses `PHAssetResource.selectPrimaryResource(from:)?.originalFilename` (resource payload — what Immich's mobile uploader sends to the server)
-- Build-102's alive-key pass used `PHAsset.value(forKey: "filename") as? String` (PHAsset internal KVC)
+Other cairn paths (notably orphan sweep at `PhotoKitPersistentChangeReconciler.swift:1190`) already include `.typeCloudShared` — the filter narrowness was specific to this fetch site. This build broadens both:
 
-These usually agree but can diverge on the same asset — most often a case shift (`IMG_1234.MOV` vs `img_1234.MOV`), occasionally content. When they diverge, the exact-match Set lookup in the engine misses, the asset is wrongly classified as a candidate, and lands in quarantine.
+- `visibleFetch` in `performLiveReconciliation` — `includeHiddenAssets = true`, `includeAssetSourceTypes = [.typeUserLibrary, .typeCloudShared, .typeiTunesSynced]`. Same downstream uses (liveLocalIds, editRetirementHeld, alive-key set) — all benefit from the broader view.
+- Imputation's PHAsset enumeration in `runImputationPass` — same broadening. Keeps the piggyback metadata write current for hidden/shared/synced assets too, so the alive-key set's metadata-store source (build 115) catches the filename-source-divergence cases for these asset classes as well.
 
-Two composing fixes:
-
-1. **`AlivePhoneAssetKey` constructor normalizes filename to lowercase.** Case-only differences fall away regardless of which source produced the key. The struct's stored `filename` is now always lowercased. 2 new engine tests cover the normalization (case-insensitive equality + stored-form check).
-
-2. **Alive-key build in `performLiveReconciliation` populates from BOTH sources.** PHAsset KVC pass (existing, fast) plus a `LocalAssetMetadataStore` pass (uses the same resource-level filename that imputation joins on). The `Set` de-dups. Any asset whose phone-side filename matches the server's stored `originalFileName` via either path is now recognized as alive.
-
-Net effect: the engine's alive-on-phone filter is robust to the filename-source divergence we've observed. The 41 quarantine entries the tester reported will need to be reviewed once on the new sync (existing stamps in ConfirmedDeletedStore persist; the fix prevents new instances), then dismissed via Pending Review.
-
-Full 665-test suite passes including the 2 new engine cases.
+No behavior change for deletion proposals already in progress — these source-types still can't be deleted from Photos.app, so cairn doesn't propose to trash their server counterparts either. The change is strictly in the "is this still on phone" safety direction.
