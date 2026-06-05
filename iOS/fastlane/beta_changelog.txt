@@ -1,9 +1,16 @@
-Build-110 upgrade fix: existing installs auto-disable Keep-screen-on after upgrade.
+Big win for 100k+ libraries: eliminate the silent hour between Matching from server and Hashing.
 
-Build 110 added a default-on `keepScreenAwakeDuringSync` toggle calibrated for the first sync, with an auto-disable that fires on the `hasCompletedInitialScan: false → true` transition. Users upgrading from a pre-110 build whose initial scan was *already complete* never hit that transition, so the toggle stayed on indefinitely and burned battery on every incremental sync.
+End-user diagnostic from a 108,936-asset library showed Matching from server finishing in 8 minutes (good), then ONE FULL HOUR of zero log activity before the user backgrounded the app in frustration. Hashing never started.
 
-This build adds a one-shot UserDefaults-gated migration that runs once during bootstrap. If the upgrade is detected (initial scan already complete + toggle still at factory default `true` + migration flag not yet set), cairn flips the toggle off, persists, and sets the flag. The fresh-install case is unaffected — on a new install the auto-disable still happens at first-scan completion as designed.
+Root cause: `recordFullEnumerationMetadata` was running 108,936 sequential `PHAssetResource.assetResources(for:)` calls — ~30ms each = 50+ minutes silent — to record the same filename/creationDate/size metadata that the imputation pass *already enumerated 8 minutes earlier and threw away*. Two complete passes over the entire photo library back-to-back.
 
-The migration flag also gets set unconditionally on first bootstrap of this build, so a user who manually re-enables Keep-screen-on after the upgrade isn't blindsided by the migration re-firing on a subsequent bootstrap. Manual re-enables persist as expected.
+This build piggybacks metadata recording on the imputation enumeration. Imputation already calls `PHAssetResource.assetResources` per asset to extract the filename for its (filename, capture-second) join key; capturing the file-size in the same loop and writing all five fields (localId, filename, creationDate, modificationDate, fileSize) to `LocalAssetMetadataStore` as a side-effect makes the subsequent full-enum metadata pass a near-no-op (the existing "skip ids already recorded" guard handles it). Net effect on the user's 108k library: the silent hour collapses to ~50 milliseconds.
 
-If your initial scan was already complete when you upgraded to 110 and you've been seeing the screen stay on through incremental syncs since, 111 will silently flip it off the next time the app launches. Re-enable from Settings → Library → Initial scan for any big follow-up run.
+Also adds periodic progress + heartbeat logging to `recordFullEnumerationMetadata` so this kind of multi-thousand-asset silent loop can never recur unnoticed:
+- Start: "starting N PHAssetResource calls — full-enum hashing waits for this to complete"
+- Every 5,000 assets: "progress N/M, rate X/s, eta Ys"
+- Completion: "complete: N entries recorded in Y ms"
+
+Plus a short-circuit log when the entire pass is skipped because imputation already covered everything.
+
+For users with fast-initial-scan disabled (no imputation pass): the metadata loop still runs, but now logs progress so they can see it's working and roughly when it'll finish.
