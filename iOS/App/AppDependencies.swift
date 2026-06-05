@@ -1817,15 +1817,48 @@ final class AppDependencies {
         liveLocalIds.reserveCapacity(visibleFetch.count)
         visibleFetch.enumerateObjects { asset, _, _ in
             liveLocalIds.insert(asset.localIdentifier)
-            guard let filename = asset.value(forKey: "filename") as? String,
-                  !filename.isEmpty,
-                  let created = asset.creationDate else { return }
-            alivePhoneAssetKeys.insert(
-                AlivePhoneAssetKey(
-                    filename: filename,
-                    secondsSince1970: Int(created.timeIntervalSince1970)
+            guard let created = asset.creationDate else { return }
+            let createdSecond = Int(created.timeIntervalSince1970)
+            if let filename = asset.value(forKey: "filename") as? String,
+               !filename.isEmpty
+            {
+                alivePhoneAssetKeys.insert(
+                    AlivePhoneAssetKey(
+                        filename: filename,
+                        secondsSince1970: createdSecond
+                    )
                 )
-            )
+            }
+            // Live Photos: include the paired motion video's resource
+            // filename too, since Immich uploads it as a SEPARATE server
+            // asset whose `originalFileName` is the MOV (`IMG_1234.MOV`)
+            // while the photo half is the HEIC (`IMG_1234.HEIC`). Without
+            // emitting both, the server-stored paired motion video misses
+            // the alive-on-phone filter, lands in `wouldBeCandidates`,
+            // and surfaces as a quarantine entry — even though it's
+            // literally part of a Live Photo still alive on the device.
+            // PHAsset.mediaSubtypes guards the per-asset PHAssetResource
+            // call so we only pay the ~10 ms enumeration cost for assets
+            // that actually have a paired video.
+            if asset.mediaSubtypes.contains(.photoLive) {
+                let resources = PHAssetResource.assetResources(for: asset)
+                for resource in resources {
+                    switch resource.type {
+                    case .pairedVideo, .fullSizePairedVideo:
+                        let resName = resource.originalFilename
+                        if !resName.isEmpty {
+                            alivePhoneAssetKeys.insert(
+                                AlivePhoneAssetKey(
+                                    filename: resName,
+                                    secondsSince1970: createdSecond
+                                )
+                            )
+                        }
+                    default:
+                        break
+                    }
+                }
+            }
         }
         // Metadata-store source — uses the same filename path as the
         // imputation join AND as what Immich's mobile uploader sends
