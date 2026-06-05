@@ -127,6 +127,30 @@ public struct InitialScanScreen: View {
     ///      jumpy on a heterogeneous workload.
     @State private var recentLiveEtas: [TimeInterval] = []
     private static let etaSampleWindowSize: Int = 5
+
+    /// Rolling buffer of `(time, cumulative-hashed)` checkpoints used
+    /// to compute a *recent-window* hashing rate that adapts to
+    /// conditions changing mid-scan. The cumulative rate
+    /// (`elapsed / sessionWork`) underestimates ETA badly when a fast
+    /// early phase (locally-cached photos) gives way to a slow phase
+    /// (iCloud-pending originals downloading at 2-15s each); the
+    /// recent-window rate catches that within `etaRateWindowSeconds`
+    /// instead of taking the entire session to converge. Kept capped
+    /// by both time (filtered on read) and sample count (filtered on
+    /// write) so memory stays bounded under fast-emit conditions.
+    @State private var rateSamples: [(date: Date, hashed: Int)] = []
+    /// Time horizon for the recent-window rate. 90 seconds is the
+    /// sweet spot between "long enough to smooth single-asset
+    /// outliers" and "short enough to adapt when iCloud throttling
+    /// kicks in." If a single iCloud-bound asset takes 30s, the
+    /// window still holds 2-3 samples of recent activity for the
+    /// rate computation; a multi-minute hashing-rate shift surfaces
+    /// in the visible ETA within ~one window.
+    private static let etaRateWindowSeconds: TimeInterval = 90
+    /// Hard cap on rate-sample buffer size. Bounds memory regardless
+    /// of emit rate. 200 covers ~3 minutes of one-per-second emits;
+    /// faster emit rates trim down naturally via the time filter.
+    private static let etaRateSampleCap: Int = 200
     /// Minimum samples before CV is meaningful. With 2 samples the
     /// CV is just `|a-b| / ((a+b)/2)` — too noisy. 3 is the smallest
     /// useful window.
@@ -247,8 +271,38 @@ public struct InitialScanScreen: View {
         let sessionWork = max(0, hashed - initialHashed)
         guard sessionWork >= Self.etaWarmupAssets,
               elapsed >= Self.etaWarmupSeconds else { return nil }
-        let perAsset = elapsed / Double(sessionWork)
-        return perAsset * Double(total - hashed)
+        let remaining = Double(total - hashed)
+        let cumulativeEta = (elapsed / Double(sessionWork)) * remaining
+
+        // Recent-window rate: how fast we've been processing in the
+        // last `etaRateWindowSeconds`. Falls back to cumulative when
+        // the window is too small (early in the scan, sparse emits)
+        // or hasn't produced any movement (paused, stuck on a single
+        // long iCloud download). The cumulative branch is the
+        // legacy behavior; the win is in taking the *higher* of the
+        // two below — when conditions degrade mid-scan, recent
+        // catches the slowdown long before cumulative converges.
+        let now = Date()
+        let cutoff = now.addingTimeInterval(-Self.etaRateWindowSeconds)
+        guard let oldestInWindow = rateSamples.first(where: { $0.date >= cutoff }),
+              oldestInWindow.hashed < hashed
+        else {
+            return cumulativeEta
+        }
+        let windowDuration = now.timeIntervalSince(oldestInWindow.date)
+        let windowWork = hashed - oldestInWindow.hashed
+        guard windowDuration > 0, windowWork > 0 else { return cumulativeEta }
+        let recentEta = (windowDuration / Double(windowWork)) * remaining
+
+        // Pessimistic aggregate: when the recent rate is slower than
+        // the long-run rate, that's a real signal — iCloud throttling
+        // is engaging, the iCloud-pending share of remaining work is
+        // higher than the locally-cached early phase, hashing is
+        // genuinely degrading. Surface that to the user instead of
+        // smoothing it away. When recent ≈ cumulative (stable
+        // conditions), the two return ~the same value and there's no
+        // user-visible difference.
+        return max(cumulativeEta, recentEta)
     }
 
     /// Bootstrap ETA derived from the device's last persisted per-
@@ -345,6 +399,7 @@ public struct InitialScanScreen: View {
         publishedEtaAt = nil
         publishedEtaHashed = 0
         recentLiveEtas.removeAll(keepingCapacity: true)
+        rateSamples.removeAll(keepingCapacity: true)
     }
 
     /// Display string for the "REMAINING" cell. Distinguishes between
@@ -493,7 +548,27 @@ public struct InitialScanScreen: View {
             if new == 0 && old > 0 {
                 resetEtaPublishState()
             }
+            recordRateSample(hashed: new, at: Date())
             reconsiderPublishedEta(now: Date())
+        }
+    }
+
+    /// Append a checkpoint to `rateSamples` and trim. Called on every
+    /// `hashed` progress emit (which is the only signal we get from
+    /// the reconciler about session work advancing). Trims by both
+    /// time (drop anything older than 2× window so partial reads
+    /// during transient back-pressure still have headroom) and count
+    /// (cap at `etaRateSampleCap` to bound memory under fast-emit
+    /// conditions). Cheap: ~one comparison per existing sample.
+    private func recordRateSample(hashed: Int, at now: Date) {
+        guard isActive else { return }
+        rateSamples.append((date: now, hashed: hashed))
+        let cutoff = now.addingTimeInterval(-Self.etaRateWindowSeconds * 2)
+        if rateSamples.first?.date ?? now < cutoff {
+            rateSamples.removeAll { $0.date < cutoff }
+        }
+        if rateSamples.count > Self.etaRateSampleCap {
+            rateSamples.removeFirst(rateSamples.count - Self.etaRateSampleCap)
         }
     }
 
