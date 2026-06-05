@@ -1227,26 +1227,44 @@ final class AppDependencies {
                 )
             }
         }
-        let phoneEntries: [(localId: String, modDate: Date?, creationDate: Date?, filename: String?)] =
+        // PhoneEntry now also carries `fileSize` so we can side-effect
+        // a LocalAssetMetadata write below — `recordFullEnumerationMetadata`
+        // inside the subsequent full-enum pass calls
+        // `PHAssetResource.assetResources` per asset to get the same
+        // five fields, and on a 108k-asset library that re-scan takes
+        // ~50 minutes of silent sequential work (real tester report:
+        // `seeded=81353 totalPhone=108936 durationMs=496421` immediately
+        // followed by an hour of silence with the screen still showing
+        // imputation progress, then a background transition). Capturing
+        // metadata here once and persisting it lets the full-enum pass
+        // skip the entire body of its per-asset loop.
+        let phoneEntries: [(localId: String, modDate: Date?, creationDate: Date?, filename: String?, fileSize: Int64?)] =
             await Task.detached(priority: .userInitiated) {
                 let opts = PHFetchOptions()
                 opts.includeHiddenAssets = false
                 opts.includeAssetSourceTypes = [.typeUserLibrary]
                 let fetch = PHAsset.fetchAssets(with: opts)
                 let fetchCount = fetch.count
-                var out: [(localId: String, modDate: Date?, creationDate: Date?, filename: String?)] = []
+                var out: [(localId: String, modDate: Date?, creationDate: Date?, filename: String?, fileSize: Int64?)] = []
                 out.reserveCapacity(fetchCount)
                 var scanned = 0
                 fetch.enumerateObjects { asset, _, _ in
                     let resources = PHAssetResource.assetResources(for: asset)
-                    let primary = resources.first { r in
-                        r.type == .photo || r.type == .video || r.type == .audio
-                    }
+                    // Use the canonical primary-resource selection so
+                    // the filename + size match what the full-enum
+                    // metadata pass would otherwise compute. The
+                    // simpler "first .photo/.video/.audio" filter the
+                    // imputation join uses is sufficient for the
+                    // matching key, but diverging here produces
+                    // inconsistent metadata rows.
+                    let primary = PhotoKitPhotoEnumerator.selectPrimaryResource(from: resources)
+                    let fileSize = primary.flatMap(PhotoKitPhotoEnumerator.resourceFileSize)
                     out.append((
                         asset.localIdentifier,
                         asset.modificationDate,
                         asset.creationDate,
-                        primary?.originalFilename
+                        primary?.originalFilename,
+                        fileSize
                     ))
                     scanned += 1
                     if scanned % 200 == 0 || scanned == fetchCount {
@@ -1256,6 +1274,30 @@ final class AppDependencies {
                 return out
             }.value
         let totalPhone = phoneEntries.count
+
+        // Side-effect: persist the metadata we just captured for every
+        // enumerated phone asset into `LocalAssetMetadataStore`. The
+        // subsequent `runFullEnumeration` → `hashAllCurrentAssets` →
+        // `recordFullEnumerationMetadata` pass filters its work to ids
+        // not already in the store, so this write makes the entire
+        // function a no-op for the assets imputation just walked. On
+        // the user's 108k library that's the difference between
+        // ~50 silent minutes and ~50 milliseconds.
+        do {
+            let now = Date()
+            let metadataEntries = phoneEntries.map { entry in
+                LocalAssetMetadata(
+                    localIdentifier: entry.localId,
+                    originalFileName: entry.filename,
+                    creationDate: entry.creationDate,
+                    modificationDate: entry.modDate,
+                    fileSize: entry.fileSize,
+                    observedAt: now
+                )
+            }
+            try? await self.localAssetMetadataStore.record(metadataEntries)
+            syncLog.info("[cairn.impute] piggyback metadata recorded for \(metadataEntries.count) phone assets (skips redundant PHAssetResource enumeration during full-enum)")
+        }
 
         // 3. Skip localIds already in LocalHashStore. Imputation only
         //    fills gaps — it never downgrades a verified entry.

@@ -238,7 +238,7 @@ public struct PhotoKitPhotoEnumerator: PhotoEnumerator {
     /// iOS 18 and the deployment target is iOS 17. The KVC path has
     /// worked for many releases. Returns `nil` if the key disappears
     /// in a future SDK.
-    static func resourceFileSize(_ resource: PHAssetResource) -> Int64? {
+    public static func resourceFileSize(_ resource: PHAssetResource) -> Int64? {
         (resource.value(forKey: "fileSize") as? NSNumber)?.int64Value
     }
 

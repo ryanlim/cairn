@@ -1783,8 +1783,14 @@ public final class PhotoKitPersistentChangeReconciler {
         let existing = try await metadataStore.snapshot()
         let knownIds = Set(existing.map(\.localIdentifier))
         let pending = assets.filter { !knownIds.contains($0.localIdentifier) }
-        guard !pending.isEmpty else { return }
+        guard !pending.isEmpty else {
+            Self.reconLog.notice("[cairn.recon.metadata] skipped: all \(assets.count, privacy: .public) assets already covered by prior pass (typically imputation's piggyback write)")
+            return
+        }
 
+        let totalPending = pending.count
+        Self.reconLog.notice("[cairn.recon.metadata] starting: \(totalPending, privacy: .public) PHAssetResource calls pending — full-enum hashing waits for this to complete")
+        let startedAt = Date()
         let now = clock()
         var entries: [LocalAssetMetadata] = []
         entries.reserveCapacity(pending.count)
@@ -1799,6 +1805,17 @@ public final class PhotoKitPersistentChangeReconciler {
             if index % 50 == 0 {
                 try Task.checkCancellation()
             }
+            // Periodic heartbeat in the logs so a 100k+-asset library
+            // that hits this path (imputation off, fresh install)
+            // doesn't look frozen for an hour. End-user diagnostic
+            // exports were silent through this whole loop before, even
+            // though the loop was making steady progress.
+            if index > 0 && index % 5000 == 0 {
+                let elapsed = Date().timeIntervalSince(startedAt)
+                let rate = Double(index) / max(elapsed, 0.001)
+                let etaSeconds = Double(totalPending - index) / max(rate, 0.001)
+                Self.reconLog.notice("[cairn.recon.metadata] progress: \(index, privacy: .public)/\(totalPending, privacy: .public) — \(Int(rate * 1000), privacy: .public)/s × 1000, eta=\(Int(etaSeconds), privacy: .public)s")
+            }
             let resources = PHAssetResource.assetResources(for: asset)
             let primary = PhotoKitPhotoEnumerator.selectPrimaryResource(from: resources)
             let size = primary.flatMap(PhotoKitPhotoEnumerator.resourceFileSize)
@@ -1812,6 +1829,8 @@ public final class PhotoKitPersistentChangeReconciler {
             ))
         }
         try await metadataStore.record(entries)
+        let totalElapsed = Int(Date().timeIntervalSince(startedAt) * 1000)
+        Self.reconLog.notice("[cairn.recon.metadata] complete: \(totalPending, privacy: .public) entries recorded in \(totalElapsed, privacy: .public)ms")
     }
 
     /// Result of a combined metadata-record + stale-filter pass:
