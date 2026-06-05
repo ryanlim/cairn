@@ -1,14 +1,16 @@
-Alive-on-phone safety: include Live Photo paired motion video filenames in the alive-key set.
+Alive-on-phone safety: ±1 second tolerance on the capture-time match.
 
-The fix shape on builds 115 and 116 still didn't catch one user-confirmed-alive-on-phone video. Diagnosis traced to Live Photos:
+The user-reported still-flagged video confirmed on phone + Immich with matching filename and (visibly) matching timestamp turned out NOT to be a Live Photo — a standalone minutes-long .MOV. That ruled out the build-117 paired-motion-video fix and left rounded-second divergence between phone and server as the most plausible remaining mechanism:
 
-- PhotoKit treats a Live Photo as ONE `PHAsset` with multiple resources: `.photo` (e.g. `IMG_1234.HEIC`) and `.pairedVideo` (e.g. `IMG_1234.MOV`). Same `creationDate` for both.
-- Immich uploads them as TWO separate server assets, each with its own `originalFileName`: the HEIC for the photo, the MOV for the motion video.
-- Cairn's alive-key build was only emitting the primary filename per asset (the photo half via `asset.value(forKey: "filename")` and `selectPrimaryResource.originalFilename`). The motion video's filename never entered the alive-key set.
-- Result: server's `IMG_1234.MOV` entry has matching `(filename, fileCreatedAt-second)` with the phone's Live Photo, but cairn's lookup misses because the alive-key set has `IMG_1234.HEIC` instead. The MOV server entry slips into `wouldBeCandidates`, becomes a quarantine entry, and the user sees it in Pending Review despite the Live Photo being right there in Photos.app.
+- Phone reads `PHAsset.creationDate` directly, full precision.
+- Server's `fileCreatedAt` round-trips through ISO8601 + JSON encoding to get to cairn; somewhere in that chain (Immich's mobile uploader, the Postgres timestamp column's precision setting, the SDK's date encoder) a fractional-second value could have been rounded.
+- Both sides truncate `Date.timeIntervalSince1970` via `Int(...)`, which truncates toward zero. If one side has `.999` and the other has `.000` after the round, the integer seconds differ by 1.
+- Exact-match `Set.contains` lookup misses, asset slips into `wouldBeCandidates`.
 
-This build emits the paired motion video's resource filename into the alive-key set for any `PHAsset` whose `mediaSubtypes.contains(.photoLive)`. Both `.pairedVideo` and `.fullSizePairedVideo` resource filenames are added — the latter covers Live Photos that were edited at some point (the rendered motion video could have a slightly different filename if the resource set was altered).
+This build widens the engine's lookup to check `[baseSecond - 1, baseSecond, baseSecond + 1]` against the alive-key set. Three set lookups per server-asset candidate instead of one; negligible overhead (set lookups are O(1) and there are O(thousands) of candidates max).
 
-The `mediaSubtypes` guard means the per-asset `PHAssetResource.assetResources` call (~10 ms) only fires for actual Live Photos. A library of ~1k Live Photos pays ~10 s of extra enumeration; libraries with few or no Live Photos see no measurable cost.
+False-positive risk: two distinct phone assets sharing both their filename AND an adjacent capture-second. Realistically near-zero — iPhone Camera doesn't produce same-named files in adjacent seconds, and user-imported files don't typically cluster that tightly. The safety direction (suppress more) favors widening here.
 
-End-user impact on stuck quarantine entries: existing stamps from prior runs persist until dismissed via Pending Review (they pre-date the fix), but new instances of this class won't be created. Combined with builds 115 (case normalization + metadata-store source) and 116 (broadened source types + hidden assets), the alive-on-phone filter now covers all the divergence shapes we've observed.
+3 new engine test cases cover the tolerance: `+1s match` (suppress), `-1s match` (suppress), `+2s no match` (still a candidate; tolerance is bounded). Full 667 test suite passes including the new cases.
+
+Combined with builds 115 (case + metadata-store source), 116 (broadened source types + hidden), and 117 (Live Photo paired motion video), this rounds out the divergence shapes we've observed in real end-user reports.
