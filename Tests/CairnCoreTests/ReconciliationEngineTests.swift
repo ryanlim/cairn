@@ -963,6 +963,44 @@ struct ReconciliationEngineTests {
         #expect(output.aliveOnPhoneCandidateCount == 0)
     }
 
+    @Test("alive-on-phone safety: filename case differences don't break the match (key constructor lowercases)")
+    func aliveOnPhoneCaseInsensitive() {
+        let captureDate = Date(timeIntervalSince1970: 1_700_000_000)
+        // Server has uppercase filename
+        let serverAsset = capturedAsset("s1", "RENDERED", filename: "IMG_1554.MOV", createdAt: captureDate)
+        // Phone alive set built from lowercase (simulating the
+        // divergence between PHAsset.value(forKey:"filename") and
+        // PHAssetResource.originalFilename we've seen in the wild)
+        let aliveKeyLowercase = AlivePhoneAssetKey(
+            filename: "img_1554.mov",
+            secondsSince1970: Int(captureDate.timeIntervalSince1970)
+        )
+        let output = ReconciliationEngine.compute(.init(
+            serverAssets: [serverAsset],
+            currentLocalChecksums: checksums("ORIGINAL"),
+            observedChecksums: checksums("RENDERED", "ORIGINAL"),
+            alivePhoneAssetKeys: [aliveKeyLowercase]
+        ))
+        // Should be suppressed despite the case difference.
+        #expect(output.deleteCandidates.isEmpty)
+        #expect(output.pendingReviewCandidates.isEmpty)
+        #expect(output.aliveOnPhoneCandidateCount == 1)
+    }
+
+    @Test("alive-on-phone safety: AlivePhoneAssetKey is case-insensitive on filename (normalize on init)")
+    func alivePhoneAssetKeyNormalizesCase() {
+        let s = Int(Date().timeIntervalSince1970)
+        let upper = AlivePhoneAssetKey(filename: "IMG_1234.MOV", secondsSince1970: s)
+        let lower = AlivePhoneAssetKey(filename: "img_1234.mov", secondsSince1970: s)
+        let mixed = AlivePhoneAssetKey(filename: "Img_1234.Mov", secondsSince1970: s)
+        #expect(upper == lower)
+        #expect(upper == mixed)
+        #expect(upper.hashValue == lower.hashValue)
+        // The stored representation is the lowercased form, regardless
+        // of which case was passed at construction.
+        #expect(upper.filename == "img_1234.mov")
+    }
+
     @Test("alive-on-phone safety: protected counter only includes assets that would-be-candidates, not arbitrary matches")
     func aliveOnPhoneCounterScope() {
         let captureDate = Date(timeIntervalSince1970: 1_700_000_000)

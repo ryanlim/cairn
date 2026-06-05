@@ -1770,15 +1770,48 @@ final class AppDependencies {
         // — the "edit-revert, bytes diverged" class of false positives.
         // Same set is unioned into the limbo `excluded` parameter so
         // those checksums also don't get pre-stamped via the
-        // missed-deletion recovery path. KVC-fast PHAsset properties
-        // (no PHAssetResource enumeration); ~tens-of-ms even on a 50k
-        // library.
+        // missed-deletion recovery path.
+        //
+        // **Filename source robustness.** Real-world bug class:
+        // `PHAsset.value(forKey: "filename")` (PHAsset internal) and
+        // `PHAssetResource.originalFilename` (resource payload, what
+        // Immich's mobile uploader ships to the server) can disagree
+        // on the same asset. Most often a case difference
+        // ("IMG_1234.MOV" vs "img_1234.MOV"), occasionally content.
+        // Imputation uses PHAssetResource.originalFilename for its
+        // join key; if the alive-key build used only PHAsset KVC, an
+        // asset still alive on the phone could fail this safety
+        // check and end up in quarantine as a deletion candidate
+        // (the failure shape an end-user just reported). Solution:
+        // populate the alive set from BOTH sources. The `Set`
+        // de-dups; the `AlivePhoneAssetKey` constructor lowercases
+        // the filename so case-only differences fall away.
         var alivePhoneAssetKeys = Set<AlivePhoneAssetKey>()
-        alivePhoneAssetKeys.reserveCapacity(visibleFetch.count)
+        var liveLocalIds = Set<String>()
+        alivePhoneAssetKeys.reserveCapacity(visibleFetch.count * 2)
+        liveLocalIds.reserveCapacity(visibleFetch.count)
         visibleFetch.enumerateObjects { asset, _, _ in
+            liveLocalIds.insert(asset.localIdentifier)
             guard let filename = asset.value(forKey: "filename") as? String,
                   !filename.isEmpty,
                   let created = asset.creationDate else { return }
+            alivePhoneAssetKeys.insert(
+                AlivePhoneAssetKey(
+                    filename: filename,
+                    secondsSince1970: Int(created.timeIntervalSince1970)
+                )
+            )
+        }
+        // Metadata-store source — uses the same filename path as the
+        // imputation join AND as what Immich's mobile uploader sends
+        // to the server. Build-112's piggyback keeps this current
+        // for every imputation pass. Filter to live ids so a metadata
+        // row from a since-deleted asset doesn't accidentally
+        // suppress its real on-server hash.
+        let metadataForAliveSet = (try? await self.localAssetMetadataStore.snapshot()) ?? []
+        for entry in metadataForAliveSet where liveLocalIds.contains(entry.localIdentifier) {
+            guard let filename = entry.originalFileName, !filename.isEmpty,
+                  let created = entry.creationDate else { continue }
             alivePhoneAssetKeys.insert(
                 AlivePhoneAssetKey(
                     filename: filename,

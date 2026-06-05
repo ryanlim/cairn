@@ -12,12 +12,23 @@ import Foundation
 /// timestamp to the second. The engine treats any server asset whose
 /// `(originalFileName, fileCreatedAt)` matches an alive phone asset
 /// as "still here, bytes differ" rather than "deleted."
+///
+/// **Filename normalization.** Stored lowercased so case-only
+/// differences between the phone's reported filename and the
+/// server's stored `originalFileName` don't break the lookup. We've
+/// observed real divergence between `PHAsset.value(forKey:
+/// "filename")` and `PHAssetResource.originalFilename` on the same
+/// asset — usually a case shift — and Immich's mobile uploader
+/// historically used either path depending on the iOS version. The
+/// normalize-on-construction approach centralizes the rule so every
+/// callsite (engine lookup, host alive-key set building) gets the
+/// same treatment without coordinating string-cleaning code.
 public struct AlivePhoneAssetKey: Hashable, Sendable {
     public let filename: String
     public let secondsSince1970: Int
 
     public init(filename: String, secondsSince1970: Int) {
-        self.filename = filename
+        self.filename = filename.lowercased()
         self.secondsSince1970 = secondsSince1970
     }
 }
