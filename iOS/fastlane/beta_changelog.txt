@@ -1,13 +1,20 @@
-Cross-launch diagnostic-log capture so we stop losing failure context to the per-process OSLog scope.
+More accurate ETA during initial sync — surfaces iCloud-throttling slowdowns instead of smoothing them away.
 
-End-user diagnostics were repeatedly turning up empty during the most important moment to triage — after the very failure we needed to see. iOS sandboxes third-party apps to `OSLogStore.scope(.currentProcessIdentifier)`, which means every relaunch wipes the prior process's log entries from anything the export can read. The "sync starts, gets killed by background suspension or memory pressure, the next launch's export shows nothing of value" pattern was eating our ability to diagnose the multi-process failure modes that 100k+ libraries seem to land in.
+The prior ETA computed a single cumulative rate (`session elapsed / session work`) and used that to project remaining time. On real iPhone hashing passes the rate is bimodal:
 
-This build adds a persistent on-disk log capture:
+- Locally-cached assets: ~10-30 ms each
+- iCloud-pending assets needing download: 2-15 seconds each (100-1000× slower)
 
-- `PersistentLogStore` — actor managing a rolling 5 MB primary file + 1 rolled file in the app's `Documents/Diagnostics/` directory. Two-file max → ~10 MB worst-case disk usage. Excluded from iCloud backup (it's diagnostic noise, not user data).
-- `DiagnosticLogFlusher` — main-actor coordinator started in `CairnApp.init`. Polls `OSLogStore` every 20 seconds for entries on cairn's subsystems (`app.cairn` and `app.cairn.ios`), formats them, and appends to the persistent store. Also fires explicitly on scene-phase → background so the tail of foreground activity is captured before iOS suspends.
-- `LogExporter.export()` — now reads the persistent file first (rolled then live, chronological) and prepends it to the current-process buffer block. The export file gains two delimited sections: "persistent capture (prior + current launches)" and "current-process buffer (newest, may overlap persistent)".
+When a scan starts on cached assets and then hits iCloud throttling for the remainder, the cumulative rate stays anchored to the early fast samples and ETA grossly underestimates. From the most recent diagnostic export the slow-asset events show exactly this shape — many 5-15s `slow-asset` log lines mid-scan.
 
-Result: a tester whose initial-sync attempts get killed across multiple launches can still send a single export file that captures activity from every one of those launches, not just the most recent. Worst-case data loss on a sudden iOS kill is ~20 seconds (the periodic poll interval); a normal background→terminate flow captures everything because the on-background flush runs first.
+This build adds a recent-window rate (90 seconds of moving samples) computed from a rolling buffer of `(time, cumulative-hashed)` checkpoints. ETA is now `max(cumulativeETA, recentWindowETA)`:
 
-No changes to sync, indexing, or reconciliation behavior. The persistent store is dormant on a fresh install until the first 20-second poll fires.
+- When conditions are stable, the two values are ~equal and behavior is unchanged.
+- When recent rate is slower than cumulative (iCloud throttling engaging, asset composition skewing toward heavier files), the higher pessimistic value wins.
+- When recent rate is faster (rare — the early phase is usually faster), cumulative wins, avoiding mid-scan optimism.
+
+Sample buffer is dual-capped: time-filtered to 2× the window on read, sample-count-capped at 200 on write. Bounded memory regardless of emit rate.
+
+The user-visible value still passes through the existing sample-and-hold + median-of-5 publishing layer, so it doesn't flicker on every progress tick — but the underlying rate it's smoothing now reflects current conditions instead of session-wide average.
+
+No changes to sync, indexing, or reconciliation behavior.
