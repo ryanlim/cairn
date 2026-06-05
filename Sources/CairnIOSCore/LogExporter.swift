@@ -87,6 +87,17 @@ public enum LogExporter {
     ///   typically see the last several hours; on a chatty one
     ///   (active sync, lots of log noise) the window narrows.
     ///   Defaults to 48h for triage.
+    ///
+    /// **Cross-process history.** The OSLog buffer scope cap means
+    /// "current process only" — prior cairn launches are invisible.
+    /// `PersistentLogStore` (fed by `DiagnosticLogFlusher`) keeps a
+    /// rolling on-disk capture that survives relaunches; this
+    /// function prepends the persistent file's contents (rolled
+    /// then live, already chronological) to the current-buffer
+    /// formatted block. Result: an export taken after a crash or
+    /// memory-pressure kill still shows everything cairn logged in
+    /// the last hours, not just whatever happened in the current
+    /// process's launch window.
     @MainActor
     public static func export(hours: Int = 48) async throws -> URL {
         // Header has to run on the main actor (UIDevice access). The
@@ -134,8 +145,20 @@ public enum LogExporter {
             throw Error.storeUnavailable(error)
         }
 
+        // Flush any in-flight OSLog entries into the persistent store
+        // before we read it back, so the export captures the latest
+        // cairn activity even when the next periodic flush would
+        // otherwise be ~tens of seconds away.
+        await DiagnosticLogFlusher.shared.flushNow()
+        let persistedBody = await PersistentLogStore.shared.readAll()
+
         let header = Header()
-        let body = formatExport(header: header, entries: entries, cutoff: cutoff)
+        let body = formatExport(
+            header: header,
+            entries: entries,
+            cutoff: cutoff,
+            persistedPrefix: persistedBody
+        )
 
         let filename = "cairn-diag-\(timestampForFilename(Date())).txt"
         let url = URL.temporaryDirectory.appendingPathComponent(filename)
@@ -151,24 +174,43 @@ public enum LogExporter {
 
     /// Header + body composer factored out for testability and so a
     /// future "preview the export" UI can reuse the same renderer.
+    /// `persistedPrefix` is the contents of `PersistentLogStore`
+    /// (rolled then live, already in chronological order); it's
+    /// emitted before the current-buffer block so chronology is
+    /// preserved across the process boundary.
     static func formatExport(
         header: Header,
         entries: [OSLogEntryLog],
         cutoff: Date,
+        persistedPrefix: String = "",
         now: Date = Date()
     ) -> String {
         var lines: [String] = []
-        lines.reserveCapacity(entries.count + 16)
+        lines.reserveCapacity(entries.count + 24)
         lines.append("=== cairn diagnostic export ===")
         lines.append("Generated: \(iso8601(now))")
         lines.append("Window: \(iso8601(cutoff)) → \(iso8601(now))")
         lines.append("Build: \(header.appVersion) (\(header.buildNumber))")
         lines.append("Device: \(header.deviceModel)")
         lines.append("iOS: \(header.iosVersion)")
-        lines.append("Entry count: \(entries.count)")
+        lines.append("Current-process entry count: \(entries.count)")
+        lines.append("Persistent capture: \(persistedPrefix.isEmpty ? "empty" : "\(persistedPrefix.utf8.count) bytes")")
         lines.append("")
+        if !persistedPrefix.isEmpty {
+            lines.append("--- persistent capture (prior + current launches) ---")
+            // The persisted body already terminates each entry with
+            // a newline, so we don't append our own here — joining
+            // would otherwise produce blank lines between entries.
+            lines.append(persistedPrefix.trimmingCharacters(in: CharacterSet.newlines))
+            lines.append("")
+            lines.append("--- current-process buffer (newest, may overlap persistent) ---")
+        }
         if entries.isEmpty {
-            lines.append("(no log entries in window — possible causes: app was relaunched after the time of interest [in-process log scope only sees logs from this launch], or the device's log buffer rotated out the window)")
+            if persistedPrefix.isEmpty {
+                lines.append("(no log entries in window — possible causes: app was relaunched after the time of interest [in-process log scope only sees logs from this launch], or the device's log buffer rotated out the window)")
+            } else {
+                lines.append("(no new current-process entries since the most recent persistent flush)")
+            }
         } else {
             for entry in entries {
                 let ts = clockTimestamp(entry.date)

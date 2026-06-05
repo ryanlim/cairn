@@ -61,6 +61,16 @@ struct CairnApp: App {
         // every launch.
         CairnFonts.registerBundledFonts()
         registerBackgroundTasks()
+        // Start the persistent OSLog flusher early. Periodic polls
+        // copy cairn's recent log entries into a rolling disk file
+        // (`PersistentLogStore`) so the diagnostic export shows
+        // entries from prior launches — invaluable for triaging
+        // "sync starts, gets killed, the next process's export
+        // doesn't show what happened" bugs that the per-process
+        // OSLog scope hides.
+        Task { @MainActor in
+            DiagnosticLogFlusher.shared.start()
+        }
     }
 
     #if DEBUG
@@ -121,6 +131,13 @@ struct CairnApp: App {
             // so a re-enter to foreground starts from a known state
             // rather than carrying stale-true across a launch cycle.
             IdleTimerController.forceClear()
+            // Flush whatever's accumulated in the OSLog buffer since
+            // the last periodic poll, before iOS suspends and the
+            // tail-of-foreground entries become unreachable to the
+            // current-process scope.
+            Task { @MainActor in
+                await DiagnosticLogFlusher.shared.flushNow()
+            }
             Self.scheduleNextBackgroundRefresh()
             // Always submit a BGProcessingTask too, not just when
             // there's pending initial-scan/hash work. iOS only fires
