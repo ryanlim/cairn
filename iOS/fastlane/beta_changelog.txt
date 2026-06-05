@@ -1,20 +1,18 @@
-More accurate ETA during initial sync — surfaces iCloud-throttling slowdowns instead of smoothing them away.
+Fix: alive-on-phone safety check no longer misses assets when filename source diverges.
 
-The prior ETA computed a single cumulative rate (`session elapsed / session work`) and used that to project remaining time. On real iPhone hashing passes the rate is bimodal:
+End-user report on build 113: a video confirmed still in their Photos library landed in quarantine, with matching filename and capture date — exactly the case the build-102 alive-on-phone filter was designed to suppress. Diagnosis exposed a brittleness: cairn was building the alive-key set from one filename source and matching against another.
 
-- Locally-cached assets: ~10-30 ms each
-- iCloud-pending assets needing download: 2-15 seconds each (100-1000× slower)
+- Imputation enumeration uses `PHAssetResource.selectPrimaryResource(from:)?.originalFilename` (resource payload — what Immich's mobile uploader sends to the server)
+- Build-102's alive-key pass used `PHAsset.value(forKey: "filename") as? String` (PHAsset internal KVC)
 
-When a scan starts on cached assets and then hits iCloud throttling for the remainder, the cumulative rate stays anchored to the early fast samples and ETA grossly underestimates. From the most recent diagnostic export the slow-asset events show exactly this shape — many 5-15s `slow-asset` log lines mid-scan.
+These usually agree but can diverge on the same asset — most often a case shift (`IMG_1234.MOV` vs `img_1234.MOV`), occasionally content. When they diverge, the exact-match Set lookup in the engine misses, the asset is wrongly classified as a candidate, and lands in quarantine.
 
-This build adds a recent-window rate (90 seconds of moving samples) computed from a rolling buffer of `(time, cumulative-hashed)` checkpoints. ETA is now `max(cumulativeETA, recentWindowETA)`:
+Two composing fixes:
 
-- When conditions are stable, the two values are ~equal and behavior is unchanged.
-- When recent rate is slower than cumulative (iCloud throttling engaging, asset composition skewing toward heavier files), the higher pessimistic value wins.
-- When recent rate is faster (rare — the early phase is usually faster), cumulative wins, avoiding mid-scan optimism.
+1. **`AlivePhoneAssetKey` constructor normalizes filename to lowercase.** Case-only differences fall away regardless of which source produced the key. The struct's stored `filename` is now always lowercased. 2 new engine tests cover the normalization (case-insensitive equality + stored-form check).
 
-Sample buffer is dual-capped: time-filtered to 2× the window on read, sample-count-capped at 200 on write. Bounded memory regardless of emit rate.
+2. **Alive-key build in `performLiveReconciliation` populates from BOTH sources.** PHAsset KVC pass (existing, fast) plus a `LocalAssetMetadataStore` pass (uses the same resource-level filename that imputation joins on). The `Set` de-dups. Any asset whose phone-side filename matches the server's stored `originalFileName` via either path is now recognized as alive.
 
-The user-visible value still passes through the existing sample-and-hold + median-of-5 publishing layer, so it doesn't flicker on every progress tick — but the underlying rate it's smoothing now reflects current conditions instead of session-wide average.
+Net effect: the engine's alive-on-phone filter is robust to the filename-source divergence we've observed. The 41 quarantine entries the tester reported will need to be reviewed once on the new sync (existing stamps in ConfirmedDeletedStore persist; the fix prevents new instances), then dismissed via Pending Review.
 
-No changes to sync, indexing, or reconciliation behavior.
+Full 665-test suite passes including the 2 new engine cases.
