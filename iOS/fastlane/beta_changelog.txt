@@ -1,15 +1,12 @@
-Triage tool: Settings → Advanced → "Inspect asset by filename".
+Inspect asset by filename: two-pass strategy so it finishes in seconds instead of minutes.
 
-End-user case after build 118 — 19 items still in quarantine that don't fit any of the divergence axes we've now covered (115/116/117/118). Rather than keep iterating on speculative axes, this build adds a debug action so any future case can be triaged from the actual data instead of from guesses.
+Build 119's `inspect-asset-by-filename` was unusable in practice on real libraries: the action called `PHAssetResource.assetResources(for: asset)` for every PHAsset (~30 ms each), so a 7k library took ~3.5 minutes to complete and a 100k library took close to an hour. Long enough that any export taken before completion shows only the `inspect: starting` line, with no actual triage data captured.
 
-Settings → Advanced → "Inspect asset by filename" opens an alert with a text field. Enter a filename (e.g. `IMG_1234.MOV`) → tap Inspect → cairn dumps a side-by-side view to the persistent log:
+Two-pass strategy now:
 
-- Every phone-side PHAsset matching the filename case-insensitively on either `PHAsset.value(forKey: "filename")` OR any of its PHAssetResource `originalFilename` values. Per-match row: `localId`, KVC filename, per-resource type+filename list, `creationDate` (ISO8601 with fractional seconds + integer seconds), modification seconds, `isHidden`, source type, `mediaSubtypes.photoLive` flag.
-- Every Immich server asset matching the filename. Per-match row: id, `originalFileName`, `fileCreatedAt` (ISO8601 + integer seconds), checksum, `livePhotoVideoId`.
-- Verdict per server match: whether the engine's *current* alive-on-phone filter (with ±1s tolerance) would suppress it.
+- **Pass 1 — KVC filename only.** `PHAsset.value(forKey: "filename")` is a pure property access (~0.1 ms per asset, no resource enumeration). A 7k library finishes the KVC sweep in under a second; a 100k library in ~10 seconds. Catches the common case where the asset's name agrees with the server's `originalFileName`.
+- **Pass 2 — resource-level scan.** Runs only when Pass 1 yields zero matches. This is the rare divergence case where the phone-side asset has a different KVC filename from the resource that was uploaded. Slow (the old behavior) but bounded by the rarity.
 
-The fetch enumerates all source types and hidden assets, so a Hidden/CloudShared/iTunesSynced match isn't accidentally excluded. The server query goes through `search/metadata` with `originalFileName` filter; bounded to 1000 results (per-asset triage, not full enumeration).
+Per-pass progress logging lets the user see the action making progress: KVC pass logs every 20k assets, resource pass logs every 5k assets with a running match count. So an export taken mid-run shows "KVC pass at 80000/108000" instead of silence.
 
-Output lands in the persistent log (build 113), which survives process restarts, so the next diagnostic export shows the side-by-side. To use: install 119 → Settings → Advanced → Inspect asset by filename → enter the filename of a stuck quarantine entry → Settings → Advanced → Export diagnostic logs → share.
-
-No behavior change to sync, indexing, or reconciliation.
+No change to the data captured per match — same side-by-side phone-vs-server dump, same verdict against the engine's current alive-on-phone filter (with ±1 s tolerance). Just dramatically less wall-clock waiting before the data lands in the log.
