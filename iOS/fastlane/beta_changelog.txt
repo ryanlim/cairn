@@ -1,19 +1,12 @@
-Build-121 migration: backfill `allResourceFilenames` for existing metadata rows so the alive-on-phone fix actually takes effect on prior installs.
+Migration confirmation: end-user report on build 122 shows the 19 stuck quarantine entries resolved — engine output transitioned `aliveOnPhone=6, pending=19` → `aliveOnPhone=25, pending=0` exactly when the resfn migration completed.
 
-End-user report after installing 121: zero stuck quarantine items resolved, multiple syncs run, engine output unchanged at `aliveOnPhone=6`. The build-121 fix was correct but only writes the new `allResourceFilenames` field via the imputation piggyback — which only runs on bootstrap syncs (token nil or imputation marker absent). For installs already past their initial imputation, the metadata rows stay with the empty default and the alive-key build can't see the non-primary resource filenames.
+Fixing the "On iPhone" count toggle reported alongside that. Two functions read the phone library through different `PHAsset.fetchAssets` filters:
 
-This build adds a one-shot per-partition migration invoked at bootstrap (`migrateResourceFilenamesIfNeeded`). The flow:
+- `refreshLibrarySizeStats` (called at sync-start, bootstrap, action handlers) used `.typeUserLibrary` only with `includeHiddenAssets = false`. Sets `library.local` to the narrow count.
+- `performLiveReconciliation`'s `visibleFetch` (since build 116) uses `[.typeUserLibrary, .typeCloudShared, .typeiTunesSynced]` with `includeHiddenAssets = true`. Sets `library.local` to the broader count mid-sync.
 
-1. UserDefaults gate: `cairn.migration.resourceFilenames.<partition>`. Migration runs once per Immich account on this device.
-2. Snapshot `LocalAssetMetadataStore`. Filter to rows where `allResourceFilenames` is empty.
-3. `PHAsset.fetchAssets(withLocalIdentifiers:)` to batch-load every affected asset; PhotoKit returns them via one query.
-4. Per-row: `PHAssetResource.assetResources(for: asset)` (~30 ms each) → collect every resource's `originalFilename` → rewrite the metadata row with the full list.
-5. Log progress every 500 rows. Mark migrated on completion.
+UI then oscillated between the two values every sync round-trip: small at sync-start, larger after the engine pass, small at the next sync-start, repeat.
 
-Runs as `Task.detached` so the bootstrap path doesn't block. Cost scales with row count needing backfill — a few minutes on a 10k library, ~half an hour on a 100k library. After completion, the next sync's alive-key build pulls from the now-populated metadata and the edited-asset class of quarantine entries silently suppresses.
+This build unifies both fetches on the broader filter. The "On iPhone" stat now reflects every phone asset cairn considers for the alive-on-phone safety check, which is what the "alive on the device that cairn could potentially manage" semantics call for. The narrow-filter behavior was a leftover from before the build-116 widening — only this stat path hadn't been updated.
 
-If the migration is interrupted (device locked, app backgrounded, crash), the flag isn't set and it retries on the next bootstrap. Idempotent — re-runs only touch rows still missing the field.
-
-Skips rows where the asset has no extra resources (just a primary) or is no longer fetchable from PhotoKit — no point rewriting for the no-op case.
-
-End-user impact: install 122, leave cairn open briefly while the migration runs in the background (the progress logs show ~3-5 minutes on a 7k library), then trigger a sync. The 19 stuck quarantine items should drop on that next sync as the alive-key set picks up the now-populated resource filenames.
+No other visible behavior change. The broader count is the correct one going forward.
