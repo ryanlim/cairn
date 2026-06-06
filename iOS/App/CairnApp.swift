@@ -68,8 +68,8 @@ struct CairnApp: App {
         // "sync starts, gets killed, the next process's export
         // doesn't show what happened" bugs that the per-process
         // OSLog scope hides.
-        Task { @MainActor in
-            DiagnosticLogFlusher.shared.start()
+        Task {
+            await DiagnosticLogFlusher.shared.start()
         }
     }
 

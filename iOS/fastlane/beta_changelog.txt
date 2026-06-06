@@ -1,16 +1,20 @@
-Diagnostic log capture: promote all cairn-subsystem `.info` calls to `.notice` so they land in the persistent log.
+Two unrelated cleanups landing together.
 
-End-user screenshot showed a foreground sync hitting 1 hour elapsed with 100% local hash + 112,886 server assets fetched (real activity, progressing normally) but the persistent log captured none of the corresponding `[cairn.impute]` / `[cairn.recon]` / `[cairn.engine]` / `[cairn.hash]` events. Only `[cairn.boot]` and `[cairn.observer]` showed up.
+**1. Reconciler enumeration filter unified across all sites.**
 
-Root cause: Apple's `OSLog` treats `.info` level entries as ephemeral and does not reliably persist them for `OSLogStore` queries from third-party apps. `.notice`/`.default` and above are persistable; `.info` and `.debug` are not (or only briefly). The persistent log layer added in build 113 polls `OSLogStore`, so any `.info` events get evicted before the next poll catches them — and cairn was using `.info` for almost every high-value diagnostic line in the sync, reconciler, and hash paths.
+End-user post-clear-cache sync log showed `imputation.totalPhone=7502` but `full-enum.total=6946` — a 556-asset gap. Root cause: three PHAsset.fetchAssets sites in `PhotoKitPersistentChangeReconciler.swift` were still using narrower filters (`.typeUserLibrary` only, hidden excluded) than what `runImputationPass` and `performLiveReconciliation`'s `visibleFetch` adopted at builds 116/121:
 
-Inventory before this change:
-- `iOS/App/AppDependencies.swift`: 24 `.info` calls (sync, impute, engine, orphan, server-fetch, metadata, settings)
-- `Sources/CairnIOSCore/PhotoKitPersistentChangeReconciler.swift`: 30 `.info` calls (recon timings, hash starts/ends, orphan sweep)
-- Plus a handful in `ServerAssetSyncCoordinator` and `CairnApp.swift`
+- `runIncremental`'s id-existence check (line 1190): `[.typeUserLibrary, .typeCloudShared]` — missing iTunesSynced
+- `hashAllCurrentAssets`'s full-enum fetch (line 1614): `[.typeUserLibrary]` only, hidden excluded
+- `discoverUntrackedAssets` (line 2567): `[.typeUserLibrary]` only, hidden excluded
+- `reconcileCacheAgainstLibrary` orphan sweep (line 2604): `[.typeUserLibrary, .typeCloudShared]` — missing iTunesSynced
 
-All bulk-promoted to `.notice` via targeted sed (limited to the named cairn logger objects: `syncLog`, `hashLog`, `reconLog`, `bgLog`, `coordLog`). Behavior unchanged — these are diagnostic messages, not control-flow signals. The persistent log will now capture them on the same cadence as the `.notice` events already getting through.
+All four broadened to `[.typeUserLibrary, .typeCloudShared, .typeiTunesSynced]` + `includeHiddenAssets = true`, matching the imputation + alive-on-phone enumeration. Net effect: hidden + iTunes-synced assets now flow through every reconciliation path consistently — no more "imputed but never hashed" gap, no more spurious "untracked" reports for those source types.
 
-Side effect: a bit more volume in Console.app when streaming the device, but only within cairn's own subsystem.
+**2. Diagnostic log flusher moved off MainActor — fixes the recurring UI stutter during heavy sync.**
 
-Next tester export should show the full sync timeline including imputation outcomes, recon phase timings, hash progress, and engine input/output — finally giving us cross-launch visibility into what their initial sync is actually doing.
+`DiagnosticLogFlusher` was a `@MainActor` class. Its 20-second periodic poll calls `OSLogStore.getEntries(at:matching:)` (which during heavy sync-time logging can take dozens of ms reading the system log buffer), then loops over the collected entries to filter and format them as strings. All of that was running on the main thread. The result was a visible UI stutter every ~20s while a sync was active.
+
+Refactored to a Swift `actor` so the poll work runs on its own executor. No behavior change to capture coverage — same predicate, same cadence, same persistent-store actor downstream. Just keeps main free for the UI to scroll, animate, and respond to taps without the periodic interruption.
+
+Three call sites updated to await the now-actor-isolated methods (`CairnApp.init`, the scene-phase-background flush, and `LogExporter.export`). All existing call sites were already on async paths, so the change is local.

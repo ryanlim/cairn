@@ -181,8 +181,16 @@ public actor PersistentLogStore {
 /// flush via `flushNow()` is wired to scene-phase background
 /// transitions so we capture the tail of recent activity before
 /// iOS suspends the process.
-@MainActor
-public final class DiagnosticLogFlusher {
+///
+/// **Isolation.** Implemented as a Swift `actor` so its work runs
+/// on its own executor — emphatically NOT MainActor. An earlier
+/// `@MainActor` annotation here meant the periodic poll's
+/// `OSLogStore.getEntries` call (which can take dozens of ms during
+/// heavy sync-time logging) and the loop+format pass over collected
+/// entries all ran on the main thread, producing visible UI stutter
+/// every 20s. Moving to an actor unblocks main and keeps cairn's
+/// scrolling smooth during long syncs.
+public actor DiagnosticLogFlusher {
 
     public static let shared = DiagnosticLogFlusher()
 
@@ -213,7 +221,8 @@ public final class DiagnosticLogFlusher {
         guard periodicTask == nil else { return }
         periodicTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: UInt64((self?.pollInterval ?? 20) * 1_000_000_000))
+                let interval: TimeInterval = (await self?.pollInterval) ?? 20
+                try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
                 guard let self else { return }
                 await self.flushNow()
             }
@@ -229,7 +238,7 @@ public final class DiagnosticLogFlusher {
     /// Synchronous flush trigger. Queries OSLog for entries since
     /// the last watermark, appends to the persistent store, advances
     /// the watermark. Safe to call from any context that can `await`
-    /// the actor hop into `PersistentLogStore`.
+    /// the actor hop into the flusher.
     public func flushNow() async {
         let cutoff = lastFlushed
         let now = Date()

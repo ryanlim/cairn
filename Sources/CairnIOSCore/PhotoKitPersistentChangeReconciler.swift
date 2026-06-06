@@ -1186,8 +1186,13 @@ public final class PhotoKitPersistentChangeReconciler {
             let opts = PHFetchOptions()
             // Live Photo motion videos live in `.hidden`; include so
             // we don't false-positive them as missing.
+            // Also include `.typeiTunesSynced` to align with the
+            // broader filter used by `performLiveReconciliation`'s
+            // visibleFetch and `runImputationPass`'s enumeration —
+            // diverging here previously produced phantom orphan
+            // candidates for iTunes-synced assets.
             opts.includeHiddenAssets = true
-            opts.includeAssetSourceTypes = [.typeUserLibrary, .typeCloudShared]
+            opts.includeAssetSourceTypes = [.typeUserLibrary, .typeCloudShared, .typeiTunesSynced]
             let fetch = await Task.detached(priority: .userInitiated) {
                 PHAsset.fetchAssets(withLocalIdentifiers: Array(toCheck), options: opts)
             }.value
@@ -1610,8 +1615,15 @@ public final class PhotoKitPersistentChangeReconciler {
         }
 
         let options = PHFetchOptions()
-        options.includeHiddenAssets = false
-        options.includeAssetSourceTypes = [.typeUserLibrary]
+        // Aligned with `runImputationPass` + `performLiveReconciliation`'s
+        // visibleFetch: hidden + every source type cairn considers
+        // "alive on phone." Diverging here meant 556 assets on the
+        // user's library (hidden + iTunesSynced) had imputed
+        // metadata but never went through local hashing — the
+        // full-enum's `to-hash` count read 6946 while imputation's
+        // `totalPhone` was 7502.
+        options.includeHiddenAssets = true
+        options.includeAssetSourceTypes = [.typeUserLibrary, .typeCloudShared, .typeiTunesSynced]
         // Sort descending by creationDate so the testing cap
         // picks the **most recent N** assets, not the oldest. In
         // a real testing loop the user is adding new photos /
@@ -2561,10 +2573,16 @@ public final class PhotoKitPersistentChangeReconciler {
     /// duplicate cost) plus two store snapshots (`allLocalIdentifiers`,
     /// `deferredStore.snapshot()`), all set-membership-only.
     private func discoverUntrackedAssets(cachedLocalIds: Set<String>? = nil) async throws -> Set<String> {
+        // Filter aligned with the rest of cairn's "alive on phone"
+        // enumerations (broadened to match imputation +
+        // performLiveReconciliation's visibleFetch). Narrower here
+        // produced false-positive "untracked" reports for hidden /
+        // iTunesSynced assets that the broader-filter paths had
+        // already accounted for.
         let liveIds = await Task.detached(priority: .userInitiated) {
             Self.enumerateLiveLocalIdentifiers(
-                includeHiddenAssets: false,
-                sourceTypes: [.typeUserLibrary]
+                includeHiddenAssets: true,
+                sourceTypes: [.typeUserLibrary, .typeCloudShared, .typeiTunesSynced]
             )
         }.value
 
@@ -2601,7 +2619,7 @@ public final class PhotoKitPersistentChangeReconciler {
         let liveIds = await Task.detached(priority: .userInitiated) {
             Self.enumerateLiveLocalIdentifiers(
                 includeHiddenAssets: true,
-                sourceTypes: [.typeUserLibrary, .typeCloudShared]
+                sourceTypes: [.typeUserLibrary, .typeCloudShared, .typeiTunesSynced]
             )
         }.value
 
