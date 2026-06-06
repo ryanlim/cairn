@@ -1,30 +1,19 @@
-Alive-on-phone safety: capture every PHAssetResource filename, not just the primary.
+Build-121 migration: backfill `allResourceFilenames` for existing metadata rows so the alive-on-phone fix actually takes effect on prior installs.
 
-The remaining stuck-quarantine cases turned out to be edited assets. End-user inspect-tool run on build 120 produced unambiguous data for IMG_2999.MOV:
+End-user report after installing 121: zero stuck quarantine items resolved, multiple syncs run, engine output unchanged at `aliveOnPhone=6`. The build-121 fix was correct but only writes the new `allResourceFilenames` field via the imputation piggyback — which only runs on bootstrap syncs (token nil or imputation marker absent). For installs already past their initial imputation, the metadata rows stay with the empty default and the alive-key build can't see the non-primary resource filenames.
 
-```
-phone[0] kvc='80EE02BF-7741-41A8-9FDF-DE85F0784744.MOV'
-         resources=[
-           video='IMG_2999.MOV',
-           adjustmentData='Adjustments.plist',
-           fullSizePhoto='FullSizeRender.jpeg',
-           fullSizeVideo='FullSizeRender.mov'
-         ]
-server[0] name='IMG_2999.MOV'
-```
+This build adds a one-shot per-partition migration invoked at bootstrap (`migrateResourceFilenamesIfNeeded`). The flow:
 
-PhotoKit replaces the PHAsset's KVC `filename` with a UUID-style placeholder once an asset is edited, AND the primary resource picker (`PhotoKitPhotoEnumerator.selectPrimaryResource`) returns the rendered edit (`FullSizeRender.mov`). Immich's server entry retains the pre-edit upload filename (`IMG_2999.MOV`) because the asset was uploaded *before* the edit, and that filename now exists only on the `.video` resource — which neither the KVC pass nor the metadata-store (primary-resource-sourced) pass was looking at.
+1. UserDefaults gate: `cairn.migration.resourceFilenames.<partition>`. Migration runs once per Immich account on this device.
+2. Snapshot `LocalAssetMetadataStore`. Filter to rows where `allResourceFilenames` is empty.
+3. `PHAsset.fetchAssets(withLocalIdentifiers:)` to batch-load every affected asset; PhotoKit returns them via one query.
+4. Per-row: `PHAssetResource.assetResources(for: asset)` (~30 ms each) → collect every resource's `originalFilename` → rewrite the metadata row with the full list.
+5. Log progress every 500 rows. Mark migrated on completion.
 
-This affects every edited video in the user's library, which is most of the remaining quarantine entries.
+Runs as `Task.detached` so the bootstrap path doesn't block. Cost scales with row count needing backfill — a few minutes on a 10k library, ~half an hour on a 100k library. After completion, the next sync's alive-key build pulls from the now-populated metadata and the edited-asset class of quarantine entries silently suppresses.
 
-Fix:
+If the migration is interrupted (device locked, app backgrounded, crash), the flag isn't set and it retries on the next bootstrap. Idempotent — re-runs only touch rows still missing the field.
 
-- `StoredLocalAssetMetadata` gains `allResourceFilenamesCSV: String = ""` — SwiftData lightweight migration (defaulted field, no manual step). Tab-separated to avoid collisions with system-rendered filenames that legitimately contain commas.
-- `LocalAssetMetadata` value type gains `allResourceFilenames: [String]` with a custom Codable decoder that defaults to `[]` for older JSON payloads.
-- Imputation enumeration in `runImputationPass` already calls `PHAssetResource.assetResources(for: asset)` to grab the primary's filename + size; now also collects every resource's `originalFilename` into a list and passes it through the `phoneEntries` tuple. Piggyback metadata write stores the full list. Zero additional PHAssetResource calls — free relative to the existing per-asset enumeration cost.
-- `backfillMetadataIfNeeded` (the fallback path for cache-resident-but-metadata-missing ids) does the same.
-- Alive-key build in `performLiveReconciliation` now emits an `AlivePhoneAssetKey` for every entry in `allResourceFilenames` in addition to the primary. The engine's existing case-insensitive + ±1s tolerance lookup catches the match.
+Skips rows where the asset has no extra resources (just a primary) or is no longer fetchable from PhotoKit — no point rewriting for the no-op case.
 
-No behavior change for unedited assets — their primary resource filename already covers the alive-on-phone case. Edited assets that previously couldn't be suppressed now suppress correctly on the next imputation run (the metadata store gets populated with the resource list during the imputation piggyback; existing rows still default to empty until they're re-observed during a future imputation).
-
-Existing quarantine stamps in `ConfirmedDeletedStore` from prior runs persist until manually dismissed (they pre-date this fix). New runs after a sync that re-populates metadata won't re-create those stamps.
+End-user impact: install 122, leave cairn open briefly while the migration runs in the background (the progress logs show ~3-5 minutes on a 7k library), then trigger a sync. The 19 stuck quarantine items should drop on that next sync as the alive-key set picks up the now-populated resource filenames.
