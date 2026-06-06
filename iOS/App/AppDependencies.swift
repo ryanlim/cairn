@@ -785,6 +785,15 @@ final class AppDependencies {
             Self.markKeepScreenAwakeMigrated()
         }
 
+        // Build-121 metadata backfill: previous-build metadata rows
+        // don't have `allResourceFilenames` populated. Without that
+        // field the build-121 alive-on-phone fix for edited assets
+        // can't see the non-primary resource filenames it needs to
+        // suppress them. Fires once per partition; cost scales with
+        // metadata row count. Runs detached so bootstrap doesn't
+        // block.
+        await migrateResourceFilenamesIfNeeded()
+
         await refreshLibrarySizeStats()
 
         // Restore last-known status counts so Status doesn't render
@@ -1293,6 +1302,106 @@ final class AppDependencies {
             syncLog.notice("[cairn.metadata] backfilled \(entries.count, privacy: .public) entries (cache=\(cacheIds.count, privacy: .public) had-metadata=\(knownIds.count, privacy: .public) still-missing=\(missingFromMetadata.count - entries.count, privacy: .public) — those PHAssets are no longer fetchable)")
         } catch {
             syncLog.error("[cairn.metadata] backfill failed: \(Self.describeSyncError(error), privacy: .public)")
+        }
+    }
+
+    /// Build-121 metadata backfill: for installs already past their
+    /// initial imputation pass when 121 lands, existing
+    /// `LocalAssetMetadata` rows have an empty
+    /// `allResourceFilenames` (the field didn't exist when those rows
+    /// were written). The alive-on-phone safety check then misses
+    /// edited-asset shapes — the entire reason 121 was shipped —
+    /// because the resource filenames that the server has but the
+    /// primary picker doesn't return never make it into the alive-
+    /// key set.
+    ///
+    /// This migration runs once per partition (UserDefaults-gated):
+    ///
+    /// 1. Snapshot the metadata store.
+    /// 2. Identify rows where `allResourceFilenames` is empty.
+    /// 3. For each, fetch the PHAsset, call `PHAssetResource.assetResources`,
+    ///    rewrite the row with the full filename list.
+    /// 4. Mark migrated.
+    ///
+    /// Cost is `~30 ms × N` where N is the row count needing backfill
+    /// — a few minutes on a 10k library, ~half an hour on a 100k
+    /// library. Runs as a `Task.detached` so it doesn't block the
+    /// foreground sync; logs progress every 500 rows. The completed
+    /// metadata feeds the next sync's alive-key build, suppressing
+    /// edited-asset quarantine entries on that pass.
+    @MainActor
+    private func migrateResourceFilenamesIfNeeded() async {
+        guard let partition = self.currentPartitionKey else { return }
+        if Self.hasMigratedResourceFilenames(for: partition) { return }
+        let metadataStore = self.localAssetMetadataStore
+        Task.detached(priority: .utility) {
+            let snapshot = (try? await metadataStore.snapshot()) ?? []
+            let needsBackfill = snapshot.filter { $0.allResourceFilenames.isEmpty }
+            guard !needsBackfill.isEmpty else {
+                syncLog.notice("[cairn.migration.resfn] no rows need backfill — marking migrated for partition")
+                await MainActor.run {
+                    Self.markResourceFilenamesMigrated(for: partition)
+                }
+                return
+            }
+            syncLog.notice("[cairn.migration.resfn] starting backfill for \(needsBackfill.count, privacy: .public) metadata rows (~\(Int(Double(needsBackfill.count) * 0.03), privacy: .public)s expected)")
+            let allIds = Array(needsBackfill.map(\.localIdentifier))
+            // PHAsset.fetchAssets(withLocalIdentifiers:) returns a
+            // PHFetchResult keyed on the supplied identifiers; build
+            // a lookup so the per-row update doesn't re-fetch.
+            let opts = PHFetchOptions()
+            opts.includeHiddenAssets = true
+            opts.includeAssetSourceTypes = [.typeUserLibrary, .typeCloudShared, .typeiTunesSynced]
+            let fetch = PHAsset.fetchAssets(withLocalIdentifiers: allIds, options: opts)
+            var liveById: [String: PHAsset] = [:]
+            liveById.reserveCapacity(fetch.count)
+            fetch.enumerateObjects { asset, _, _ in
+                liveById[asset.localIdentifier] = asset
+            }
+            var updates: [LocalAssetMetadata] = []
+            updates.reserveCapacity(needsBackfill.count)
+            var processed = 0
+            for entry in needsBackfill {
+                guard let asset = liveById[entry.localIdentifier] else {
+                    // Asset no longer fetchable (deleted between
+                    // metadata write and this migration). Skip; the
+                    // dangling row will be cleaned up by
+                    // OrphanReconciler / cache eviction later.
+                    processed += 1
+                    continue
+                }
+                let resources = PHAssetResource.assetResources(for: asset)
+                let allNames = resources.map(\.originalFilename).filter { !$0.isEmpty }
+                // Skip writing if the asset has no extra resources
+                // beyond what's in `originalFileName` — saves a
+                // round-trip through the store for the no-op case.
+                guard !allNames.isEmpty else {
+                    processed += 1
+                    continue
+                }
+                updates.append(LocalAssetMetadata(
+                    localIdentifier: entry.localIdentifier,
+                    originalFileName: entry.originalFileName,
+                    creationDate: entry.creationDate,
+                    modificationDate: entry.modificationDate,
+                    fileSize: entry.fileSize,
+                    observedAt: entry.observedAt,
+                    allResourceFilenames: allNames
+                ))
+                processed += 1
+                if processed % 500 == 0 {
+                    syncLog.notice("[cairn.migration.resfn] progress: \(processed, privacy: .public)/\(needsBackfill.count, privacy: .public)")
+                }
+            }
+            do {
+                try await metadataStore.record(updates)
+                syncLog.notice("[cairn.migration.resfn] complete: backfilled \(updates.count, privacy: .public) rows (skipped \(needsBackfill.count - updates.count, privacy: .public) with no extra resources or no live asset)")
+                await MainActor.run {
+                    Self.markResourceFilenamesMigrated(for: partition)
+                }
+            } catch {
+                syncLog.error("[cairn.migration.resfn] write failed — will retry on next launch: \(Self.describeSyncError(error), privacy: .public)")
+            }
         }
     }
 
@@ -3401,6 +3510,32 @@ final class AppDependencies {
 
     nonisolated fileprivate static func markKeepScreenAwakeMigrated() {
         UserDefaults.standard.set(true, forKey: keepScreenAwakeUpgradeMigrationKey)
+    }
+
+    /// One-shot per-partition flag tracking the build-121 metadata
+    /// backfill of `allResourceFilenames`. Without this migration,
+    /// users who completed their initial imputation pass on builds
+    /// 112-120 have metadata rows whose `allResourceFilenamesCSV` is
+    /// the empty default (the field didn't exist yet). The
+    /// alive-on-phone safety check then can't see the non-primary
+    /// resource filenames it needs to suppress edited assets (the
+    /// last divergence shape covered in 121). Triggering imputation
+    /// re-run would also fix this but is heavy; this migration
+    /// targets only the missing field, populating it via per-asset
+    /// PHAssetResource enumeration on first sync after upgrade.
+    nonisolated private static let resourceFilenamesMigrationKeyPrefix =
+        "cairn.migration.resourceFilenames."
+
+    nonisolated fileprivate static func resourceFilenamesMigrationKey(for partition: ServerPartitionKey) -> String {
+        return "\(resourceFilenamesMigrationKeyPrefix)\(partition.directoryName)"
+    }
+
+    nonisolated fileprivate static func hasMigratedResourceFilenames(for partition: ServerPartitionKey) -> Bool {
+        UserDefaults.standard.bool(forKey: resourceFilenamesMigrationKey(for: partition))
+    }
+
+    nonisolated fileprivate static func markResourceFilenamesMigrated(for partition: ServerPartitionKey) {
+        UserDefaults.standard.set(true, forKey: resourceFilenamesMigrationKey(for: partition))
     }
 
     /// Persisted per-asset hash duration (milliseconds) from the most
