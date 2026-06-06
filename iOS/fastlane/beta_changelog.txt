@@ -1,12 +1,16 @@
-Migration confirmation: end-user report on build 122 shows the 19 stuck quarantine entries resolved — engine output transitioned `aliveOnPhone=6, pending=19` → `aliveOnPhone=25, pending=0` exactly when the resfn migration completed.
+Diagnostic log capture: promote all cairn-subsystem `.info` calls to `.notice` so they land in the persistent log.
 
-Fixing the "On iPhone" count toggle reported alongside that. Two functions read the phone library through different `PHAsset.fetchAssets` filters:
+End-user screenshot showed a foreground sync hitting 1 hour elapsed with 100% local hash + 112,886 server assets fetched (real activity, progressing normally) but the persistent log captured none of the corresponding `[cairn.impute]` / `[cairn.recon]` / `[cairn.engine]` / `[cairn.hash]` events. Only `[cairn.boot]` and `[cairn.observer]` showed up.
 
-- `refreshLibrarySizeStats` (called at sync-start, bootstrap, action handlers) used `.typeUserLibrary` only with `includeHiddenAssets = false`. Sets `library.local` to the narrow count.
-- `performLiveReconciliation`'s `visibleFetch` (since build 116) uses `[.typeUserLibrary, .typeCloudShared, .typeiTunesSynced]` with `includeHiddenAssets = true`. Sets `library.local` to the broader count mid-sync.
+Root cause: Apple's `OSLog` treats `.info` level entries as ephemeral and does not reliably persist them for `OSLogStore` queries from third-party apps. `.notice`/`.default` and above are persistable; `.info` and `.debug` are not (or only briefly). The persistent log layer added in build 113 polls `OSLogStore`, so any `.info` events get evicted before the next poll catches them — and cairn was using `.info` for almost every high-value diagnostic line in the sync, reconciler, and hash paths.
 
-UI then oscillated between the two values every sync round-trip: small at sync-start, larger after the engine pass, small at the next sync-start, repeat.
+Inventory before this change:
+- `iOS/App/AppDependencies.swift`: 24 `.info` calls (sync, impute, engine, orphan, server-fetch, metadata, settings)
+- `Sources/CairnIOSCore/PhotoKitPersistentChangeReconciler.swift`: 30 `.info` calls (recon timings, hash starts/ends, orphan sweep)
+- Plus a handful in `ServerAssetSyncCoordinator` and `CairnApp.swift`
 
-This build unifies both fetches on the broader filter. The "On iPhone" stat now reflects every phone asset cairn considers for the alive-on-phone safety check, which is what the "alive on the device that cairn could potentially manage" semantics call for. The narrow-filter behavior was a leftover from before the build-116 widening — only this stat path hadn't been updated.
+All bulk-promoted to `.notice` via targeted sed (limited to the named cairn logger objects: `syncLog`, `hashLog`, `reconLog`, `bgLog`, `coordLog`). Behavior unchanged — these are diagnostic messages, not control-flow signals. The persistent log will now capture them on the same cadence as the `.notice` events already getting through.
 
-No other visible behavior change. The broader count is the correct one going forward.
+Side effect: a bit more volume in Console.app when streaming the device, but only within cairn's own subsystem.
+
+Next tester export should show the full sync timeline including imputation outcomes, recon phase timings, hash progress, and engine input/output — finally giving us cross-launch visibility into what their initial sync is actually doing.

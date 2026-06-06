@@ -615,7 +615,7 @@ final class AppDependencies {
             if let seedURL = (env["CAIRN_DEV_SEED_URL"] ?? ud.string(forKey: "CAIRN_DEV_SEED_URL")).flatMap(URL.init(string:)),
                let seedKey = env["CAIRN_DEV_SEED_KEY"] ?? ud.string(forKey: "CAIRN_DEV_SEED_KEY"),
                !seedKey.isEmpty {
-                syncLog.info("[cairn.boot] using seed credentials (Keychain unavailable or empty)")
+                syncLog.notice("[cairn.boot] using seed credentials (Keychain unavailable or empty)")
                 url = seedURL
                 apiKey = seedKey
                 try? secretStore.setServerURL(seedURL)
@@ -720,11 +720,11 @@ final class AppDependencies {
             do {
                 let pong = try await client.ping()
                 let latencyMs = Int(Date().timeIntervalSince(start) * 1000)
-                syncLog.info("[cairn.boot] server healthy: ping=\(pong), \(latencyMs)ms")
+                syncLog.notice("[cairn.boot] server healthy: ping=\(pong), \(latencyMs)ms")
                 model.connectionStatus = .healthy(latencyMs: latencyMs)
                 model.degraded = .none
             } catch {
-                syncLog.info("[cairn.boot] ping failed: \(error)")
+                syncLog.notice("[cairn.boot] ping failed: \(error)")
                 if let degraded = Self.degradedState(for: error) {
                     model.degraded = degraded
                     model.connectionStatus = degraded == .authStale ? .authStale : .offline
@@ -737,7 +737,7 @@ final class AppDependencies {
                 let missing = ImmichClient.missingPermissions(granted: keyInfo.permissions)
                 model.missingPermissions = missing
                 if !missing.isEmpty {
-                    syncLog.info("[cairn.boot] missing permissions: \(missing.joined(separator: ", "))")
+                    syncLog.notice("[cairn.boot] missing permissions: \(missing.joined(separator: ", "))")
                 }
             }
             // Opportunistic identity refresh for legacy installs. If
@@ -829,9 +829,9 @@ final class AppDependencies {
         }
 
         if let cap = Self.resolveTestingAssetCap() {
-            syncLog.info("[cairn.boot] testing asset cap in effect: \(cap)")
+            syncLog.notice("[cairn.boot] testing asset cap in effect: \(cap)")
         } else {
-            syncLog.info("[cairn.boot] no asset cap — full library will be hashed")
+            syncLog.notice("[cairn.boot] no asset cap — full library will be hashed")
         }
 
         // Buffer enough history for the user to scroll back through
@@ -871,7 +871,7 @@ final class AppDependencies {
             queue: .main
         ) { [weak self] _ in
             guard let self else { return }
-            syncLog.info("[cairn.boot] system locale changed; refreshing journal tail")
+            syncLog.notice("[cairn.boot] system locale changed; refreshing journal tail")
             Task { @MainActor in
                 await self.refreshJournalTail()
             }
@@ -911,7 +911,7 @@ final class AppDependencies {
         }
         PHPhotoLibrary.shared().register(bridge)
         photoLibraryBridge = bridge
-        syncLog.info("[cairn.boot] photo library observer registered")
+        syncLog.notice("[cairn.boot] photo library observer registered")
     }
 
     /// Pull `insertedObjects` out of the tracked fetch and snapshot
@@ -997,7 +997,7 @@ final class AppDependencies {
             guard let self, !Task.isCancelled, !self.model.isSyncing else { return }
             if let last = self.lastSyncEndedAt,
                Date().timeIntervalSince(last) < Self.postSyncObserverCooldown {
-                syncLog.info("[cairn.observer] suppressing post-sync trigger; cooldown not expired")
+                syncLog.notice("[cairn.observer] suppressing post-sync trigger; cooldown not expired")
                 return
             }
             try? await self.model.actions.requestSync(nil)
@@ -1625,7 +1625,7 @@ final class AppDependencies {
                 )
             }
             try? await self.localAssetMetadataStore.record(metadataEntries)
-            syncLog.info("[cairn.impute] piggyback metadata recorded for \(metadataEntries.count) phone assets (skips redundant PHAssetResource enumeration during full-enum)")
+            syncLog.notice("[cairn.impute] piggyback metadata recorded for \(metadataEntries.count) phone assets (skips redundant PHAssetResource enumeration during full-enum)")
         }
 
         // 3. Skip localIds already in LocalHashStore. Imputation only
@@ -1840,7 +1840,7 @@ final class AppDependencies {
             if useIncremental, let coordinator, let cache {
                 do {
                     let summary = try await coordinator.syncToCache()
-                    syncLog.info("[cairn.sync.stream] mode=\(summary.mode.rawValue, privacy: .public) upserted=\(summary.upserted, privacy: .public) deleted=\(summary.deleted, privacy: .public) ignored=\(summary.ignored, privacy: .public) durationMs=\(summary.durationMs, privacy: .public)")
+                    syncLog.notice("[cairn.sync.stream] mode=\(summary.mode.rawValue, privacy: .public) upserted=\(summary.upserted, privacy: .public) deleted=\(summary.deleted, privacy: .public) ignored=\(summary.ignored, privacy: .public) durationMs=\(summary.durationMs, privacy: .public)")
                     assets = try await cache.snapshot()
                     outcome = .incremental(summary)
                 } catch let err as ImmichClientError {
@@ -1964,7 +1964,7 @@ final class AppDependencies {
             let serverPrefetch = try await serverAssetsTask.value
             let outcome = try await runImputationPass(serverAssets: serverPrefetch.assets)
             let imputeMs = Int(Date().timeIntervalSince(imputeStart) * 1000)
-            syncLog.info("[cairn.impute] seeded=\(outcome.imputed) hits=\(outcome.hits) ambiguous=\(outcome.ambiguous) alreadyCached=\(outcome.alreadyCached) totalPhone=\(outcome.totalPhone) fellBack=\(outcome.fellBack) missingFilename=\(outcome.missingFilename) missingCreationDate=\(outcome.missingCreationDate) noServerMatch=\(outcome.noServerMatch) ambiguousPhoneSide=\(outcome.ambiguousPhoneSide) durationMs=\(imputeMs)")
+            syncLog.notice("[cairn.impute] seeded=\(outcome.imputed) hits=\(outcome.hits) ambiguous=\(outcome.ambiguous) alreadyCached=\(outcome.alreadyCached) totalPhone=\(outcome.totalPhone) fellBack=\(outcome.fellBack) missingFilename=\(outcome.missingFilename) missingCreationDate=\(outcome.missingCreationDate) noServerMatch=\(outcome.noServerMatch) ambiguousPhoneSide=\(outcome.ambiguousPhoneSide) durationMs=\(imputeMs)")
             model.syncTimeline.append(.init(
                 phase: .imputingFromServer,
                 startedAt: imputeStart,
@@ -2038,7 +2038,7 @@ final class AppDependencies {
         // user-visible CTA.
         let t0 = Date()
         let scan = try await reconciler.runDeletionScan(skipDrain: true)
-        syncLog.info("[cairn.sync] scan took \(Int(Date().timeIntervalSince(t0) * 1000))ms (events=\(scan.changeEventsProcessed))")
+        syncLog.notice("[cairn.sync] scan took \(Int(Date().timeIntervalSince(t0) * 1000))ms (events=\(scan.changeEventsProcessed))")
         let burst = scan.newlyConfirmedDeleted.count
         // Surface the propagation-cutoff outcome to the activity feed
         // when any deletions were filtered out. Without this the
@@ -2217,7 +2217,7 @@ final class AppDependencies {
             }
         }
 
-        syncLog.info("[cairn.sync] local checksums fetched in \(Int(Date().timeIntervalSince(t1) * 1000))ms (\(indexedCount) entries)")
+        syncLog.notice("[cairn.sync] local checksums fetched in \(Int(Date().timeIntervalSince(t1) * 1000))ms (\(indexedCount) entries)")
 
         // Bulk metadata backfill: cairn's observer-time metadata path
         // only covers events fired while cairn is alive (foreground or
@@ -2302,11 +2302,11 @@ final class AppDependencies {
             try? await confirmed.remove(editRetirementHeld)
         }
 
-        syncLog.info("[cairn.sync] store snapshots took \(Int(Date().timeIntervalSince(t2) * 1000))ms (edit-retirement-held=\(editRetirementHeld.count))")
+        syncLog.notice("[cairn.sync] store snapshots took \(Int(Date().timeIntervalSince(t2) * 1000))ms (edit-retirement-held=\(editRetirementHeld.count))")
         let t3 = Date()
         let (serverAssets, discoveryOutcome) = try await serverAssetsTask.value
         let serverFetchMs = max(0, Int(Date().timeIntervalSince(serverFetchStart) * 1000))
-        syncLog.info("[cairn.sync] server fetch took \(Int(Date().timeIntervalSince(t3) * 1000))ms (\(serverAssets.count) assets)")
+        syncLog.notice("[cairn.sync] server fetch took \(Int(Date().timeIntervalSince(t3) * 1000))ms (\(serverAssets.count) assets)")
         // `.fetchingServer` ran in parallel with the prep+scan, so the
         // high-level `model.syncPhase` never stepped through it. Append a
         // synthetic timeline entry now that its duration is known so the
@@ -2552,7 +2552,7 @@ final class AppDependencies {
                         pendingReviewCandidates: pending,
                         heldByQuarantineCandidates: result.heldByQuarantineCandidates
                     )
-                    syncLog.info("[cairn.sync] inferred \(orphans.count) orphan(s) via metadata match")
+                    syncLog.notice("[cairn.sync] inferred \(orphans.count) orphan(s) via metadata match")
                 }
             }
         } catch {
@@ -3179,7 +3179,7 @@ final class AppDependencies {
 
         do {
             try await observedStore.recordObserved(tagsByChecksum)
-            syncLog.info("[cairn.scope] tagged \(tagsByChecksum.count, privacy: .public) observed entries across \(albumIds.count, privacy: .public) selected album(s)")
+            syncLog.notice("[cairn.scope] tagged \(tagsByChecksum.count, privacy: .public) observed entries across \(albumIds.count, privacy: .public) selected album(s)")
         } catch {
             syncLog.error("[cairn.scope] recordObserved failed during tag rebuild: \(Self.describeSyncError(error), privacy: .public)")
         }
@@ -4023,10 +4023,10 @@ final class AppDependencies {
                     if isNetwork {
                         let diagnosis = await self.reachabilityProbe.classify()
                         desc = Self.message(for: diagnosis, fallback: baseDesc)
-                        syncLog.info("[cairn.sync] requestSync failed (network) — diagnosis=\(String(describing: diagnosis), privacy: .public)")
+                        syncLog.notice("[cairn.sync] requestSync failed (network) — diagnosis=\(String(describing: diagnosis), privacy: .public)")
                     } else {
                         desc = baseDesc
-                        syncLog.info("[cairn.sync] requestSync failed: \(desc)")
+                        syncLog.notice("[cairn.sync] requestSync failed: \(desc)")
                     }
                     await MainActor.run {
                         self.model.recordSyncError(desc, isNetworkLike: isNetwork)
@@ -5219,7 +5219,7 @@ final class AppDependencies {
                     return
                 }
                 if imputedIds.isEmpty {
-                    syncLog.info("[cairn.verify] no imputed rows to verify")
+                    syncLog.notice("[cairn.verify] no imputed rows to verify")
                     await MainActor.run { self.showStatusToast(.rescanQueued) }
                     return
                 }
@@ -5242,7 +5242,7 @@ final class AppDependencies {
                 if let partition = await MainActor.run(body: { self.currentPartitionKey }) {
                     Self.clearImputationCompletion(for: partition)
                 }
-                syncLog.info("[cairn.verify] dropped \(imputedIds.count) imputed row(s) — next sync will re-hash")
+                syncLog.notice("[cairn.verify] dropped \(imputedIds.count) imputed row(s) — next sync will re-hash")
                 await MainActor.run {
                     self.model.hasCompletedInitialScan = false
                     self.model.reconciliation = nil
@@ -5508,10 +5508,10 @@ final class AppDependencies {
                 // fresh install, the simulator, or an iOS version
                 // where `_simulateLaunchForTaskWithIdentifier:` traps
                 // on dispatch queue assertions from lldb).
-                bgLog.info("[cairn.bgtask] manual fire from Settings → Advanced")
+                bgLog.notice("[cairn.bgtask] manual fire from Settings → Advanced")
                 do {
                     try await self.model.actions.requestSync(.debugManualFire)
-                    bgLog.info("[cairn.bgtask] manual fire completed successfully")
+                    bgLog.notice("[cairn.bgtask] manual fire completed successfully")
                 } catch {
                     bgLog.error("[cairn.bgtask] manual fire failed: \(String(describing: error), privacy: .public)")
                 }
@@ -5547,7 +5547,7 @@ final class AppDependencies {
                             self.model.degraded = .none
                         }
                     }
-                    syncLog.info("[cairn.session] signed in as \(resp.userEmail, privacy: .public)")
+                    syncLog.notice("[cairn.session] signed in as \(resp.userEmail, privacy: .public)")
                     return .success
                 } catch let err as ImmichClientError {
                     if case .httpStatus(let code, let body) = err {
@@ -5593,7 +5593,7 @@ final class AppDependencies {
                         self.model.degraded = .none
                     }
                 }
-                syncLog.info("[cairn.session] signed out")
+                syncLog.notice("[cairn.session] signed out")
             }
         )
 

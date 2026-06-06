@@ -206,7 +206,7 @@ struct CairnApp: App {
                 CairnApp.handleBackgroundHash(task: bgTask)
             }
         }
-        bgLog.info("[cairn.bgtask] registered handlers for refresh + hash")
+        bgLog.notice("[cairn.bgtask] registered handlers for refresh + hash")
     }
 
     /// Run the incremental reconciliation from a `BGAppRefreshTask` slot.
@@ -218,7 +218,7 @@ struct CairnApp: App {
     /// scheduling priority.
     @MainActor
     private static func handleBackgroundRefresh(task: BGAppRefreshTask) {
-        bgLog.info("[cairn.bgtask] refresh fired")
+        bgLog.notice("[cairn.bgtask] refresh fired")
         scheduleNextBackgroundRefresh()
 
         guard let dependencies = AppDependencies.shared else {
@@ -235,7 +235,7 @@ struct CairnApp: App {
                 // the reconciler but skips the journal writes the
                 // Status tab depends on.
                 try await dependencies.model.actions.requestSync(.scheduledBackground)
-                bgLog.info("[cairn.bgtask] refresh completed successfully")
+                bgLog.notice("[cairn.bgtask] refresh completed successfully")
                 task.setTaskCompleted(success: true)
             } catch {
                 bgLog.error("[cairn.bgtask] refresh failed: \(String(describing: error), privacy: .public)")
@@ -259,7 +259,7 @@ struct CairnApp: App {
     /// another continuation before returning, keeping the chain alive.
     @MainActor
     private static func handleBackgroundHash(task: BGProcessingTask) {
-        bgLog.info("[cairn.bgtask] hash fired")
+        bgLog.notice("[cairn.bgtask] hash fired")
         guard let dependencies = AppDependencies.shared else {
             bgLog.error("[cairn.bgtask] hash: AppDependencies.shared not set yet, completing as failed")
             task.setTaskCompleted(success: false)
@@ -273,7 +273,7 @@ struct CairnApp: App {
                 // unlimited-throughput work, not a "sync" semantically).
                 try await dependencies.model.actions.requestSync(.scheduledHashContinuation)
                 try await dependencies.drainDeferredQueueOnly()
-                bgLog.info("[cairn.bgtask] hash completed successfully")
+                bgLog.notice("[cairn.bgtask] hash completed successfully")
                 task.setTaskCompleted(success: true)
             } catch is CancellationError {
                 // iOS expired us; resume picks up next time.
@@ -309,7 +309,7 @@ struct CairnApp: App {
         let request = BGAppRefreshTaskRequest(identifier: Self.backgroundRefreshIdentifier)
         do {
             try BGTaskScheduler.shared.submit(request)
-            bgLog.info("[cairn.bgtask] scheduled next refresh (no earliest-begin floor)")
+            bgLog.notice("[cairn.bgtask] scheduled next refresh (no earliest-begin floor)")
         } catch {
             bgLog.error("[cairn.bgtask] refresh submit failed: \(String(describing: error), privacy: .public)")
         }
@@ -332,7 +332,7 @@ struct CairnApp: App {
         request.requiresExternalPower = false
         do {
             try BGTaskScheduler.shared.submit(request)
-            bgLog.info("[cairn.bgtask] scheduled hash continuation")
+            bgLog.notice("[cairn.bgtask] scheduled hash continuation")
         } catch {
             bgLog.error("[cairn.bgtask] hash submit failed: \(String(describing: error), privacy: .public)")
         }

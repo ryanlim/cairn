@@ -530,7 +530,7 @@ public final class PhotoKitPersistentChangeReconciler {
         func tick(_ phase: String) {
             let ms = Int(Date().timeIntervalSince(phaseClock) * 1000)
             phaseClock = Date()
-            Self.reconLog.info("[cairn.recon.timing] phase=\(phase, privacy: .public) took=\(ms, privacy: .public)ms")
+            Self.reconLog.notice("[cairn.recon.timing] phase=\(phase, privacy: .public) took=\(ms, privacy: .public)ms")
             Task { await phaseEmit(phase, ms) }
         }
 
@@ -578,7 +578,7 @@ public final class PhotoKitPersistentChangeReconciler {
             let snapshot = (try? await deferredStore.snapshot()) ?? []
             return Set(snapshot.map(\.localIdentifier))
         }()
-        Self.reconLog.info("[cairn.recon] deferred-queue snapshot at scan-start: count=\(deferredQueueIds.count, privacy: .public)")
+        Self.reconLog.notice("[cairn.recon] deferred-queue snapshot at scan-start: count=\(deferredQueueIds.count, privacy: .public)")
         tick("deferredQueue")
         if !deferredQueueIds.isEmpty {
             let blockedInserts = insertedIds.intersection(deferredQueueIds)
@@ -1518,7 +1518,7 @@ public final class PhotoKitPersistentChangeReconciler {
         func tick(_ phase: String) {
             let ms = Int(Date().timeIntervalSince(phaseClock) * 1000)
             phaseClock = Date()
-            Self.reconLog.info("[cairn.recon.timing] phase=\(phase, privacy: .public) took=\(ms, privacy: .public)ms")
+            Self.reconLog.notice("[cairn.recon.timing] phase=\(phase, privacy: .public) took=\(ms, privacy: .public)ms")
             Task { await phaseEmit(phase, ms) }
         }
 
@@ -1605,7 +1605,7 @@ public final class PhotoKitPersistentChangeReconciler {
         func tick(_ phase: String) {
             let ms = Int(Date().timeIntervalSince(phaseClock) * 1000)
             phaseClock = Date()
-            Self.reconLog.info("[cairn.recon.timing] phase=full-enum:\(phase, privacy: .public) took=\(ms, privacy: .public)ms")
+            Self.reconLog.notice("[cairn.recon.timing] phase=full-enum:\(phase, privacy: .public) took=\(ms, privacy: .public)ms")
             Task { await phaseEmit("full-enum:\(phase)", ms) }
         }
 
