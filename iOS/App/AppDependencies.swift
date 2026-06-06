@@ -2860,9 +2860,21 @@ final class AppDependencies {
             if let cap = Self.resolveTestingAssetCap(), n > cap { n = cap }
             totalVisible = n
         } else {
+            // Match the broader filter used by `performLiveReconciliation`'s
+            // `visibleFetch` (build 116+) and by the alive-on-phone safety
+            // check's enumeration. Without this match the `library.local`
+            // "On iPhone" stat oscillates between two values: the narrow
+            // filter's count sets at sync-start (when this function is
+            // called from `requestSync`) and the broad filter's count
+            // sets mid-sync from `performLiveReconciliation`'s engine
+            // pass (line 2567). The UI then renders alternating values
+            // — small, then large, then small, then large — every
+            // sync round-trip. Unifying upward to the broader filter
+            // is consistent with the rest of cairn's "what's alive on
+            // phone" reading.
             let opts = PHFetchOptions()
-            opts.includeHiddenAssets = false
-            opts.includeAssetSourceTypes = [.typeUserLibrary]
+            opts.includeHiddenAssets = true
+            opts.includeAssetSourceTypes = [.typeUserLibrary, .typeCloudShared, .typeiTunesSynced]
             let fetch = PHAsset.fetchAssets(with: opts)
             var n = fetch.count
             if let cap = Self.resolveTestingAssetCap(), n > cap { n = cap }
