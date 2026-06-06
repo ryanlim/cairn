@@ -2007,7 +2007,17 @@ public final class PhotoKitPersistentChangeReconciler {
         var assets: [PHAsset] = []
         assets.reserveCapacity(fetchResult.count)
         fetchResult.enumerateObjects { asset, _, _ in assets.append(asset) }
-        return try await hashAssets(assets: assets)
+        // Report progress when the inline hash batch is substantial
+        // enough to deserve UI feedback. Below `progressVisibilityThreshold`
+        // it's not worth the syncProgress thrash — incremental syncs
+        // with a few inserts (typical case) just complete in a second
+        // or two and don't need a counter. At/above the threshold
+        // (e.g. an `untracked sweep: 524 PHAssets` event) the user
+        // benefits from seeing "Hashing X of Y" instead of a silent
+        // "Syncing..." while iCloud-downloads grind for minutes.
+        let progressVisibilityThreshold = 50
+        let total: Int? = assets.count >= progressVisibilityThreshold ? assets.count : nil
+        return try await hashAssets(assets: assets, reportProgressWithTotal: total)
     }
 
     /// How this batch treats the soft iCloud-download limit:

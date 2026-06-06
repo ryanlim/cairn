@@ -1,31 +1,13 @@
-Partial revert of build 125's enumeration unification.
+Inline incremental-sync hashing now surfaces progress in the UI when the batch is large.
 
-End-user reported "sync hanging" on 125 with an existing-cache (no wipe) install. Log analysis showed the reconciler's untracked sweep firing on 524 previously-invisible assets:
+End-user comment on the build-125 "hang" (which was actually 524 untracked-sweep assets iCloud-fetching for minutes): "It also didn't surface any of that in the UI, which is non-ideal."
 
-```
-[cairn.recon] untracked sweep: 524 PHAssets visible but neither indexed
-              nor queued — adding to insert pipeline
-```
+Right — and not just for that 125-specific case. Any time an incremental sync gets a batch of 50+ inserts/updates (untracked-sweep, mass iCloud Photos catch-up, returning from a long suspension where many phones arrived), the hashing was silent. The `hashAssets(ids:)` overload that handles inline incremental hashing in `runIncremental`'s inserted path was calling the underlying `hashAssets(assets:)` without `reportProgressWithTotal`. That meant `onHashProgress` never fired, `syncProgress` stayed nil, and the user saw "Syncing..." for minutes with no indication of work.
 
-Followed by a few hundred `[cairn.hash] slow-asset: id=... took=X — probably iCloud fetch` lines at 2-60 sec each. So the "hang" was the hashing pipeline trying to iCloud-download and hash 524 newly-visible Cloud-Shared + iTunes-synced + hidden assets. Working as designed under build 125's filters — but the design was wrong.
+This build threads `reportProgressWithTotal` through the `(ids:)` overload when the batch is at or above 50 assets. Smaller batches (the typical incremental sync with a handful of inserts) still suppress reporting — the syncProgress churn isn't worth it for work that completes in a second or two. The 50-asset threshold is conservative and easy to revisit if it turns out the right line is higher or lower.
 
-Build 125 conflated two enumeration purposes:
+Behavior at the threshold:
+- ≤49 assets: silent inline hashing (current behavior, fine for typical incremental syncs)
+- ≥50 assets: `onHashProgress(done, total, [])` fires every 25 assets or 250 ms, populates `syncProgress`, surfaces in whatever UI is showing the in-flight sync — Status banner counters, anywhere `model.syncProgress.hashed/total` is read
 
-- **Safety/suppression filters** (alive-on-phone, orphan sweep): SHOULD be broad. Never falsely propose to trash a server entry whose phone-side asset is still alive in any form. Goes through every PhotoKit source type, includes hidden.
-- **Active management** (hashing, untracked discovery): SHOULD be narrow. Only manage assets the user can actually delete via Photos.app. iTunes-synced and Cloud-Shared assets can't be deleted by the user, so cairn shouldn't be hashing them as deletion-tracking candidates. Hidden assets currently excluded (privacy default; revisit later).
-
-This build narrows the two active-hashing sites back down:
-
-- `hashAllCurrentAssets` full-enum fetch: `.typeUserLibrary` only, hidden=false
-- `discoverUntrackedAssets` live-id sweep: `.typeUserLibrary` only, hidden=false
-
-Keeps the two safety sites broadened from 125:
-
-- `runIncremental` id-existence check: stays at `[.typeUserLibrary, .typeCloudShared, .typeiTunesSynced]` + hidden=true (right call — false-positive "deleted" reports for shared/synced/hidden are exactly what the broader filter prevents)
-- `reconcileCacheAgainstLibrary` orphan sweep: stays at the same broader filter (right call — false-positive orphan detection is the harm being prevented)
-
-The 7502 vs 6946 "discrepancy" your last log surfaced is actually correct — imputation enumerates the broader set (for alive-on-phone metadata), full-enum hashes the narrower set (only manageable assets). Those numbers diverging by source-type-excluded-asset count is the desired state.
-
-For installs that hit 125 with the untracked-sweep fire (you), the in-flight hashing of those 524 assets should be interrupted on 126 install — `discoverUntrackedAssets` no longer returns them. The partial hashes that did complete stay in cache (no harm), the ones that didn't, won't be re-attempted.
-
-Apologies for the cycle. 125 was the right structural insight (safety vs active mgmt should diverge) but the wrong direction (broadened the active-mgmt path instead of narrowing it).
+No engine, no reconciliation, no behavioral change beyond the progress callback wiring. Just makes the UI honest about how much work is in flight.
