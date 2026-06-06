@@ -1,20 +1,31 @@
-Two unrelated cleanups landing together.
+Partial revert of build 125's enumeration unification.
 
-**1. Reconciler enumeration filter unified across all sites.**
+End-user reported "sync hanging" on 125 with an existing-cache (no wipe) install. Log analysis showed the reconciler's untracked sweep firing on 524 previously-invisible assets:
 
-End-user post-clear-cache sync log showed `imputation.totalPhone=7502` but `full-enum.total=6946` — a 556-asset gap. Root cause: three PHAsset.fetchAssets sites in `PhotoKitPersistentChangeReconciler.swift` were still using narrower filters (`.typeUserLibrary` only, hidden excluded) than what `runImputationPass` and `performLiveReconciliation`'s `visibleFetch` adopted at builds 116/121:
+```
+[cairn.recon] untracked sweep: 524 PHAssets visible but neither indexed
+              nor queued — adding to insert pipeline
+```
 
-- `runIncremental`'s id-existence check (line 1190): `[.typeUserLibrary, .typeCloudShared]` — missing iTunesSynced
-- `hashAllCurrentAssets`'s full-enum fetch (line 1614): `[.typeUserLibrary]` only, hidden excluded
-- `discoverUntrackedAssets` (line 2567): `[.typeUserLibrary]` only, hidden excluded
-- `reconcileCacheAgainstLibrary` orphan sweep (line 2604): `[.typeUserLibrary, .typeCloudShared]` — missing iTunesSynced
+Followed by a few hundred `[cairn.hash] slow-asset: id=... took=X — probably iCloud fetch` lines at 2-60 sec each. So the "hang" was the hashing pipeline trying to iCloud-download and hash 524 newly-visible Cloud-Shared + iTunes-synced + hidden assets. Working as designed under build 125's filters — but the design was wrong.
 
-All four broadened to `[.typeUserLibrary, .typeCloudShared, .typeiTunesSynced]` + `includeHiddenAssets = true`, matching the imputation + alive-on-phone enumeration. Net effect: hidden + iTunes-synced assets now flow through every reconciliation path consistently — no more "imputed but never hashed" gap, no more spurious "untracked" reports for those source types.
+Build 125 conflated two enumeration purposes:
 
-**2. Diagnostic log flusher moved off MainActor — fixes the recurring UI stutter during heavy sync.**
+- **Safety/suppression filters** (alive-on-phone, orphan sweep): SHOULD be broad. Never falsely propose to trash a server entry whose phone-side asset is still alive in any form. Goes through every PhotoKit source type, includes hidden.
+- **Active management** (hashing, untracked discovery): SHOULD be narrow. Only manage assets the user can actually delete via Photos.app. iTunes-synced and Cloud-Shared assets can't be deleted by the user, so cairn shouldn't be hashing them as deletion-tracking candidates. Hidden assets currently excluded (privacy default; revisit later).
 
-`DiagnosticLogFlusher` was a `@MainActor` class. Its 20-second periodic poll calls `OSLogStore.getEntries(at:matching:)` (which during heavy sync-time logging can take dozens of ms reading the system log buffer), then loops over the collected entries to filter and format them as strings. All of that was running on the main thread. The result was a visible UI stutter every ~20s while a sync was active.
+This build narrows the two active-hashing sites back down:
 
-Refactored to a Swift `actor` so the poll work runs on its own executor. No behavior change to capture coverage — same predicate, same cadence, same persistent-store actor downstream. Just keeps main free for the UI to scroll, animate, and respond to taps without the periodic interruption.
+- `hashAllCurrentAssets` full-enum fetch: `.typeUserLibrary` only, hidden=false
+- `discoverUntrackedAssets` live-id sweep: `.typeUserLibrary` only, hidden=false
 
-Three call sites updated to await the now-actor-isolated methods (`CairnApp.init`, the scene-phase-background flush, and `LogExporter.export`). All existing call sites were already on async paths, so the change is local.
+Keeps the two safety sites broadened from 125:
+
+- `runIncremental` id-existence check: stays at `[.typeUserLibrary, .typeCloudShared, .typeiTunesSynced]` + hidden=true (right call — false-positive "deleted" reports for shared/synced/hidden are exactly what the broader filter prevents)
+- `reconcileCacheAgainstLibrary` orphan sweep: stays at the same broader filter (right call — false-positive orphan detection is the harm being prevented)
+
+The 7502 vs 6946 "discrepancy" your last log surfaced is actually correct — imputation enumerates the broader set (for alive-on-phone metadata), full-enum hashes the narrower set (only manageable assets). Those numbers diverging by source-type-excluded-asset count is the desired state.
+
+For installs that hit 125 with the untracked-sweep fire (you), the in-flight hashing of those 524 assets should be interrupted on 126 install — `discoverUntrackedAssets` no longer returns them. The partial hashes that did complete stay in cache (no harm), the ones that didn't, won't be re-attempted.
+
+Apologies for the cycle. 125 was the right structural insight (safety vs active mgmt should diverge) but the wrong direction (broadened the active-mgmt path instead of narrowing it).

@@ -1615,15 +1615,26 @@ public final class PhotoKitPersistentChangeReconciler {
         }
 
         let options = PHFetchOptions()
-        // Aligned with `runImputationPass` + `performLiveReconciliation`'s
-        // visibleFetch: hidden + every source type cairn considers
-        // "alive on phone." Diverging here meant 556 assets on the
-        // user's library (hidden + iTunesSynced) had imputed
-        // metadata but never went through local hashing — the
-        // full-enum's `to-hash` count read 6946 while imputation's
-        // `totalPhone` was 7502.
-        options.includeHiddenAssets = true
-        options.includeAssetSourceTypes = [.typeUserLibrary, .typeCloudShared, .typeiTunesSynced]
+        // Narrow filter — `.typeUserLibrary` only, hidden excluded.
+        // Build 125 broadened this to align with the alive-on-phone
+        // enumeration, which produced 524 "untracked PHAssets"
+        // (iCloud-Shared + iTunes-synced) flooding into the hash
+        // pipeline at iCloud-download speeds. The semantic mismatch:
+        //
+        // - Alive-on-phone needs broad — never falsely propose to
+        //   trash a server entry whose phone-side asset is still
+        //   present in ANY form (shared, synced, hidden).
+        // - Active hashing/discovery needs narrow — only manage
+        //   assets the user can actually delete from Photos.app.
+        //   Shared and iTunes-synced assets can't be deleted by the
+        //   user via Photos.app, so cairn shouldn't be hashing them
+        //   as deletion-tracking candidates.
+        //
+        // Keeping these two enumeration purposes separated is
+        // correct; the build-125 unification went the wrong direction
+        // for the active-hashing path.
+        options.includeHiddenAssets = false
+        options.includeAssetSourceTypes = [.typeUserLibrary]
         // Sort descending by creationDate so the testing cap
         // picks the **most recent N** assets, not the oldest. In
         // a real testing loop the user is adding new photos /
@@ -2573,16 +2584,20 @@ public final class PhotoKitPersistentChangeReconciler {
     /// duplicate cost) plus two store snapshots (`allLocalIdentifiers`,
     /// `deferredStore.snapshot()`), all set-membership-only.
     private func discoverUntrackedAssets(cachedLocalIds: Set<String>? = nil) async throws -> Set<String> {
-        // Filter aligned with the rest of cairn's "alive on phone"
-        // enumerations (broadened to match imputation +
-        // performLiveReconciliation's visibleFetch). Narrower here
-        // produced false-positive "untracked" reports for hidden /
-        // iTunesSynced assets that the broader-filter paths had
-        // already accounted for.
+        // Narrow filter (`.typeUserLibrary` only, hidden excluded).
+        // Same reasoning as `hashAllCurrentAssets`: the untracked
+        // sweep feeds the insert pipeline that triggers hashing, and
+        // we only want to manage assets the user can actually delete
+        // via Photos.app — not Cloud-Shared, not iTunes-synced.
+        // Build 125 broadened this for "consistency" with the
+        // alive-on-phone enumeration but that pushed 524 unmanageable
+        // assets into the hash queue, producing what an end user
+        // reported as a "hang" while iCloud-fetching them all at
+        // 2-60 sec each.
         let liveIds = await Task.detached(priority: .userInitiated) {
             Self.enumerateLiveLocalIdentifiers(
-                includeHiddenAssets: true,
-                sourceTypes: [.typeUserLibrary, .typeCloudShared, .typeiTunesSynced]
+                includeHiddenAssets: false,
+                sourceTypes: [.typeUserLibrary]
             )
         }.value
 
