@@ -1090,83 +1090,100 @@ public struct SettingsScreen: View {
         Group {
             KeylineSection("Safety rails", icon: "shield", iconTint: t.verified)
             CairnCard {
-                // Split the outer VStack into two halves. SwiftUI's
-                // @ViewBuilder accepts up to 17 children in one tuple,
-                // but on iOS 26 the resulting AttributeGraph chain
-                // multiplies preference-resolution depth far enough to
-                // blow the main-thread stack (EXC_BAD_ACCESS in
-                // `___chkstk_darwin`) the first time the section
-                // renders. Splitting into two inner stacks of ≤8
-                // children keeps the layout identical (both stacks use
-                // `spacing: 0`, no padding between) while shrinking
-                // each TupleView's preference fanout enough to fit.
+                // The 17-row safety-rails card materializes a deeply
+                // nested `VStack<TupleView<…>>` type at runtime. On iOS
+                // 26 the Swift runtime's mangled-name type decoder
+                // recurses through every generic argument when
+                // instantiating concrete metadata for the closure, and
+                // the depth blows the main-thread stack
+                // (`EXC_BAD_ACCESS` in
+                // `swift::Demangle::TypeDecoder::decodeMangledType`).
+                // Splitting the tuple wasn't enough — the nested
+                // signature was still too deep. Type-erasing each half
+                // via `AnyView` collapses the outer CairnCard content
+                // type to `VStack<TupleView<(AnyView, AnyView)>>`,
+                // which the decoder handles trivially. The runtime
+                // cost is two extra existential boxes — negligible
+                // here, where the card renders once and stays put.
                 VStack(spacing: 0) {
-                    VStack(spacing: 0) {
-                        VStack(alignment: .leading, spacing: 0) {
-                            HStack(alignment: .firstTextBaseline, spacing: 0) {
-                                Spacer(minLength: 0)
-                                HelpPopover {
-                                    Text("**Safety rail.** If a single run would move more than this fraction of matched photos to Immich's Trash, the run aborts without touching the server.")
-                                    Text("Defends against bugs, permission regressions, or a library-wipe cascading into a mass delete.")
-                                    Text("The \"Count floor\" below is paired with this: for small libraries, 1% can be just one or two photos, which is noise — the floor sets a minimum batch size before the percent check engages.")
-                                }
-                                .padding(.trailing, 6)
-                            }
-                            .padding(.top, 10)
-                            .padding(.bottom, -4)
-
-                            SliderInputRow(
-                                label: "Percent threshold",
-                                sub: String(
-                                    format: "Abort if a run would move more than %.1f%% of matched assets to Immich's Trash.",
-                                    settings.maxDeletePercent
-                                ),
-                                value: $settings.maxDeletePercent,
-                                range: 0.5...5,
-                                step: 0.1,
-                                unitSuffix: "%",
-                                format: { String(format: "%.1f", $0) },
-                                parse: NumericInputParse.decimal
-                            )
-                        }
-                        RowDivider()
-                        StrictnessRow(strictness: $settings.deletionStrictness)
-                        RowDivider()
-                        QuarantineRow(days: $settings.quarantineDays)
-                        RowDivider()
-                        ICloudDownloadLimitRow(mb: $settings.iCloudDownloadLimitMB)
-                    }
-                    VStack(spacing: 0) {
-                        RowDivider()
-                        HardCeilingRow(mb: $settings.iCloudMaxEverBytesMB)
-                        RowDivider()
-                        PropagationMaxAgeRow(days: $settings.propagationMaxAgeDays)
-                        RowDivider()
-                        MaxRetryAttemptsRow(attempts: $settings.maxRetryAttempts)
-                        RowDivider()
-                        DeferredQueueRow(
-                            summary: deferredQueue,
-                            isSyncing: isSyncing,
-                            syncProgress: syncProgress,
-                            onHashNow: onForceDrainDeferred
-                        )
-                        RowDivider()
-                        KeyValRow(
-                            "Rescan library",
-                            value: { Text("Force re-enumerate").foregroundStyle(t.infoInk) },
-                            chevron: true,
-                            onTap: { pendingRescanLibrary = true }
-                        )
-                        RowDivider()
-                        KeyValRow(
-                            "Excluded assets",
-                            value: { excludedValue },
-                            onTap: onOpenExcluded
-                        )
-                    }
+                    safetyRailsTop
+                    safetyRailsBottom
                 }
             }
         }
+    }
+
+    private var safetyRailsTop: AnyView {
+        AnyView(
+            VStack(spacing: 0) {
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack(alignment: .firstTextBaseline, spacing: 0) {
+                        Spacer(minLength: 0)
+                        HelpPopover {
+                            Text("**Safety rail.** If a single run would move more than this fraction of matched photos to Immich's Trash, the run aborts without touching the server.")
+                            Text("Defends against bugs, permission regressions, or a library-wipe cascading into a mass delete.")
+                            Text("The \"Count floor\" below is paired with this: for small libraries, 1% can be just one or two photos, which is noise — the floor sets a minimum batch size before the percent check engages.")
+                        }
+                        .padding(.trailing, 6)
+                    }
+                    .padding(.top, 10)
+                    .padding(.bottom, -4)
+
+                    SliderInputRow(
+                        label: "Percent threshold",
+                        sub: String(
+                            format: "Abort if a run would move more than %.1f%% of matched assets to Immich's Trash.",
+                            settings.maxDeletePercent
+                        ),
+                        value: $settings.maxDeletePercent,
+                        range: 0.5...5,
+                        step: 0.1,
+                        unitSuffix: "%",
+                        format: { String(format: "%.1f", $0) },
+                        parse: NumericInputParse.decimal
+                    )
+                }
+                RowDivider()
+                StrictnessRow(strictness: $settings.deletionStrictness)
+                RowDivider()
+                QuarantineRow(days: $settings.quarantineDays)
+                RowDivider()
+                ICloudDownloadLimitRow(mb: $settings.iCloudDownloadLimitMB)
+            }
+        )
+    }
+
+    private var safetyRailsBottom: AnyView {
+        AnyView(
+            VStack(spacing: 0) {
+                RowDivider()
+                HardCeilingRow(mb: $settings.iCloudMaxEverBytesMB)
+                RowDivider()
+                PropagationMaxAgeRow(days: $settings.propagationMaxAgeDays)
+                RowDivider()
+                MaxRetryAttemptsRow(attempts: $settings.maxRetryAttempts)
+                RowDivider()
+                DeferredQueueRow(
+                    summary: deferredQueue,
+                    isSyncing: isSyncing,
+                    syncProgress: syncProgress,
+                    onHashNow: onForceDrainDeferred
+                )
+                RowDivider()
+                KeyValRow(
+                    "Rescan library",
+                    value: { Text("Force re-enumerate").foregroundStyle(t.infoInk) },
+                    chevron: true,
+                    onTap: { pendingRescanLibrary = true }
+                )
+                RowDivider()
+                KeyValRow(
+                    "Excluded assets",
+                    value: { excludedValue },
+                    onTap: onOpenExcluded
+                )
+            }
+        )
     }
 
     // MARK: - Excluded-value sub-view
