@@ -1344,17 +1344,25 @@ final class AppDependencies {
         // hop with PhotoKit's own main-queue dispatch and starves the UI
         // runloop completely. The detached task lets PhotoKit's faults
         // interleave with redraws.
+        //
+        // Cancellation: `Task.detached` does NOT inherit parent
+        // cancellation. Without the `withTaskCancellationHandler` wrap
+        // below, a Stop-indexing tap (or BG expiration) unwinds the
+        // orchestrator immediately while this loop keeps grinding on a
+        // background thread — the UI shows Paused while the reconciler
+        // is still doing work in the console.
         // `fetchAssets(withLocalIdentifiers:)` returns only ids PhotoKit
         // can still resolve, which IS the "intersect with currently-alive"
         // filter — so we no longer run a full-library enumeration plus a
         // per-asset PHAssetResource loop on the main thread.
         let store = self.localAssetMetadataStore
-        await Task.detached(priority: .userInitiated) {
+        let work = Task.detached(priority: .userInitiated) {
             let now = Date()
             let fetch = PHAsset.fetchAssets(withLocalIdentifiers: Array(missingFromMetadata), options: nil)
             var entries: [LocalAssetMetadata] = []
             entries.reserveCapacity(fetch.count)
-            fetch.enumerateObjects { asset, _, _ in
+            fetch.enumerateObjects { asset, _, stop in
+                if Task.isCancelled { stop.pointee = true; return }
                 let resources = PHAssetResource.assetResources(for: asset)
                 let primary = PhotoKitPhotoEnumerator.selectPrimaryResource(from: resources)
                 let size = (primary?.value(forKey: "fileSize") as? NSNumber)?.int64Value
@@ -1368,14 +1376,20 @@ final class AppDependencies {
                     allResourceFilenames: resources.map(\.originalFilename).filter { !$0.isEmpty }
                 ))
             }
-            guard !entries.isEmpty else { return }
-            do {
-                try await store.record(entries)
-                syncLog.notice("[cairn.metadata] backfilled \(entries.count, privacy: .public) entries (cache=\(cacheIdsCount, privacy: .public) had-metadata=\(knownIdsCount, privacy: .public) still-missing=\(missingCount - entries.count, privacy: .public) — those PHAssets are no longer fetchable)")
-            } catch {
-                syncLog.error("[cairn.metadata] backfill failed: \(Self.describeSyncError(error), privacy: .public)")
-            }
-        }.value
+            return entries
+        }
+        let entries: [LocalAssetMetadata] = await withTaskCancellationHandler {
+            await work.value
+        } onCancel: {
+            work.cancel()
+        }
+        guard !entries.isEmpty else { return }
+        do {
+            try await store.record(entries)
+            syncLog.notice("[cairn.metadata] backfilled \(entries.count, privacy: .public) entries (cache=\(cacheIdsCount, privacy: .public) had-metadata=\(knownIdsCount, privacy: .public) still-missing=\(missingCount - entries.count, privacy: .public) — those PHAssets are no longer fetchable)")
+        } catch {
+            syncLog.error("[cairn.metadata] backfill failed: \(Self.describeSyncError(error), privacy: .public)")
+        }
     }
 
     /// Build-121 metadata backfill: for installs already past their
