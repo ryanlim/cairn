@@ -1969,7 +1969,14 @@ public final class PhotoKitPersistentChangeReconciler {
         let startedAt = Date()
         let now = clock()
         let log = Self.reconLog
-        let entries: [LocalAssetMetadata] = try await Task.detached(priority: .userInitiated) {
+        //
+        // Cancellation contract: `Task.detached` does NOT inherit parent
+        // cancellation, so we forward it manually via
+        // `withTaskCancellationHandler`. Without this, a Stop-indexing
+        // tap unwinds the orchestrator immediately (UI flips to Paused)
+        // while this loop keeps grinding on a background thread, printing
+        // PhotoKit warnings for minutes after the user thinks they stopped.
+        let work = Task.detached(priority: .userInitiated) {
             var entries: [LocalAssetMetadata] = []
             entries.reserveCapacity(pending.count)
             for (index, asset) in pending.enumerated() {
@@ -2014,7 +2021,12 @@ public final class PhotoKitPersistentChangeReconciler {
                 ))
             }
             return entries
-        }.value
+        }
+        let entries = try await withTaskCancellationHandler {
+            try await work.value
+        } onCancel: {
+            work.cancel()
+        }
         try await metadataStore.record(entries)
         let totalElapsed = Int(Date().timeIntervalSince(startedAt) * 1000)
         Self.reconLog.notice("[cairn.recon.metadata] complete: \(totalPending, privacy: .public) entries recorded in \(totalElapsed, privacy: .public)ms")
@@ -2057,14 +2069,23 @@ public final class PhotoKitPersistentChangeReconciler {
             let currentDates: [String: Date]
             let currentSizes: [String: Int64]
         }
-        let enumResult: EnumResult = await Task.detached(priority: .userInitiated) {
+        let work = Task.detached(priority: .userInitiated) {
             var entries: [LocalAssetMetadata] = []
             var currentDates: [String: Date] = [:]
             var currentSizes: [String: Int64] = [:]
             entries.reserveCapacity(fetch.count)
             currentDates.reserveCapacity(fetch.count)
             currentSizes.reserveCapacity(fetch.count)
-            fetch.enumerateObjects { asset, _, _ in
+            fetch.enumerateObjects { asset, idx, stop in
+                // Honor cancellation forwarded from the parent task via
+                // the surrounding `withTaskCancellationHandler`. The
+                // detached task's own cancel flag flips when the parent
+                // signals; we bail out of the synchronous enumeration by
+                // tripping PhotoKit's `stop` pointer.
+                if Task.isCancelled {
+                    stop.pointee = true
+                    return
+                }
                 let resources = PHAssetResource.assetResources(for: asset)
                 let primary = PhotoKitPhotoEnumerator.selectPrimaryResource(from: resources)
                 let size = primary.flatMap(PhotoKitPhotoEnumerator.resourceFileSize)
@@ -2089,7 +2110,17 @@ public final class PhotoKitPersistentChangeReconciler {
                 }
             }
             return EnumResult(entries: entries, currentDates: currentDates, currentSizes: currentSizes)
-        }.value
+        }
+        // Forward parent cancellation into the detached task. `Task.detached`
+        // does not inherit cancellation, so without this a cancelled outer
+        // task would still wait for the full enumeration to drain before
+        // unwinding (and the UI would appear stuck in a stopping-but-busy
+        // state).
+        let enumResult: EnumResult = await withTaskCancellationHandler {
+            await work.value
+        } onCancel: {
+            work.cancel()
+        }
         let entries = enumResult.entries
         let currentDates = enumResult.currentDates
         let currentSizes = enumResult.currentSizes
