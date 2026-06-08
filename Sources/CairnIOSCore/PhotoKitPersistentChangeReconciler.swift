@@ -1954,53 +1954,67 @@ public final class PhotoKitPersistentChangeReconciler {
             return
         }
 
+        // The per-asset PhotoKit reads below (`PHAssetResource.assetResources`,
+        // `originalFilename`, `creationDate`, `modificationDate`) are ~10ms
+        // each on real devices and, on iOS 26, fault
+        // `PHAssetOriginalMetadataProperties` synchronously on the main queue
+        // when the asset wasn't prefetched. Even though this method's caller
+        // is `async` and nominally cooperative, inheriting the caller's
+        // executor can land us on a queue that competes with the UI runloop.
+        // A detached background task gives PhotoKit's main-queue faults room
+        // to interleave with UI redraws, so the InitialScanScreen progress
+        // bar can actually animate while we churn through 100k+ assets.
         let totalPending = pending.count
         Self.reconLog.notice("[cairn.recon.metadata] starting: \(totalPending, privacy: .public) PHAssetResource calls pending — full-enum hashing waits for this to complete")
         let startedAt = Date()
         let now = clock()
-        var entries: [LocalAssetMetadata] = []
-        entries.reserveCapacity(pending.count)
-        for (index, asset) in pending.enumerated() {
-            // Cooperate with cancellation. `PHAssetResource.assetResources(for:)`
-            // is ~10ms per call on a real device, so a fresh-install enum
-            // of 7k assets blocks here for ~70s. Without this check, a
-            // user tap on Stop indexing would have to wait the full pass
-            // out before the orchestrator unwinds. Check every 50
-            // iterations — checkCancellation is cheap but we don't need
-            // to pay it on every tick.
-            if index % 50 == 0 {
-                try Task.checkCancellation()
+        let log = Self.reconLog
+        let entries: [LocalAssetMetadata] = try await Task.detached(priority: .userInitiated) {
+            var entries: [LocalAssetMetadata] = []
+            entries.reserveCapacity(pending.count)
+            for (index, asset) in pending.enumerated() {
+                // Cooperate with cancellation. `PHAssetResource.assetResources(for:)`
+                // is ~10ms per call on a real device, so a fresh-install enum
+                // of 7k assets blocks here for ~70s. Without this check, a
+                // user tap on Stop indexing would have to wait the full pass
+                // out before the orchestrator unwinds. Check every 50
+                // iterations — checkCancellation is cheap but we don't need
+                // to pay it on every tick.
+                if index % 50 == 0 {
+                    try Task.checkCancellation()
+                }
+                // Periodic heartbeat in the logs so a 100k+-asset library
+                // that hits this path (imputation off, fresh install)
+                // doesn't look frozen for an hour. End-user diagnostic
+                // exports were silent through this whole loop before, even
+                // though the loop was making steady progress.
+                if index > 0 && index % 5000 == 0 {
+                    let elapsed = Date().timeIntervalSince(startedAt)
+                    let rate = Double(index) / max(elapsed, 0.001)
+                    let etaSeconds = Double(totalPending - index) / max(rate, 0.001)
+                    log.notice("[cairn.recon.metadata] progress: \(index, privacy: .public)/\(totalPending, privacy: .public) — \(Int(rate * 1000), privacy: .public)/s × 1000, eta=\(Int(etaSeconds), privacy: .public)s")
+                }
+                let resources = PHAssetResource.assetResources(for: asset)
+                let primary = PhotoKitPhotoEnumerator.selectPrimaryResource(from: resources)
+                let size = primary.flatMap(PhotoKitPhotoEnumerator.resourceFileSize)
+                entries.append(LocalAssetMetadata(
+                    localIdentifier: asset.localIdentifier,
+                    originalFileName: primary?.originalFilename,
+                    creationDate: asset.creationDate,
+                    modificationDate: asset.modificationDate,
+                    fileSize: size,
+                    observedAt: now,
+                    // Capture every resource filename, not just the primary —
+                    // edited assets carry the pre-edit upload name (e.g.
+                    // `IMG_2999.MOV`) only in a non-primary resource, and the
+                    // alive-on-phone safety check needs it. Omitting this was
+                    // silently erasing the build-121 protection on every
+                    // full-enum metadata write.
+                    allResourceFilenames: resources.map(\.originalFilename).filter { !$0.isEmpty }
+                ))
             }
-            // Periodic heartbeat in the logs so a 100k+-asset library
-            // that hits this path (imputation off, fresh install)
-            // doesn't look frozen for an hour. End-user diagnostic
-            // exports were silent through this whole loop before, even
-            // though the loop was making steady progress.
-            if index > 0 && index % 5000 == 0 {
-                let elapsed = Date().timeIntervalSince(startedAt)
-                let rate = Double(index) / max(elapsed, 0.001)
-                let etaSeconds = Double(totalPending - index) / max(rate, 0.001)
-                Self.reconLog.notice("[cairn.recon.metadata] progress: \(index, privacy: .public)/\(totalPending, privacy: .public) — \(Int(rate * 1000), privacy: .public)/s × 1000, eta=\(Int(etaSeconds), privacy: .public)s")
-            }
-            let resources = PHAssetResource.assetResources(for: asset)
-            let primary = PhotoKitPhotoEnumerator.selectPrimaryResource(from: resources)
-            let size = primary.flatMap(PhotoKitPhotoEnumerator.resourceFileSize)
-            entries.append(LocalAssetMetadata(
-                localIdentifier: asset.localIdentifier,
-                originalFileName: primary?.originalFilename,
-                creationDate: asset.creationDate,
-                modificationDate: asset.modificationDate,
-                fileSize: size,
-                observedAt: now,
-                // Capture every resource filename, not just the primary —
-                // edited assets carry the pre-edit upload name (e.g.
-                // `IMG_2999.MOV`) only in a non-primary resource, and the
-                // alive-on-phone safety check needs it. Omitting this was
-                // silently erasing the build-121 protection on every
-                // full-enum metadata write.
-                allResourceFilenames: resources.map(\.originalFilename).filter { !$0.isEmpty }
-            ))
-        }
+            return entries
+        }.value
         try await metadataStore.record(entries)
         let totalElapsed = Int(Date().timeIntervalSince(startedAt) * 1000)
         Self.reconLog.notice("[cairn.recon.metadata] complete: \(totalPending, privacy: .public) entries recorded in \(totalElapsed, privacy: .public)ms")
@@ -2032,36 +2046,53 @@ public final class PhotoKitPersistentChangeReconciler {
         guard !allIds.isEmpty else { return ObservationResult(staleUpdates: []) }
         let fetch = PHAsset.fetchAssets(withLocalIdentifiers: Array(allIds), options: nil)
         let now = clock()
-        var entries: [LocalAssetMetadata] = []
-        var currentDates: [String: Date] = [:]
-        var currentSizes: [String: Int64] = [:]
-        entries.reserveCapacity(fetch.count)
-        currentDates.reserveCapacity(fetch.count)
-        currentSizes.reserveCapacity(fetch.count)
-        fetch.enumerateObjects { asset, _, _ in
-            let resources = PHAssetResource.assetResources(for: asset)
-            let primary = PhotoKitPhotoEnumerator.selectPrimaryResource(from: resources)
-            let size = primary.flatMap(PhotoKitPhotoEnumerator.resourceFileSize)
-            entries.append(LocalAssetMetadata(
-                localIdentifier: asset.localIdentifier,
-                originalFileName: primary?.originalFilename,
-                creationDate: asset.creationDate,
-                modificationDate: asset.modificationDate,
-                fileSize: size,
-                observedAt: now,
-                // See `recordFullEnumerationMetadata` — an incremental
-                // insert/update event (including the edit event itself)
-                // must carry every resource filename, or it erases the
-                // pre-edit upload name the alive-on-phone check relies on.
-                allResourceFilenames: resources.map(\.originalFilename).filter { !$0.isEmpty }
-            ))
-            if let date = asset.modificationDate {
-                currentDates[asset.localIdentifier] = date
-            }
-            if let size {
-                currentSizes[asset.localIdentifier] = size
-            }
+        // Push the PHAssetResource + originalFilename reads off our own
+        // executor — same reasoning as `recordFullEnumerationMetadata`.
+        // PhotoKit faults `PHAssetOriginalMetadataProperties` synchronously
+        // on the main queue per asset, so running the enumeration on a
+        // detached task at least leaves room for the UI runloop between
+        // those faults instead of stacking with our own cooperative hop.
+        struct EnumResult: Sendable {
+            let entries: [LocalAssetMetadata]
+            let currentDates: [String: Date]
+            let currentSizes: [String: Int64]
         }
+        let enumResult: EnumResult = await Task.detached(priority: .userInitiated) {
+            var entries: [LocalAssetMetadata] = []
+            var currentDates: [String: Date] = [:]
+            var currentSizes: [String: Int64] = [:]
+            entries.reserveCapacity(fetch.count)
+            currentDates.reserveCapacity(fetch.count)
+            currentSizes.reserveCapacity(fetch.count)
+            fetch.enumerateObjects { asset, _, _ in
+                let resources = PHAssetResource.assetResources(for: asset)
+                let primary = PhotoKitPhotoEnumerator.selectPrimaryResource(from: resources)
+                let size = primary.flatMap(PhotoKitPhotoEnumerator.resourceFileSize)
+                entries.append(LocalAssetMetadata(
+                    localIdentifier: asset.localIdentifier,
+                    originalFileName: primary?.originalFilename,
+                    creationDate: asset.creationDate,
+                    modificationDate: asset.modificationDate,
+                    fileSize: size,
+                    observedAt: now,
+                    // See `recordFullEnumerationMetadata` — an incremental
+                    // insert/update event (including the edit event itself)
+                    // must carry every resource filename, or it erases the
+                    // pre-edit upload name the alive-on-phone check relies on.
+                    allResourceFilenames: resources.map(\.originalFilename).filter { !$0.isEmpty }
+                ))
+                if let date = asset.modificationDate {
+                    currentDates[asset.localIdentifier] = date
+                }
+                if let size {
+                    currentSizes[asset.localIdentifier] = size
+                }
+            }
+            return EnumResult(entries: entries, currentDates: currentDates, currentSizes: currentSizes)
+        }.value
+        let entries = enumResult.entries
+        let currentDates = enumResult.currentDates
+        let currentSizes = enumResult.currentSizes
         // Snapshot cached metadata BEFORE writing the fresh observations
         // — otherwise the size we read back is the one we just wrote, and
         // the content-stability check below collapses to a tautology.
