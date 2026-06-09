@@ -707,6 +707,7 @@ public struct CairnAppRoot: View {
                 maxDeletePercent: model.settings.maxDeletePercent,
                 minDeleteFloor: model.settings.minDeleteFloor,
                 forceTripped: forceTripped,
+                photoAccessIsFull: model.photoAuthStatus == .full,
                 onClose: { model.presentedSheet = nil },
                 onConfirm: {
                     try? await model.actions.confirmTrash()

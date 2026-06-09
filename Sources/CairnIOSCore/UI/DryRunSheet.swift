@@ -27,6 +27,10 @@ public struct DryRunSheet: View {
     public let maxDeletePercent: Double
     public let minDeleteFloor: Int
     public let forceTripped: Bool
+    /// Whether Photos access is currently Full (vs Limited/Denied). Drives
+    /// the real "Photos access is Full" safety-check row instead of a
+    /// hardcoded green checkmark on a destructive surface.
+    public let photoAccessIsFull: Bool
     public let onClose: () -> Void
     /// Runs the actual orchestrator call. Awaited from `runIt()` so the
     /// "running" phase reflects real work in flight and the "done"
@@ -50,6 +54,7 @@ public struct DryRunSheet: View {
         maxDeletePercent: Double = 1.0,
         minDeleteFloor: Int = 5,
         forceTripped: Bool = false,
+        photoAccessIsFull: Bool = true,
         onClose: @escaping () -> Void = {},
         onConfirm: @escaping () async -> Void = {}
     ) {
@@ -58,6 +63,7 @@ public struct DryRunSheet: View {
         self.maxDeletePercent = maxDeletePercent
         self.minDeleteFloor = minDeleteFloor
         self.forceTripped = forceTripped
+        self.photoAccessIsFull = photoAccessIsFull
         self.onClose = onClose
         self.onConfirm = onConfirm
     }
@@ -299,11 +305,11 @@ public struct DryRunSheet: View {
                     RowDivider()
                     CheckRow(label: "Over \(minDeleteFloor)-asset floor", pass: overFloor)
                     RowDivider()
-                    CheckRow(label: "Server returned > 0 assets", pass: true)
+                    CheckRow(label: "Server returned > 0 assets", pass: library.server > 0)
                     RowDivider()
-                    CheckRow(label: "Photos access is Full", pass: true)
+                    CheckRow(label: "Photos access is Full", pass: photoAccessIsFull)
                     RowDivider()
-                    CheckRow(label: "Purview set populated", pass: true)
+                    CheckRow(label: "Purview set populated", pass: library.matched > 0)
                 }
             }
             .padding(.bottom, 16)
@@ -355,7 +361,12 @@ public struct DryRunSheet: View {
                 .frame(maxWidth: .infinity)
                 .frame(maxWidth: .infinity)
             }
-            ActionButton(label: "Raise threshold to \(Int(ceil(pct * 1.2)))% and retry", role: .quiet) {}
+            // The "Raise threshold to N% and retry" affordance used to live
+            // here with an empty action closure — a dead button on a
+            // safety-critical surface. The cap lives in Settings; raising
+            // it is a deliberate settings change, not a one-tap escape
+            // hatch on the confirmation sheet. Removed rather than left
+            // fake. (2026-06-09 review.)
         }
     }
 
