@@ -1907,6 +1907,14 @@ final class AppDependencies {
                 self?.model.serverAssetsFetched = count
             }
         }
+        // Same target as onServerPage, for the incremental stream path —
+        // so a long /sync/stream bootstrap surfaces a live "streaming X"
+        // counter instead of sitting at 0 the way it used to. The
+        // coordinator calls this synchronously on its executor, so hop to
+        // the main actor inside.
+        let onStreamProgress: @Sendable (Int) -> Void = { [weak self] count in
+            Task { @MainActor in self?.model.serverAssetsFetched = count }
+        }
         // Snapshot the feature-flag + coordinator/cache refs onto the
         // Task's locals so the closure doesn't re-touch MainActor state
         // mid-flight. The closure decides bootstrap-vs-incremental
@@ -1924,7 +1932,7 @@ final class AppDependencies {
             let outcome: DiscoveryOutcome
             if useIncremental, let coordinator, let cache {
                 do {
-                    let summary = try await coordinator.syncToCache()
+                    let summary = try await coordinator.syncToCache(onProgress: onStreamProgress)
                     syncLog.notice("[cairn.sync.stream] mode=\(summary.mode.rawValue, privacy: .public) upserted=\(summary.upserted, privacy: .public) deleted=\(summary.deleted, privacy: .public) ignored=\(summary.ignored, privacy: .public) durationMs=\(summary.durationMs, privacy: .public)")
                     assets = try await cache.snapshot()
                     outcome = .incremental(summary)

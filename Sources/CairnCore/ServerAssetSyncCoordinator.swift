@@ -59,8 +59,17 @@ public actor ServerAssetSyncCoordinator {
     ///   should catch this and fall back to the paginated path.
     /// - Throws other `ImmichClientError` variants for transport
     ///   errors. The caller logs and falls back.
+    /// - Parameter onProgress: Optional callback invoked after each batch
+    ///   flush with the cumulative count of assets applied so far
+    ///   (upserts + deletes). Lets the UI surface a live "streaming X"
+    ///   counter during a long bootstrap, the same way the paginated path
+    ///   reports per-page progress. Called on the coordinator's executor;
+    ///   keep the closure cheap / hop to the main actor inside it.
     @discardableResult
-    public func syncToCache(batchSize: Int = 100) async throws -> SyncRunSummary {
+    public func syncToCache(
+        batchSize: Int = 100,
+        onProgress: (@Sendable (Int) -> Void)? = nil
+    ) async throws -> SyncRunSummary {
         let start = clock()
         let priorSize = try await cache.size()
         let isBootstrap = priorSize == 0
@@ -96,6 +105,7 @@ public actor ServerAssetSyncCoordinator {
                 totalDeleted += summary.deleted
                 totalIgnored += summary.ignored
                 batchesFlushed += 1
+                onProgress?(totalUpserted + totalDeleted)
                 let elapsedMs = Int((clock().timeIntervalSince(start) * 1000).rounded())
                 coordLog.notice("[cairn.sync.stream] batch \(batchesFlushed, privacy: .public) flushed: cache=+\(summary.upserted, privacy: .public)/-\(summary.deleted, privacy: .public) total=+\(totalUpserted, privacy: .public)/-\(totalDeleted, privacy: .public) elapsed=\(elapsedMs, privacy: .public)ms")
             }
@@ -106,6 +116,7 @@ public actor ServerAssetSyncCoordinator {
             totalUpserted += summary.upserted
             totalDeleted += summary.deleted
             totalIgnored += summary.ignored
+            onProgress?(totalUpserted + totalDeleted)
         }
 
         let duration = Int((clock().timeIntervalSince(start) * 1000).rounded())
