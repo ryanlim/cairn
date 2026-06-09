@@ -634,6 +634,14 @@ public final class PhotoKitPersistentChangeReconciler {
         }
         tick("sourceTypeFilter")
 
+        // Count only the untracked ids that survived scope/source-type
+        // filtering — i.e. the ones actually added to the active hash
+        // pipeline. In `.selectedAlbums` mode the scope filter drops
+        // out-of-scope untracked ids, which are never cached, so counting
+        // the pre-filter total would inflate `untrackedDiscovered` on
+        // every scan with the same out-of-scope assets.
+        let untrackedActedOn = untrackedIds.intersection(insertedIds)
+
         // Diagnostic log — makes "why didn't my delete propagate?"
         // answerable from the device console without rebuilding.
         Self.logIncrementalHeader(
@@ -1132,7 +1140,7 @@ public final class PhotoKitPersistentChangeReconciler {
             drainedFromQueue: drained.successCount,
             recentlyObservedChecksums: allRecentlyObserved.union(drainedChecksums),
             sourceLocalIdentifierByChecksum: sourceLocalIdentifierByChecksum,
-            untrackedDiscovered: untrackedIds.count,
+            untrackedDiscovered: untrackedActedOn.count,
             confirmedFromChangeLog: confirmedFromChangeLogCount,
             confirmedFromOrphanSweep: confirmedFromOrphanSweepCount,
             editsProtected: editsProtectedCount,
@@ -1544,7 +1552,17 @@ public final class PhotoKitPersistentChangeReconciler {
         }
         let toProcess = Array(ordered.prefix(budget))
         let idsToProcess = toProcess.map { $0.localIdentifier }
-        let fetch = PHAsset.fetchAssets(withLocalIdentifiers: idsToProcess, options: nil)
+        // Include hidden + all source types for the liveness check —
+        // matching pruneStaleDeferredEntries. A nil-options fetch excludes
+        // hidden assets, so a queued asset the user *hid* after it was
+        // deferred would fail to resolve and get wrongly removed below as
+        // "deleted while queued." These ids all came from the deferred
+        // queue, so broadening only changes which of THEM resolve (it
+        // can't pull in new ids) — no active-management scope leak.
+        let livenessOpts = PHFetchOptions()
+        livenessOpts.includeHiddenAssets = true
+        livenessOpts.includeAssetSourceTypes = [.typeUserLibrary, .typeCloudShared, .typeiTunesSynced]
+        let fetch = PHAsset.fetchAssets(withLocalIdentifiers: idsToProcess, options: livenessOpts)
         var assets: [PHAsset] = []
         assets.reserveCapacity(fetch.count)
         fetch.enumerateObjects { asset, _, _ in assets.append(asset) }
@@ -2371,6 +2389,30 @@ public final class PhotoKitPersistentChangeReconciler {
                             try await deferredStore.remove([result.assetID])
                         } catch {
                             hashLog.error("[cairn.deferred] per-asset remove FAILED for id=\(result.assetID.prefix(12), privacy: .public): \(String(describing: error), privacy: .public)")
+                        }
+                    }
+                } else if result.resourceCount > 0 {
+                    // No checksums AND no deferReason, yet the asset had
+                    // resources — every per-resource read threw (corrupt
+                    // iCloud record, transient PhotoKit failure). Without
+                    // recording anything, discoverUntrackedAssets
+                    // rediscovers this id every scan and re-attempts the
+                    // failing fetch forever (a permanent "untracked sweep:
+                    // 1" + nonzero untrackedDiscovered). Defer it with a
+                    // retry reason so the queue owns the cadence, matching
+                    // the .noHashableResources handling above.
+                    if let deferredStore {
+                        out.deferredEmpty += 1
+                        let entry = DeferredHashEntry(
+                            localIdentifier: result.assetID,
+                            reason: .noHashableResources,
+                            sizeBytes: nil,
+                            firstDeferredAt: now
+                        )
+                        do {
+                            try await deferredStore.upsert([entry])
+                        } catch {
+                            hashLog.error("[cairn.hash] deferred-queue upsert FAILED (all-resources-failed) for id=\(result.assetID.prefix(12), privacy: .public): \(String(describing: error), privacy: .public)")
                         }
                     }
                 }

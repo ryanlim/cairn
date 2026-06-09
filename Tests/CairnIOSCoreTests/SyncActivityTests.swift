@@ -234,6 +234,7 @@ struct HashEventTests {
     @MainActor
     func startedInserts() {
         let model = CairnAppModel()
+        model.isSyncing = true  // applyHashEvent inserts only during a sync
         let item = makeItem()
         model.applyHashEvent(.started(item))
         #expect(model.inFlightHashes.count == 1)
@@ -244,6 +245,7 @@ struct HashEventTests {
     @MainActor
     func finishedRemoves() {
         let model = CairnAppModel()
+        model.isSyncing = true
         model.applyHashEvent(.started(makeItem()))
         model.applyHashEvent(.finished(assetID: "A1"))
         #expect(model.inFlightHashes.isEmpty)
@@ -256,6 +258,7 @@ struct HashEventTests {
     @MainActor
     func progressUpdates() {
         let model = CairnAppModel()
+        model.isSyncing = true
         model.applyHashEvent(.started(makeItem()))
         model.applyHashEvent(.downloadProgress(assetID: "A1", fraction: 0.4))
         #expect(model.inFlightHashes["A1"]?.downloadFraction == 0.4)
@@ -267,6 +270,7 @@ struct HashEventTests {
     @MainActor
     func progressOnUnknownIsNoOp() {
         let model = CairnAppModel()
+        model.isSyncing = true
         // The asset already finished; a late progress event arrives.
         // Inserting an orphan would leave a row in the dict forever
         // (no matching finished event would ever fire), so the guard
@@ -279,6 +283,7 @@ struct HashEventTests {
     @MainActor
     func spotlightLongestRunning() {
         let model = CairnAppModel()
+        model.isSyncing = true
         let t0 = Date(timeIntervalSince1970: 1_700_000_000)
         let oldest = makeItem(id: "A1", at: t0)
         let middle = makeItem(id: "A2", at: t0.addingTimeInterval(0.5))
@@ -293,16 +298,34 @@ struct HashEventTests {
     @MainActor
     func spotlightEmpty() {
         let model = CairnAppModel()
+        model.isSyncing = true
         #expect(model.spotlightedHash == nil)
         model.applyHashEvent(.started(makeItem()))
         model.applyHashEvent(.finished(assetID: "A1"))
         #expect(model.spotlightedHash == nil)
     }
 
+    @Test("started while not syncing is a no-op (post-cancel late event)")
+    @MainActor
+    func startedWhileNotSyncingIsNoOp() {
+        let model = CairnAppModel()
+        // isSyncing defaults false — simulates a late .started arriving
+        // during the reconciler's post-cancel unwind. It must not accrete.
+        model.applyHashEvent(.started(makeItem()))
+        #expect(model.inFlightHashes.isEmpty)
+        // A removal still works (cleanup is always allowed).
+        model.isSyncing = true
+        model.applyHashEvent(.started(makeItem()))
+        model.isSyncing = false
+        model.applyHashEvent(.finished(assetID: "A1"))
+        #expect(model.inFlightHashes.isEmpty)
+    }
+
     @Test("resetSyncNarration clears in-flight hashes")
     @MainActor
     func resetClearsInFlight() {
         let model = CairnAppModel()
+        model.isSyncing = true
         model.applyHashEvent(.started(makeItem(id: "A1")))
         model.applyHashEvent(.started(makeItem(id: "A2")))
         #expect(model.inFlightHashes.count == 2)
