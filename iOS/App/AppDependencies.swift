@@ -3927,6 +3927,12 @@ final class AppDependencies {
 
                 await MainActor.run {
                     self.model.lastSyncTrigger = resolvedTrigger
+                    // Reset the burst count so the failure path can't report
+                    // a *prior* pass's offline-detections count. It's set
+                    // again only after this pass's scan completes; a failure
+                    // before the scan (e.g. imputation's blocking server
+                    // prefetch) now correctly shows zero, not a stale number.
+                    self.model.lastScanBurstCount = 0
                     // Don't clear `lastError` at sync start. Doing so
                     // caused a "transient popup that auto-dismisses"
                     // bug: a prior session's error would alert on
@@ -3976,6 +3982,11 @@ final class AppDependencies {
                     await MainActor.run {
                         self.model.isSyncing = false
                         self.model.transitionSyncPhase(to: .idle)
+                        // Clear the clock the start block set above; leaking
+                        // it leaves InitialScanScreen's ELAPSED ticking while
+                        // idle (and wipes a paused scan's frozen elapsed).
+                        self.model.syncStartedAt = nil
+                        self.model.pausedSyncElapsedSeconds = nil
                     }
                     return
                 }
@@ -3990,6 +4001,8 @@ final class AppDependencies {
                     await MainActor.run {
                         self.model.isSyncing = false
                         self.model.transitionSyncPhase(to: .idle)
+                        self.model.syncStartedAt = nil
+                        self.model.pausedSyncElapsedSeconds = nil
                     }
                     return
                 }
@@ -4124,7 +4137,10 @@ final class AppDependencies {
                         // deletions are recorded, not lost.
                         let burst = self.model.lastScanBurstCount
                         if burst > 0 {
-                            self.model.syncToast = .offlineDetections(count: burst)
+                            // Route through showStatusToast so it auto-
+                            // dismisses like every other toast — a direct
+                            // assignment left it pinned until the next sync.
+                            self.showStatusToast(.offlineDetections(count: burst))
                         }
                     }
                 }
