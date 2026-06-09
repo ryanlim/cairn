@@ -1803,6 +1803,16 @@ final class AppDependencies {
 
     // MARK: - Live reconciliation
 
+    /// Sendable products of the off-main alive-on-phone library scan, so
+    /// the full-library enumeration + per-Live-Photo PHAssetResource calls
+    /// never touch the MainActor. `liveLocalIds` doubles as the
+    /// present-on-device id set the edit-retirement and orphan passes need.
+    private struct AliveScan: Sendable {
+        let totalVisibleAssets: Int
+        let liveLocalIds: Set<String>
+        let alivePhoneAssetKeys: Set<AlivePhoneAssetKey>
+    }
+
     @MainActor
     fileprivate func performLiveReconciliation(
         client: ImmichClient,
@@ -2120,150 +2130,103 @@ final class AppDependencies {
         // (full-table materialization), and the visible PHAsset fetch
         // off the main actor is another hundred-ish; serial they stack
         // to ~1s of dead time before the engine sees anything.
+        // The whole alive-on-phone scan — the full-library PHAsset fetch,
+        // the per-asset enumeration, the per-Live-Photo PHAssetResource
+        // calls (~10ms each), and the metadata-store key build — runs on
+        // one detached task and returns plain Sendable products. The old
+        // code fetched off-main but then enumerated on the MainActor
+        // (three separate times, see below), with the Live-Photo resource
+        // calls stacking to tens of seconds of main-thread stall on a
+        // library with many Live Photos. `liveLocalIds` is reused by the
+        // edit-retirement and orphan passes instead of re-enumerating.
+        let metadataStoreRef = self.localAssetMetadataStore
+        let testingCap = Self.resolveTestingAssetCap()
         async let cacheSummaryTask = self.localHashStore.summary()
         async let observedSnapshotTask = observed.snapshot()
         async let exclusionSnapshotTask = exclusions.snapshot()
         async let confirmedSnapshotTask = confirmed.snapshot()
-        async let visibleFetchTask: PHFetchResult<PHAsset> = Task.detached(priority: .userInitiated) {
+        async let aliveScanTask: AliveScan = Task.detached(priority: .userInitiated) {
             let opts = PHFetchOptions()
             // Include hidden + every PhotoKit source type for the
-            // alive-on-phone safety check. An asset that's still
-            // physically present in any form on the device — Hidden
-            // album, iCloud Shared Library, iTunes-synced, etc — is
-            // alive from cairn's deletion-detection perspective,
-            // even though some of those sources can't be trashed by
-            // the user from Photos.app. Filtering to .typeUserLibrary
-            // only (the prior behavior) means a server-stored asset
-            // whose `(filename, fileCreatedAt)` matched a Hidden or
-            // CloudShared phone asset would slip past the alive-on-
-            // phone filter, land in `wouldBeCandidates`, and surface
-            // as a quarantine entry the user can't easily explain
-            // (it's right there in Photos.app). Real end-user report
-            // matched exactly this shape.
+            // alive-on-phone safety check. An asset still physically
+            // present in any form on the device — Hidden album, iCloud
+            // Shared Library, iTunes-synced — is alive from cairn's
+            // deletion-detection perspective even though some of those
+            // sources can't be trashed from Photos.app. Filtering to
+            // .typeUserLibrary only would let a server asset whose
+            // (filename, fileCreatedAt) matched a Hidden/CloudShared
+            // phone asset slip past the filter into quarantine.
             opts.includeHiddenAssets = true
             opts.includeAssetSourceTypes = [.typeUserLibrary, .typeCloudShared, .typeiTunesSynced]
-            return PHAsset.fetchAssets(with: opts)
+            let fetch = PHAsset.fetchAssets(with: opts)
+            var total = fetch.count
+            if let cap = testingCap, total > cap { total = cap }
+
+            // Build a `(filename, fileCreatedAt-second)` set for every
+            // alive phone asset. **Filename source robustness:**
+            // `PHAsset.value(forKey:"filename")` (KVC) and
+            // `PHAssetResource.originalFilename` (what Immich's uploader
+            // ships) can disagree (usually case), so populate from BOTH
+            // PHAsset KVC and the metadata store; the AlivePhoneAssetKey
+            // constructor lowercases so case-only differences fall away.
+            var aliveKeys = Set<AlivePhoneAssetKey>()
+            var liveIds = Set<String>()
+            aliveKeys.reserveCapacity(fetch.count * 2)
+            liveIds.reserveCapacity(fetch.count)
+            fetch.enumerateObjects { asset, _, _ in
+                liveIds.insert(asset.localIdentifier)
+                guard let created = asset.creationDate else { return }
+                let createdSecond = Int(created.timeIntervalSince1970)
+                if let filename = asset.value(forKey: "filename") as? String, !filename.isEmpty {
+                    aliveKeys.insert(AlivePhoneAssetKey(filename: filename, secondsSince1970: createdSecond))
+                }
+                // Live Photos: include the paired motion video's resource
+                // filename — Immich uploads it as a SEPARATE server asset
+                // (the MOV) so without it the motion half misses the
+                // filter and surfaces as a phantom quarantine entry.
+                // mediaSubtypes guards the ~10ms PHAssetResource call to
+                // only assets that actually have a paired video.
+                if asset.mediaSubtypes.contains(.photoLive) {
+                    let resources = PHAssetResource.assetResources(for: asset)
+                    for resource in resources {
+                        switch resource.type {
+                        case .pairedVideo, .fullSizePairedVideo:
+                            let resName = resource.originalFilename
+                            if !resName.isEmpty {
+                                aliveKeys.insert(AlivePhoneAssetKey(filename: resName, secondsSince1970: createdSecond))
+                            }
+                        default:
+                            break
+                        }
+                    }
+                }
+            }
+            // Metadata-store source — same filename path as the imputation
+            // join and Immich's uploader. For edited assets the server's
+            // entry has the pre-edit upload filename, which lives in a
+            // non-primary resource captured at imputation time. Filter to
+            // live ids so a since-deleted row can't suppress a real hash.
+            let metadataForAliveSet = (try? await metadataStoreRef.snapshot()) ?? []
+            for entry in metadataForAliveSet where liveIds.contains(entry.localIdentifier) {
+                guard let created = entry.creationDate else { continue }
+                let createdSecond = Int(created.timeIntervalSince1970)
+                if let filename = entry.originalFileName, !filename.isEmpty {
+                    aliveKeys.insert(AlivePhoneAssetKey(filename: filename, secondsSince1970: createdSecond))
+                }
+                for resourceName in entry.allResourceFilenames where !resourceName.isEmpty {
+                    aliveKeys.insert(AlivePhoneAssetKey(filename: resourceName, secondsSince1970: createdSecond))
+                }
+            }
+            return AliveScan(totalVisibleAssets: total, liveLocalIds: liveIds, alivePhoneAssetKeys: aliveKeys)
         }.value
 
         let cacheSummary = try await cacheSummaryTask
         let local = cacheSummary.checksums
         let indexedCount = cacheSummary.distinctIdCount
-        let visibleFetch = await visibleFetchTask
-        var totalVisibleAssets = visibleFetch.count
-        if let cap = Self.resolveTestingAssetCap(), totalVisibleAssets > cap {
-            totalVisibleAssets = cap
-        }
-
-        // Build a `(filename, fileCreatedAt-second)` set for every
-        // alive phone asset. The engine uses this as a safety check
-        // to suppress deletion candidates for server assets whose
-        // capture-identity matches a phone asset that's still present
-        // — the "edit-revert, bytes diverged" class of false positives.
-        // Same set is unioned into the limbo `excluded` parameter so
-        // those checksums also don't get pre-stamped via the
-        // missed-deletion recovery path.
-        //
-        // **Filename source robustness.** Real-world bug class:
-        // `PHAsset.value(forKey: "filename")` (PHAsset internal) and
-        // `PHAssetResource.originalFilename` (resource payload, what
-        // Immich's mobile uploader ships to the server) can disagree
-        // on the same asset. Most often a case difference
-        // ("IMG_1234.MOV" vs "img_1234.MOV"), occasionally content.
-        // Imputation uses PHAssetResource.originalFilename for its
-        // join key; if the alive-key build used only PHAsset KVC, an
-        // asset still alive on the phone could fail this safety
-        // check and end up in quarantine as a deletion candidate
-        // (the failure shape an end-user just reported). Solution:
-        // populate the alive set from BOTH sources. The `Set`
-        // de-dups; the `AlivePhoneAssetKey` constructor lowercases
-        // the filename so case-only differences fall away.
-        var alivePhoneAssetKeys = Set<AlivePhoneAssetKey>()
-        var liveLocalIds = Set<String>()
-        alivePhoneAssetKeys.reserveCapacity(visibleFetch.count * 2)
-        liveLocalIds.reserveCapacity(visibleFetch.count)
-        visibleFetch.enumerateObjects { asset, _, _ in
-            liveLocalIds.insert(asset.localIdentifier)
-            guard let created = asset.creationDate else { return }
-            let createdSecond = Int(created.timeIntervalSince1970)
-            if let filename = asset.value(forKey: "filename") as? String,
-               !filename.isEmpty
-            {
-                alivePhoneAssetKeys.insert(
-                    AlivePhoneAssetKey(
-                        filename: filename,
-                        secondsSince1970: createdSecond
-                    )
-                )
-            }
-            // Live Photos: include the paired motion video's resource
-            // filename too, since Immich uploads it as a SEPARATE server
-            // asset whose `originalFileName` is the MOV (`IMG_1234.MOV`)
-            // while the photo half is the HEIC (`IMG_1234.HEIC`). Without
-            // emitting both, the server-stored paired motion video misses
-            // the alive-on-phone filter, lands in `wouldBeCandidates`,
-            // and surfaces as a quarantine entry — even though it's
-            // literally part of a Live Photo still alive on the device.
-            // PHAsset.mediaSubtypes guards the per-asset PHAssetResource
-            // call so we only pay the ~10 ms enumeration cost for assets
-            // that actually have a paired video.
-            if asset.mediaSubtypes.contains(.photoLive) {
-                let resources = PHAssetResource.assetResources(for: asset)
-                for resource in resources {
-                    switch resource.type {
-                    case .pairedVideo, .fullSizePairedVideo:
-                        let resName = resource.originalFilename
-                        if !resName.isEmpty {
-                            alivePhoneAssetKeys.insert(
-                                AlivePhoneAssetKey(
-                                    filename: resName,
-                                    secondsSince1970: createdSecond
-                                )
-                            )
-                        }
-                    default:
-                        break
-                    }
-                }
-            }
-        }
-        // Metadata-store source — uses the same filename path as the
-        // imputation join AND as what Immich's mobile uploader sends
-        // to the server. Build-112's piggyback keeps this current
-        // for every imputation pass. Filter to live ids so a metadata
-        // row from a since-deleted asset doesn't accidentally
-        // suppress its real on-server hash.
-        let metadataForAliveSet = (try? await self.localAssetMetadataStore.snapshot()) ?? []
-        for entry in metadataForAliveSet where liveLocalIds.contains(entry.localIdentifier) {
-            guard let created = entry.creationDate else { continue }
-            let createdSecond = Int(created.timeIntervalSince1970)
-            // Primary filename (typically the rendered-edit name for
-            // edited assets, the original for untouched assets).
-            if let filename = entry.originalFileName, !filename.isEmpty {
-                alivePhoneAssetKeys.insert(
-                    AlivePhoneAssetKey(
-                        filename: filename,
-                        secondsSince1970: createdSecond
-                    )
-                )
-            }
-            // Every other resource filename observed at imputation
-            // time. For edited assets this is the key payload —
-            // Immich's server entry has the pre-edit upload's
-            // filename, which is one of the non-primary resources
-            // (`.video` for an edited video, etc).  Real end-user
-            // case at build 120: KVC='80EE02BF-...MOV',
-            // primary='FullSizeRender.mov', resource list included
-            // `video='IMG_2999.MOV'` which is exactly what the server
-            // had.
-            for resourceName in entry.allResourceFilenames where !resourceName.isEmpty {
-                alivePhoneAssetKeys.insert(
-                    AlivePhoneAssetKey(
-                        filename: resourceName,
-                        secondsSince1970: createdSecond
-                    )
-                )
-            }
-        }
+        let aliveScan = await aliveScanTask
+        let totalVisibleAssets = aliveScan.totalVisibleAssets
+        let liveLocalIds = aliveScan.liveLocalIds
+        let alivePhoneAssetKeys = aliveScan.alivePhoneAssetKeys
 
         syncLog.notice("[cairn.sync] local checksums fetched in \(Int(Date().timeIntervalSince(t1) * 1000))ms (\(indexedCount) entries)")
 
@@ -2323,11 +2286,8 @@ final class AppDependencies {
         if let editRetirementStore {
             let snapshot = try await editRetirementStore.snapshot()
             if !snapshot.isEmpty {
-                var liveLocalIds = Set<String>()
-                liveLocalIds.reserveCapacity(visibleFetch.count)
-                visibleFetch.enumerateObjects { asset, _, _ in
-                    liveLocalIds.insert(asset.localIdentifier)
-                }
+                // Reuse the alive-scan's liveLocalIds instead of
+                // re-enumerating the full library on main again.
                 for (id, anchorSet) in snapshot where liveLocalIds.contains(id) {
                     editRetirementHeld.formUnion(anchorSet)
                 }
@@ -2505,7 +2465,10 @@ final class AppDependencies {
         // narrowed without a rebuild. Counts only.
         syncLog.notice("[cairn.engine] input: server=\(serverAssets.count, privacy: .public) local=\(extendedLocal.count, privacy: .public) observed=\(observedSet.count, privacy: .public) confirmed=\(confirmedMap.count, privacy: .public) excluded=\(exclusionSet.count, privacy: .public) strictness=\(String(describing: effectiveStrictness), privacy: .public) qDays=\(settings.quarantineDays, privacy: .public) scope=\(selectedAlbumScope?.count ?? -1, privacy: .public)")
 
-        var result = ReconciliationEngine.compute(.init(
+        // Run the engine off the MainActor — it's a pure function over
+        // up-to-100k-element sets (hundreds of ms of CPU) and blocking
+        // main for it stutters the UI. Inputs and output are all Sendable.
+        let engineInput = ReconciliationInput(
             serverAssets: serverAssets,
             currentLocalChecksums: extendedLocal,
             observedChecksums: observedSet,
@@ -2518,7 +2481,10 @@ final class AppDependencies {
             selectedAlbumScope: selectedAlbumScope,
             excludedAtByChecksum: exclusionAddedAt,
             alivePhoneAssetKeys: alivePhoneAssetKeys
-        ))
+        )
+        var result = await Task.detached(priority: .userInitiated) {
+            ReconciliationEngine.compute(engineInput)
+        }.value
         syncLog.notice("[cairn.engine] output: delete=\(result.deleteCandidates.count, privacy: .public) pending=\(result.pendingReviewCandidates.count, privacy: .public) held=\(result.heldByQuarantineCandidates.count, privacy: .public) recycled=\(result.recycledExclusionCandidates.count, privacy: .public) excludedCount=\(result.excludedCandidateCount, privacy: .public) aliveOnPhone=\(result.aliveOnPhoneCandidateCount, privacy: .public)")
 
         // Per-candidate diagnostic dump for the delete bucket. Tells us
@@ -2570,23 +2536,23 @@ final class AppDependencies {
             let metadataSnapshot = try await self.localAssetMetadataStore.snapshot()
             syncLog.notice("[cairn.orphan] starting match: serverAssets=\(serverAssets.count, privacy: .public) metadata=\(metadataSnapshot.count, privacy: .public) observed=\(observedSet.count, privacy: .public)")
             if !metadataSnapshot.isEmpty {
-                var presentLocalIds = Set<String>()
-                presentLocalIds.reserveCapacity(visibleFetch.count)
-                visibleFetch.enumerateObjects { asset, _, _ in
-                    presentLocalIds.insert(asset.localIdentifier)
-                }
+                // Reuse the alive-scan's liveLocalIds — same filter, same
+                // result as re-enumerating the full library a third time.
+                let presentLocalIds = liveLocalIds
                 // Surface orphan candidate counts BEFORE the match so we
                 // can tell whether the gate is filtering them out vs the
                 // match algorithm not finding correlations.
                 let nonTrashedNonObserved = serverAssets.filter { !$0.isTrashed && !observedSet.contains($0.checksum) }
                 let absentMetadataCount = metadataSnapshot.filter { !presentLocalIds.contains($0.localIdentifier) }.count
                 syncLog.notice("[cairn.orphan] gate: server-non-trashed-non-observed=\(nonTrashedNonObserved.count, privacy: .public) metadata-for-absent-ids=\(absentMetadataCount, privacy: .public) presentLocalIds=\(presentLocalIds.count, privacy: .public)")
-                let orphans = OrphanReconciler.match(
-                    serverAssets: serverAssets,
-                    observed: observedSet,
-                    metadata: metadataSnapshot,
-                    presentLocalIdentifiers: presentLocalIds
-                )
+                let orphans = await Task.detached(priority: .userInitiated) {
+                    OrphanReconciler.match(
+                        serverAssets: serverAssets,
+                        observed: observedSet,
+                        metadata: metadataSnapshot,
+                        presentLocalIdentifiers: presentLocalIds
+                    )
+                }.value
                 syncLog.notice("[cairn.orphan] match result: \(orphans.count, privacy: .public) orphans found")
                 if !orphans.isEmpty {
                     let existingPendingChecksums = Set(result.pendingReviewCandidates.map(\.checksum))
