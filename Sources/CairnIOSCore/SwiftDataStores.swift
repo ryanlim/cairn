@@ -694,13 +694,25 @@ public actor SwiftDataExclusionStore: ExclusionStore {
 
     public func insert(_ entries: [Checksum: ExclusionMetadata]) async throws {
         guard !entries.isEmpty else { return }
+        // Bulk-fetch existing rows for the incoming checksums (chunked IN)
+        // instead of one SELECT per checksum, then update/insert in
+        // memory and save once.
+        var existingByBase64: [String: StoredExclusion] = [:]
+        let base64s = entries.keys.map(\.base64)
+        let chunkSize = 1000
+        var start = 0
+        while start < base64s.count {
+            let end = min(start + chunkSize, base64s.count)
+            let chunk = Set(base64s[start..<end])
+            let rows = try context.fetch(FetchDescriptor<StoredExclusion>(
+                predicate: #Predicate<StoredExclusion> { chunk.contains($0.checksumBase64) }
+            ))
+            for row in rows { existingByBase64[row.checksumBase64] = row }
+            start = end
+        }
         for (checksum, metadata) in entries {
             let base64 = checksum.base64
-            var descriptor = FetchDescriptor<StoredExclusion>(
-                predicate: #Predicate<StoredExclusion> { $0.checksumBase64 == base64 }
-            )
-            descriptor.fetchLimit = 1
-            if let existing = try context.fetch(descriptor).first {
+            if let existing = existingByBase64[base64] {
                 // Last-writer-wins. Mutating a fetched `@Model`
                 // instance in place is the SwiftData idiom for
                 // updates — no separate `update` call.
@@ -708,12 +720,14 @@ public actor SwiftDataExclusionStore: ExclusionStore {
                 existing.fromRunId = metadata.fromRunId
                 existing.reason = metadata.reason
             } else {
-                context.insert(StoredExclusion(
+                let row = StoredExclusion(
                     checksumBase64: base64,
                     addedAt: metadata.addedAt,
                     fromRunId: metadata.fromRunId,
                     reason: metadata.reason
-                ))
+                )
+                context.insert(row)
+                existingByBase64[base64] = row
             }
         }
         try context.save()
@@ -1169,15 +1183,24 @@ public actor SwiftDataLocalHashStore: LocalHashStore {
 
     public func removeAll(for localIdentifiers: Set<String>) async throws {
         guard !localIdentifiers.isEmpty else { return }
+        // Chunked IN-predicate delete instead of one fetch per id. The
+        // "Re-hash imputed entries" action calls this with the full ~80k
+        // imputed-id set — that was 80k sequential predicate fetches.
         var changed = false
-        for id in localIdentifiers {
-            let descriptor = FetchDescriptor<StoredLocalHashEntry>(
-                predicate: #Predicate<StoredLocalHashEntry> { $0.localIdentifier == id }
-            )
-            for row in try context.fetch(descriptor) {
+        let ids = Array(localIdentifiers)
+        let chunkSize = 1000
+        var start = 0
+        while start < ids.count {
+            let end = min(start + chunkSize, ids.count)
+            let chunk = Set(ids[start..<end])
+            let rows = try context.fetch(FetchDescriptor<StoredLocalHashEntry>(
+                predicate: #Predicate<StoredLocalHashEntry> { chunk.contains($0.localIdentifier) }
+            ))
+            for row in rows {
                 context.delete(row)
                 changed = true
             }
+            start = end
         }
         if changed { try context.save() }
     }
@@ -1303,13 +1326,27 @@ public actor SwiftDataLocalAssetMetadataStore: LocalAssetMetadataStore {
 
     public func record(_ entries: [LocalAssetMetadata]) async throws {
         guard !entries.isEmpty else { return }
+        // Bulk-fetch existing rows for the incoming ids instead of one
+        // SELECT per entry. The imputation piggyback hands this ~108k
+        // entries on a large library — that was ~108k sequential
+        // predicate fetches before a single save. Chunk the id lookup so
+        // the IN clause stays bounded, build an id→row map, then
+        // update/insert in memory and save once.
+        var existingById: [String: StoredLocalAssetMetadata] = [:]
+        let incomingIds = entries.map(\.localIdentifier)
+        let lookupChunk = 1000
+        var start = 0
+        while start < incomingIds.count {
+            let end = min(start + lookupChunk, incomingIds.count)
+            let chunk = Set(incomingIds[start..<end])
+            let rows = try context.fetch(FetchDescriptor<StoredLocalAssetMetadata>(
+                predicate: #Predicate<StoredLocalAssetMetadata> { chunk.contains($0.localIdentifier) }
+            ))
+            for row in rows { existingById[row.localIdentifier] = row }
+            start = end
+        }
         for entry in entries {
-            let id = entry.localIdentifier
-            var descriptor = FetchDescriptor<StoredLocalAssetMetadata>(
-                predicate: #Predicate<StoredLocalAssetMetadata> { $0.localIdentifier == id }
-            )
-            descriptor.fetchLimit = 1
-            if let existing = try context.fetch(descriptor).first {
+            if let existing = existingById[entry.localIdentifier] {
                 // Preserve `observedAt` — it represents first observation,
                 // useful for tracking how long ago we cached this entry.
                 existing.originalFileName = entry.originalFileName
@@ -1327,7 +1364,7 @@ public actor SwiftDataLocalAssetMetadataStore: LocalAssetMetadataStore {
                     existing.allResourceFilenamesCSV = Self.encodeFilenames(entry.allResourceFilenames)
                 }
             } else {
-                context.insert(StoredLocalAssetMetadata(
+                let row = StoredLocalAssetMetadata(
                     localIdentifier: entry.localIdentifier,
                     originalFileName: entry.originalFileName,
                     creationDate: entry.creationDate,
@@ -1335,7 +1372,11 @@ public actor SwiftDataLocalAssetMetadataStore: LocalAssetMetadataStore {
                     fileSize: entry.fileSize,
                     observedAt: entry.observedAt,
                     allResourceFilenamesCSV: Self.encodeFilenames(entry.allResourceFilenames)
-                ))
+                )
+                context.insert(row)
+                // Track the freshly-inserted row so a duplicate id later
+                // in the same batch updates it rather than inserting twice.
+                existingById[entry.localIdentifier] = row
             }
         }
         try context.save()
