@@ -66,6 +66,12 @@ public final class CairnAppModel {
     /// on the Export/Import rows and disables them while this is set.
     public var isTransferringData: Bool = false
 
+    /// True while the manual "Retry now" pending-trash drain is running.
+    /// Each queued intent is a network round-trip (up to 30s each), so the
+    /// Status banner shows a spinner and disables the button rather than
+    /// leaving the tap feeling dead.
+    public var isRetryingPendingTrashes: Bool = false
+
     public var connectionStatus: SettingsScreen.ConnectionStatus
 
     // MARK: - State the screens read

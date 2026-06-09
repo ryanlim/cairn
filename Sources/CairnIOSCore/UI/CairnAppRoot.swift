@@ -587,9 +587,12 @@ public struct CairnAppRoot: View {
                 pendingTrashStuckCount: model.pendingTrashStuckCount,
                 onRetryPendingTrashes: {
                     Task { @MainActor in
+                        model.isRetryingPendingTrashes = true
+                        defer { model.isRetryingPendingTrashes = false }
                         await model.actions.retryPendingTrashes()
                     }
                 },
+                isRetryingPendingTrashes: model.isRetryingPendingTrashes,
                 onOpenPendingTrashes: {
                     Task { @MainActor in
                         let intents = await model.actions.loadPendingTrashes()

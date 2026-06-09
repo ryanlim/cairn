@@ -123,6 +123,9 @@ public struct StatusScreen: View {
     /// Manual "Retry now" — drains the pending-trash queue
     /// regardless of attempt cap.
     public let onRetryPendingTrashes: () -> Void
+    /// True while the "Retry now" drain is in flight — swaps the button
+    /// for a spinner and disables re-taps.
+    public let isRetryingPendingTrashes: Bool
     /// Tap handler on the stuck banner — opens the
     /// PendingTrashesSheet detail view.
     public let onOpenPendingTrashes: () -> Void
@@ -286,6 +289,7 @@ public struct StatusScreen: View {
         pendingTrashCount: Int = 0,
         pendingTrashStuckCount: Int = 0,
         onRetryPendingTrashes: @escaping () -> Void = {},
+        isRetryingPendingTrashes: Bool = false,
         onOpenPendingTrashes: @escaping () -> Void = {},
         onRetryConnection: @escaping () -> Void = {},
         onOpenSyncDetail: @escaping () -> Void = {},
@@ -335,6 +339,7 @@ public struct StatusScreen: View {
         self.pendingTrashCount = pendingTrashCount
         self.pendingTrashStuckCount = pendingTrashStuckCount
         self.onRetryPendingTrashes = onRetryPendingTrashes
+        self.isRetryingPendingTrashes = isRetryingPendingTrashes
         self.onOpenPendingTrashes = onOpenPendingTrashes
         self.onRetryConnection = onRetryConnection
         self.onOpenSyncDetail = onOpenSyncDetail
@@ -839,9 +844,16 @@ public struct StatusScreen: View {
                             .opacity(0.88).fixedSize(horizontal: false, vertical: true)
                     }
                     Spacer(minLength: 8)
-                    Button("Retry now", action: onRetryPendingTrashes)
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.small)
+                    Button(action: onRetryPendingTrashes) {
+                        if isRetryingPendingTrashes {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Text("Retry now")
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .disabled(isRetryingPendingTrashes)
                 }
             }
             .padding(.horizontal, 16).padding(.bottom, 12)
