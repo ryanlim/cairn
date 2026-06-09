@@ -320,6 +320,7 @@ public struct CairnAppRoot: View {
             phase: model.syncPhase,
             serverAssetsFetched: model.serverAssetsFetched,
             serverAssetsExpected: model.serverAssetsExpected,
+            scanned: model.syncProgress?.scanned,
             settings: $model.settings,
             onStart: { startTrackedSync() },
             onCancel: { cancelActiveSync() },

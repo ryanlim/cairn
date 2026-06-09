@@ -1589,13 +1589,19 @@ final class AppDependencies {
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.model.syncProgress = .init(
-                    hashed: scanned,
+                    // hashed stays 0 — the scan hasn't *hashed* anything,
+                    // it's enumerating. Driving `hashed` here filled the
+                    // main bar to 100% then snapped it back to 0 when the
+                    // hash pass began. The count goes to `scanned`, which
+                    // InitialScanScreen renders as its own line.
+                    hashed: 0,
                     total: total,
                     // Pre-hash library scan — leave the hash baseline
                     // uncaptured (nil) so the first onHashProgress emit
                     // establishes it from `done`.
                     initialHashed: nil,
-                    imputed: self.model.syncProgress?.imputed ?? 0
+                    imputed: self.model.syncProgress?.imputed ?? 0,
+                    scanned: scanned
                 )
             }
         }

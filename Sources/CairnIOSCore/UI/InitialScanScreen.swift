@@ -72,6 +72,11 @@ public struct InitialScanScreen: View {
     /// "X / Y assets" with a proportional bar instead of an open
     /// counter.
     public let serverAssetsExpected: Int?
+    /// Live count of phone assets enumerated during the pre-hash library
+    /// scan. `nil` outside that phase. Rendered as its own line so the
+    /// scan doesn't drive the main bar to 100% and snap back when hashing
+    /// begins.
+    public let scanned: Int?
     @Binding public var settings: CairnSettings
     public let onStart: () -> Void
     public let onCancel: () -> Void
@@ -176,6 +181,7 @@ public struct InitialScanScreen: View {
         phase: CairnAppModel.SyncPhase = .idle,
         serverAssetsFetched: Int = 0,
         serverAssetsExpected: Int? = nil,
+        scanned: Int? = nil,
         settings: Binding<CairnSettings> = .constant(.defaults),
         onStart: @escaping () -> Void = {},
         onCancel: @escaping () -> Void = {},
@@ -186,6 +192,7 @@ public struct InitialScanScreen: View {
         self.hashed = hashed
         self.indexed = indexed
         self.imputed = imputed
+        self.scanned = scanned
         self.deferredQueueCount = deferredQueueCount
         self.isActive = isActive
         self.startedAt = startedAt
@@ -635,6 +642,9 @@ public struct InitialScanScreen: View {
                 } else {
                     ProcessingBreakdown(indexed: indexed, deferredQueueCount: deferredQueueCount, processed: hashed)
                 }
+                if scanningLineVisible {
+                    scanningLine
+                }
                 if imputed > 0 {
                     trustSeededLine
                 }
@@ -687,6 +697,37 @@ public struct InitialScanScreen: View {
                 "Fetched \(serverAssetsFetched) of \($0) server assets"
             } ?? "Fetched \(serverAssetsFetched) server assets"
         )
+    }
+
+    /// Whether the library-scan counter belongs on screen. Shows during
+    /// the pre-hash phases once enumeration has started, hidden once
+    /// hashing takes over (the main counter is the live signal then).
+    private var scanningLineVisible: Bool {
+        guard let scanned, scanned > 0 else { return false }
+        switch phase {
+        case .preparing, .fetchingServer, .imputingFromServer, .reconciling, .finalizing:
+            return true
+        case .hashing, .idle:
+            return false
+        }
+    }
+
+    /// One-line caption for the pre-hash library walk: "X / Y phone assets
+    /// scanned". Same icon+count+suffix shape as `serverFetchLine` so the
+    /// progress card reads as a coherent stat strip. This is where the
+    /// enumeration progress lives now that it no longer drives the main
+    /// bar (which is reserved for hashing, so it fills exactly once).
+    private var scanningLine: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "rectangle.stack.badge.magnifyingglass")
+                .font(.cairnScaled(size: 10))
+                .foregroundStyle(t.pendingInk)
+            Text("\((scanned ?? 0).formatted(.number)) / \(total.formatted(.number)) phone assets scanned")
+                .font(.cairnScaled(size: 12, weight: .medium))
+                .foregroundStyle(t.textBody)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Scanned \(scanned ?? 0) of \(total) phone assets")
     }
 
     /// One-line caption shown when the fast-initial-scan path

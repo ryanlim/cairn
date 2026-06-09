@@ -842,11 +842,21 @@ public final class CairnAppModel {
         /// matches were found.
         public let imputed: Int
 
-        public init(hashed: Int, total: Int, initialHashed: Int? = nil, imputed: Int = 0) {
+        /// Count of phone assets enumerated during the pre-hash library
+        /// scan (the `runImputationPass` walk that builds the join set).
+        /// `nil` outside that phase. Kept separate from `hashed` so the
+        /// scan renders as its own labeled line in InitialScanScreen
+        /// rather than driving the main progress bar to 100% and then
+        /// snapping back to 0 when the hash pass starts (the bar now fills
+        /// exactly once, for hashing).
+        public let scanned: Int?
+
+        public init(hashed: Int, total: Int, initialHashed: Int? = nil, imputed: Int = 0, scanned: Int? = nil) {
             self.hashed = hashed
             self.total = total
             self.initialHashed = initialHashed
             self.imputed = imputed
+            self.scanned = scanned
         }
     }
 
