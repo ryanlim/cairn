@@ -944,30 +944,46 @@ final class AppDependencies {
         // time fallback (`observeAndFilter`) can't fetch the deleted
         // asset to record metadata either, leaving OrphanReconciler with
         // nothing to match against asset_E on the server.
-        let toCapture = details.insertedObjects + details.changedObjects
-        guard !toCapture.isEmpty else { return }
-        let now = Date()
-        var entries: [LocalAssetMetadata] = []
-        entries.reserveCapacity(toCapture.count)
-        for asset in toCapture {
-            let resources = PHAssetResource.assetResources(for: asset)
-            // Primary = the same resource cairn hashes (`.fullSizePhoto`
-            // for edits, `.photo` otherwise). Aligning with the hash
-            // pipeline AND with Immich's own upload-resource selection
-            // so the filename we record matches what Immich stores.
-            let primary = PhotoKitPhotoEnumerator.selectPrimaryResource(from: resources)
-            let size = (primary?.value(forKey: "fileSize") as? NSNumber)?.int64Value
-            entries.append(LocalAssetMetadata(
-                localIdentifier: asset.localIdentifier,
-                originalFileName: primary?.originalFilename,
-                creationDate: asset.creationDate,
-                modificationDate: asset.modificationDate,
-                fileSize: size,
-                observedAt: now
-            ))
-        }
+        // Snapshot just the identifiers on main (cheap Sendable reads),
+        // then do the per-asset PHAssetResource enumeration off the main
+        // thread. That loop is ~30ms/asset; a 50-photo import burst was
+        // ~1.5s of synchronous main-thread stall while the app is
+        // foreground and interactive. The detached task re-fetches by id
+        // immediately (microseconds later), so the edit-then-delete-within-
+        // debounce race the function guards against is preserved — and the
+        // scan-time `observeAndFilter` path is still the fallback if an id
+        // does vanish first. PHAsset isn't Sendable, so we pass ids, not
+        // assets (the same hand-off shape as collectIncrementalChanges).
+        let captureIds = (details.insertedObjects + details.changedObjects).map(\.localIdentifier)
+        guard !captureIds.isEmpty else { return }
         let store = self.localAssetMetadataStore
-        Task {
+        Task.detached(priority: .utility) {
+            let now = Date()
+            let fetch = PHAsset.fetchAssets(withLocalIdentifiers: captureIds, options: nil)
+            var entries: [LocalAssetMetadata] = []
+            entries.reserveCapacity(fetch.count)
+            fetch.enumerateObjects { asset, _, _ in
+                let resources = PHAssetResource.assetResources(for: asset)
+                // Primary = the same resource cairn hashes
+                // (`.fullSizePhoto` for edits, `.photo` otherwise),
+                // aligning with the hash pipeline and Immich's own
+                // upload-resource selection so the recorded filename
+                // matches what Immich stores.
+                let primary = PhotoKitPhotoEnumerator.selectPrimaryResource(from: resources)
+                let size = (primary?.value(forKey: "fileSize") as? NSNumber)?.int64Value
+                entries.append(LocalAssetMetadata(
+                    localIdentifier: asset.localIdentifier,
+                    originalFileName: primary?.originalFilename,
+                    creationDate: asset.creationDate,
+                    modificationDate: asset.modificationDate,
+                    fileSize: size,
+                    observedAt: now,
+                    // Capture every resource filename — same alive-on-phone
+                    // requirement as the reconciler metadata paths (review
+                    // 1.1); this observer-time write had the same gap.
+                    allResourceFilenames: resources.map(\.originalFilename).filter { !$0.isEmpty }
+                ))
+            }
             // Best-effort: a write failure here is non-fatal — the
             // scan-time metadata recording in `observeAndFilter` is
             // still in place as a fallback.
@@ -1261,48 +1277,56 @@ final class AppDependencies {
     /// metadata entry, and reads via a single `snapshot()` call. Cheap
     /// on warm caches; a few seconds the first time.
     @MainActor
-    private func backfillMetadataIfNeeded(visibleFetch: PHFetchResult<PHAsset>) async {
+    private func backfillMetadataIfNeeded() async {
+        // Store snapshots run on their actors' executors (the awaits free
+        // main); only the id arithmetic is on main and it's cheap.
         let metadataSnapshot = (try? await self.localAssetMetadataStore.snapshot()) ?? []
         let knownIds = Set(metadataSnapshot.map(\.localIdentifier))
         let cacheIds = (try? await self.localHashStore.allLocalIdentifiers()) ?? []
         let missingFromMetadata = cacheIds.subtracting(knownIds)
         guard !missingFromMetadata.isEmpty else { return }
 
-        // Intersect with currently-alive PHAssets — we can only
-        // capture metadata for assets PhotoKit can still hand us. Build
-        // a quick lookup from the visibleFetch to avoid an N×M scan.
-        var liveById: [String: PHAsset] = [:]
-        liveById.reserveCapacity(visibleFetch.count)
-        visibleFetch.enumerateObjects { asset, _, _ in
-            liveById[asset.localIdentifier] = asset
-        }
-        let backfillTargets = missingFromMetadata.compactMap { liveById[$0] }
-        guard !backfillTargets.isEmpty else { return }
+        let store = self.localAssetMetadataStore
+        let cacheCount = cacheIds.count
+        let knownCount = knownIds.count
+        let missingCount = missingFromMetadata.count
 
-        let now = Date()
-        var entries: [LocalAssetMetadata] = []
-        entries.reserveCapacity(backfillTargets.count)
-        for asset in backfillTargets {
-            let resources = PHAssetResource.assetResources(for: asset)
-            let primary = PhotoKitPhotoEnumerator.selectPrimaryResource(from: resources)
-            let size = (primary?.value(forKey: "fileSize") as? NSNumber)?.int64Value
-            let allNames = resources.map(\.originalFilename).filter { !$0.isEmpty }
-            entries.append(LocalAssetMetadata(
-                localIdentifier: asset.localIdentifier,
-                originalFileName: primary?.originalFilename,
-                creationDate: asset.creationDate,
-                modificationDate: asset.modificationDate,
-                fileSize: size,
-                observedAt: now,
-                allResourceFilenames: allNames
-            ))
-        }
-        do {
-            try await self.localAssetMetadataStore.record(entries)
-            syncLog.notice("[cairn.metadata] backfilled \(entries.count, privacy: .public) entries (cache=\(cacheIds.count, privacy: .public) had-metadata=\(knownIds.count, privacy: .public) still-missing=\(missingFromMetadata.count - entries.count, privacy: .public) — those PHAssets are no longer fetchable)")
-        } catch {
-            syncLog.error("[cairn.metadata] backfill failed: \(Self.describeSyncError(error), privacy: .public)")
-        }
+        // Re-fetch the missing ids and build entries off the MainActor.
+        // `fetchAssets(withLocalIdentifiers:)` returns only ids PhotoKit
+        // can still resolve, which IS the "intersect with currently-alive"
+        // filter the old code did by enumerating the full visibleFetch —
+        // so we no longer run a full-library enumeration plus a per-asset
+        // PHAssetResource loop on the main thread (near-whole-cache on an
+        // upgrade install whose metadata store predates the piggyback
+        // write). Mirrors migrateResourceFilenamesIfNeeded, which already
+        // detaches. Awaited so it still completes before the sync proceeds.
+        await Task.detached(priority: .utility) {
+            let now = Date()
+            let fetch = PHAsset.fetchAssets(withLocalIdentifiers: Array(missingFromMetadata), options: nil)
+            var entries: [LocalAssetMetadata] = []
+            entries.reserveCapacity(fetch.count)
+            fetch.enumerateObjects { asset, _, _ in
+                let resources = PHAssetResource.assetResources(for: asset)
+                let primary = PhotoKitPhotoEnumerator.selectPrimaryResource(from: resources)
+                let size = (primary?.value(forKey: "fileSize") as? NSNumber)?.int64Value
+                entries.append(LocalAssetMetadata(
+                    localIdentifier: asset.localIdentifier,
+                    originalFileName: primary?.originalFilename,
+                    creationDate: asset.creationDate,
+                    modificationDate: asset.modificationDate,
+                    fileSize: size,
+                    observedAt: now,
+                    allResourceFilenames: resources.map(\.originalFilename).filter { !$0.isEmpty }
+                ))
+            }
+            guard !entries.isEmpty else { return }
+            do {
+                try await store.record(entries)
+                syncLog.notice("[cairn.metadata] backfilled \(entries.count, privacy: .public) entries (cache=\(cacheCount, privacy: .public) had-metadata=\(knownCount, privacy: .public) still-missing=\(missingCount - entries.count, privacy: .public) — those PHAssets are no longer fetchable)")
+            } catch {
+                syncLog.error("[cairn.metadata] backfill failed: \(Self.describeSyncError(error), privacy: .public)")
+            }
+        }.value
     }
 
     /// Build-121 metadata backfill: for installs already past their
@@ -2255,7 +2279,7 @@ final class AppDependencies {
         // Snapshot metadata for any cached id that's still alive in
         // PhotoKit but missing from the store. Idempotent —
         // `record(_:)` upserts, so repeating the call is cheap.
-        await backfillMetadataIfNeeded(visibleFetch: visibleFetch)
+        await backfillMetadataIfNeeded()
 
         let t2 = Date()
         // Drain the parallel store fetches kicked off above. They were
