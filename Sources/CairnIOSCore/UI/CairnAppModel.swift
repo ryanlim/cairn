@@ -339,6 +339,10 @@ public final class CairnAppModel {
         /// `requestSync`'s catch path so the user sees their
         /// offline-time deletions are recorded, not lost.
         case offlineDetections(count: Int)
+        /// "Verify imputed checksums" ran but the cache held no imputed
+        /// rows — nothing to re-hash. Distinct from `rescanQueued` so the
+        /// action doesn't falsely claim it queued a rescan.
+        case nothingToVerify
 
         public static let autoDismissSeconds: TimeInterval = 4
     }
@@ -527,8 +531,16 @@ public final class CairnAppModel {
     public func applyHashEvent(_ event: HashEvent) {
         switch event {
         case .started(let item):
+            // Don't accrete in-flight rows once the sync is no longer
+            // running — a late `.started` arriving during the reconciler's
+            // post-cancel unwind would otherwise linger until the next
+            // resetSyncNarration. Mirrors the isSyncing gate the progress
+            // counter path already uses. Removal (.finished) is always
+            // allowed so cleanup still happens.
+            guard isSyncing else { return }
             inFlightHashes[item.assetID] = item
         case .downloadProgress(let assetID, let fraction):
+            guard isSyncing else { return }
             if var existing = inFlightHashes[assetID] {
                 existing.downloadFraction = fraction
                 inFlightHashes[assetID] = existing

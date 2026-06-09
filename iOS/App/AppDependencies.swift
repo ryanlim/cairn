@@ -5391,7 +5391,7 @@ final class AppDependencies {
                 }
                 if imputedIds.isEmpty {
                     syncLog.notice("[cairn.verify] no imputed rows to verify")
-                    await MainActor.run { self.showStatusToast(.rescanQueued) }
+                    await MainActor.run { self.showStatusToast(.nothingToVerify) }
                     return
                 }
                 var ops: [(label: String, body: @Sendable () async throws -> Void)] = [

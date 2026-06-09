@@ -416,7 +416,15 @@ public struct CairnAppRoot: View {
         let task = Task { @MainActor in
             let errorBefore = model.lastError
             try? await model.actions.requestSync(nil)
-            if suppressErrors { model.lastError = errorBefore }
+            // Suppress an error THIS auto-sync newly surfaced, but only
+            // then. The old unconditional `lastError = errorBefore`
+            // resurrected an alert the user dismissed mid-sync (dismissal
+            // sets lastError = nil, which this restored), and it also
+            // blocked a successful sync from clearing a now-stale error.
+            // Reverting only a new, non-nil error fixes both.
+            if suppressErrors, model.lastError != nil, model.lastError != errorBefore {
+                model.lastError = errorBefore
+            }
             onComplete()
         }
         activeSyncTask = task
@@ -451,6 +459,10 @@ public struct CairnAppRoot: View {
         model.syncStartedAt = nil
         model.isSyncing = false
         model.transitionSyncPhase(to: .idle)
+        // Drop any in-flight hash rows now rather than leaving them to
+        // linger (hidden, but stale) until the next sync's narration
+        // reset. With isSyncing now false, applyHashEvent won't re-add.
+        model.inFlightHashes.removeAll(keepingCapacity: true)
         activeSyncTask?.cancel()
     }
 

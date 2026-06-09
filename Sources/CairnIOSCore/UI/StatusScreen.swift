@@ -962,6 +962,14 @@ public struct StatusScreen: View {
                                 .opacity(0.88).fixedSize(horizontal: false, vertical: true)
                         }
                     }
+                case .nothingToVerify:
+                    Callout(.verified, icon: "checkmark.circle") {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Nothing to verify").fontWeight(.semibold)
+                            Text("No imputed entries in the cache — everything is already locally hashed.")
+                                .opacity(0.88).fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
                 case .limitedPhotosNotice:
                     // .pending matches the Settings → Permissions
                     // explanatory callout and signals "real
