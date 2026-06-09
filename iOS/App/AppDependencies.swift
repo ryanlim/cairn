@@ -1531,6 +1531,17 @@ final class AppDependencies {
         struct JoinKey: Hashable {
             let filename: String
             let secondsSince1970: Int
+            init(filename: String, secondsSince1970: Int) {
+                // Lowercase the filename to match every other filename
+                // comparison in cairn (AlivePhoneAssetKey, OrphanReconciler,
+                // MissedDeletionFinder). PhotoKit's filename sources disagree
+                // on case; a case-only difference would otherwise miss the
+                // imputation join — safe direction (falls through to local
+                // hashing) but it also let case-variant duplicates evade the
+                // strict-unambiguity collision check.
+                self.filename = filename.lowercased()
+                self.secondsSince1970 = secondsSince1970
+            }
         }
         var byKey: [JoinKey: ServerAsset] = [:]
         var ambiguous = Set<JoinKey>()
