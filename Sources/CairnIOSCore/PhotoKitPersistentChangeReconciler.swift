@@ -739,7 +739,14 @@ public final class PhotoKitPersistentChangeReconciler {
         var addedChecksums: Set<Checksum> = []
         var retiredByEdit: Set<Checksum> = []
         for (id, checksums) in insertedBatch.checksumsByID {
-            try await hashStore.set(checksums, for: id)
+            // No `hashStore.set` here — `hashAssets` already persisted
+            // each success inline with its real modificationDate. The
+            // two-arg convenience `set` forwards modDate=nil, which the
+            // SwiftData store writes as a delete-and-reinsert, wiping the
+            // good date. A nil modDate marks the row stale to the
+            // full-enum resume classifier, forcing a needless re-hash
+            // (re-paying the iCloud download) on the next full pass — the
+            // exact churn the build 124–127 work fought.
             addedChecksums.formUnion(checksums)
             if let prior = preExistingChecksums[id], !prior.isEmpty {
                 retiredByEdit.formUnion(prior.subtracting(checksums))
@@ -768,7 +775,10 @@ public final class PhotoKitPersistentChangeReconciler {
         let updatedBatch = try await hashAssets(ids: staleUpdates)
         var updatedChecksums: Set<Checksum> = []
         for (id, checksums) in updatedBatch.checksumsByID {
-            try await hashStore.set(checksums, for: id)
+            // No `hashStore.set` here — see the inserted-batch loop above.
+            // `hashAssets` already persisted with the real modDate;
+            // re-setting it via the two-arg overload would clobber the
+            // date with nil and re-mark the row stale.
             updatedChecksums.formUnion(checksums)
             if let prior = preExistingChecksums[id], !prior.isEmpty {
                 retiredByEdit.formUnion(prior.subtracting(checksums))
@@ -1848,7 +1858,14 @@ public final class PhotoKitPersistentChangeReconciler {
                 creationDate: asset.creationDate,
                 modificationDate: asset.modificationDate,
                 fileSize: size,
-                observedAt: now
+                observedAt: now,
+                // Capture every resource filename, not just the primary —
+                // edited assets carry the pre-edit upload name (e.g.
+                // `IMG_2999.MOV`) only in a non-primary resource, and the
+                // alive-on-phone safety check needs it. Omitting this was
+                // silently erasing the build-121 protection on every
+                // full-enum metadata write.
+                allResourceFilenames: resources.map(\.originalFilename).filter { !$0.isEmpty }
             ))
         }
         try await metadataStore.record(entries)
@@ -1898,7 +1915,12 @@ public final class PhotoKitPersistentChangeReconciler {
                 creationDate: asset.creationDate,
                 modificationDate: asset.modificationDate,
                 fileSize: size,
-                observedAt: now
+                observedAt: now,
+                // See `recordFullEnumerationMetadata` — an incremental
+                // insert/update event (including the edit event itself)
+                // must carry every resource filename, or it erases the
+                // pre-edit upload name the alive-on-phone check relies on.
+                allResourceFilenames: resources.map(\.originalFilename).filter { !$0.isEmpty }
             ))
             if let date = asset.modificationDate {
                 currentDates[asset.localIdentifier] = date

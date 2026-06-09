@@ -1274,7 +1274,16 @@ public actor SwiftDataLocalAssetMetadataStore: LocalAssetMetadataStore {
                 existing.creationDate = entry.creationDate
                 existing.modificationDate = entry.modificationDate
                 existing.fileSize = entry.fileSize
-                existing.allResourceFilenamesCSV = Self.encodeFilenames(entry.allResourceFilenames)
+                // Preserve a populated resource-filename list when the
+                // incoming entry has none. An empty list always means
+                // "this writer didn't capture them," never "they're
+                // gone" — the filenames are additive correlation data
+                // for the alive-on-phone safety check. Overwriting a
+                // good list with [] silently disarms that check (the
+                // exact regression class found in the 2026-06-09 review).
+                if !entry.allResourceFilenames.isEmpty {
+                    existing.allResourceFilenamesCSV = Self.encodeFilenames(entry.allResourceFilenames)
+                }
             } else {
                 context.insert(StoredLocalAssetMetadata(
                     localIdentifier: entry.localIdentifier,
