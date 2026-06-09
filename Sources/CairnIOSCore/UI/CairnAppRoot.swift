@@ -626,7 +626,20 @@ public struct CairnAppRoot: View {
                 onVerifyImputedChecksums: { Task { await model.actions.verifyImputedChecksums() } },
                 library: model.library,
                 deferredQueue: model.deferredQueue,
-                onForceDrainDeferred: { Task { await model.actions.forceDrainDeferred() } },
+                onForceDrainDeferred: {
+                    // Track the drain as the active sync task — same as the
+                    // Status-screen force-drain — so the Cancel control
+                    // (cancelActiveSync) actually stops it. Untracked, a
+                    // Settings-launched drain kept doing unlimited-mode
+                    // iCloud downloads after the user tapped Cancel, with
+                    // every progress update suppressed (the isSyncing guard
+                    // in onHashProgress), so the UI read "stopped" while the
+                    // work ground on invisibly.
+                    activeSyncTask?.cancel()
+                    activeSyncTask = Task { @MainActor in
+                        await model.actions.forceDrainDeferred()
+                    }
+                },
                 isSyncing: model.isSyncing,
                 syncProgress: model.syncProgress.map { (hashed: $0.hashed, total: $0.total) },
                 onReplayOnboarding: { Task { await model.actions.replayOnboarding() } },
