@@ -565,8 +565,8 @@ public struct SettingsScreen: View {
               keywords: ["thumbhash", "placeholder"], page: .advanced),
         .init(id: "adv.incsync", title: "Incremental server sync", breadcrumb: "Advanced",
               keywords: ["stream", "incremental", "sync"], page: .advanced),
-        .init(id: "adv.signin", title: "Sign in to Immich", breadcrumb: "Advanced",
-              keywords: ["session", "email password", "login"], page: .advanced),
+        .init(id: "conn.signin", title: "Sign in to Immich", breadcrumb: "Connection",
+              keywords: ["session", "email password", "login"], page: .connection),
         .init(id: "adv.resetindex", title: "Reset index", breadcrumb: "Advanced › Danger zone",
               keywords: ["wipe", "danger", "reset"], page: .advanced),
         .init(id: "adv.clearjournal", title: "Clear journal", breadcrumb: "Advanced › Danger zone",
@@ -1104,6 +1104,27 @@ public struct SettingsScreen: View {
                     ApiKeyRow(rawKey: apiKey, masked: apiKeyMasked)
                     RowDivider()
                     KeyValRow("Connection", value: { ConnectionPill(status: connectionStatus) })
+                    RowDivider()
+                    // Email/password session sign-in lives here with the
+                    // rest of server auth (URL + API key). The API key
+                    // covers everything except the /sync/* endpoints, which
+                    // Immich gates behind a real session — so this is what
+                    // unlocks "Incremental server sync" (toggle in Advanced).
+                    if hasSessionToken {
+                        KeyValRow(
+                            "Signed in to Immich",
+                            value: { Text("Sign out").foregroundStyle(t.dangerInk) },
+                            chevron: false,
+                            onTap: onSignOutSession
+                        )
+                    } else {
+                        KeyValRow(
+                            "Sign in to Immich",
+                            value: { Text("Enables incremental sync").foregroundStyle(t.textMuted) },
+                            chevron: true,
+                            onTap: onOpenSessionSignIn
+                        )
+                    }
                 }
             }
         }
@@ -1516,25 +1537,9 @@ public struct SettingsScreen: View {
                     RowDivider()
                     ToggleRow(
                         "Incremental server sync",
-                        sub: "Stream only the changes since the last sync instead of refetching the whole server library each time. Much faster on large libraries. Falls back to the slower full-refetch path if you're not signed in to Immich or your account doesn't allow the streaming endpoint.",
+                        sub: "Stream only the changes since the last sync instead of refetching the whole server library each time. Much faster on large libraries. Falls back to the slower full-refetch path if you're not signed in to Immich (Connection settings) or your account doesn't allow the streaming endpoint.",
                         value: $settings.useIncrementalServerSync
                     )
-                    RowDivider()
-                    if hasSessionToken {
-                        KeyValRow(
-                            "Signed in to Immich",
-                            value: { Text("Sign out").foregroundStyle(t.dangerInk) },
-                            chevron: false,
-                            onTap: onSignOutSession
-                        )
-                    } else {
-                        KeyValRow(
-                            "Sign in to Immich",
-                            value: { Text("Required for incremental sync").foregroundStyle(t.textMuted) },
-                            chevron: true,
-                            onTap: onOpenSessionSignIn
-                        )
-                    }
                     RowDivider()
                     KeyValRow(
                         "Export diagnostic logs",
