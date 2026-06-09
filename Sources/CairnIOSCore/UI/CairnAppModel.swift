@@ -822,9 +822,17 @@ public final class CairnAppModel {
         /// Without this baseline, a resumed scan that starts at
         /// `hashed=3327` immediately reports `~0s remaining` because
         /// the rate calc divides ~0 elapsed by 3327 cached → wildly
-        /// optimistic. Defaults to `0` for fresh syncs / call sites
-        /// that don't track baselines.
-        public let initialHashed: Int
+        /// optimistic.
+        ///
+        /// **`nil` means "not captured yet this hash session"** — distinct
+        /// from `0` ("fresh scan, baseline is genuinely zero"). The
+        /// imputation pass and the pre-hash library scan leave this nil so
+        /// the first `onHashProgress` emit re-establishes the baseline from
+        /// `done`. Previously they wrote `0`, which made the first hash
+        /// emit treat the entire resumed/imputed count as session work —
+        /// wildly optimistic ETA, and it persisted that bogus per-asset
+        /// rate to poison the next launch's bootstrap estimate.
+        public let initialHashed: Int?
         /// Count of assets trust-seeded from the Immich server via the
         /// fast-initial-scan path (matched on `deviceAssetId`) in the
         /// current scan. These skipped local hashing entirely. Surfaced
@@ -834,7 +842,7 @@ public final class CairnAppModel {
         /// matches were found.
         public let imputed: Int
 
-        public init(hashed: Int, total: Int, initialHashed: Int = 0, imputed: Int = 0) {
+        public init(hashed: Int, total: Int, initialHashed: Int? = nil, imputed: Int = 0) {
             self.hashed = hashed
             self.total = total
             self.initialHashed = initialHashed

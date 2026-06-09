@@ -1591,7 +1591,10 @@ final class AppDependencies {
                 self.model.syncProgress = .init(
                     hashed: scanned,
                     total: total,
-                    initialHashed: 0,
+                    // Pre-hash library scan — leave the hash baseline
+                    // uncaptured (nil) so the first onHashProgress emit
+                    // establishes it from `done`.
+                    initialHashed: nil,
                     imputed: self.model.syncProgress?.imputed ?? 0
                 )
             }
@@ -1803,7 +1806,9 @@ final class AppDependencies {
                 self.model.syncProgress = .init(
                     hashed: prev?.hashed ?? 0,
                     total: prev?.total ?? 0,
-                    initialHashed: prev?.initialHashed ?? 0,
+                    // Preserve nil through imputation — the hash baseline is
+                    // captured later, on the first onHashProgress emit.
+                    initialHashed: prev?.initialHashed,
                     imputed: snapshot
                 )
             }
@@ -2107,7 +2112,13 @@ final class AppDependencies {
             // saw the scope of work disappear briefly. Pinning total to
             // the phone count keeps the counter monotonic and meaningful
             // through the imputation→hashing transition.
-            model.syncProgress = .init(hashed: 0, total: outcome.totalPhone, initialHashed: 0, imputed: outcome.imputed)
+            // initialHashed: nil — NOT 0. After imputation seeds the cache,
+            // the hash pass resumes near the imputed count, so its first
+            // emit's `done` is large; capturing that as the baseline (nil →
+            // done on first emit) keeps session work at ~0. Writing 0 here
+            // instead made sessionWork = done immediately → optimistic ETA
+            // and a poisoned persisted per-asset rate.
+            model.syncProgress = .init(hashed: 0, total: outcome.totalPhone, initialHashed: nil, imputed: outcome.imputed)
             // Drop back to .preparing so the next phase transition (to
             // .hashing on first onHashProgress) reads as a single step
             // in the timeline rather than a regression.
