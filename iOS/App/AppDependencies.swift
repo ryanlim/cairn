@@ -2575,7 +2575,14 @@ final class AppDependencies {
                         assetsInObserved: result.assetsInObserved,
                         excludedCandidateCount: result.excludedCandidateCount,
                         pendingReviewCandidates: pending,
-                        heldByQuarantineCandidates: result.heldByQuarantineCandidates
+                        heldByQuarantineCandidates: result.heldByQuarantineCandidates,
+                        // These two default to []/0 in the initializer, so
+                        // omitting them silently dropped the engine's
+                        // recycled-exclusion review surface and the
+                        // alive-on-phone telemetry whenever an inferred
+                        // orphan co-occurred. Carry them through.
+                        recycledExclusionCandidates: result.recycledExclusionCandidates,
+                        aliveOnPhoneCandidateCount: result.aliveOnPhoneCandidateCount
                     )
                     syncLog.notice("[cairn.sync] inferred \(orphans.count) orphan(s) via metadata match")
                 }
