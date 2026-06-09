@@ -892,17 +892,29 @@ struct AssetItemDTO: Decodable {
     let thumbhash: String?
     let deviceAssetId: String?
 
-    /// Parse an ISO-8601 string that may or may not include
-    /// fractional seconds. `ISO8601DateFormatter` is
-    /// non-`Sendable`, so instantiate per-call rather than hold a
-    /// static — cheap and keeps strict-concurrency happy.
+    /// Parse an ISO-8601 string that may or may not include fractional
+    /// seconds, using two shared formatters instead of allocating a pair
+    /// per call. `asServerAsset` runs once per asset on every full server
+    /// fetch — at 100k+ assets the per-call allocation was ~200k
+    /// ICU-backed `ISO8601DateFormatter` inits per sync, seconds of pure
+    /// CPU on the critical fetch path. `ISO8601DateFormatter.date(from:)`
+    /// is thread-safe once configured (the same guarantee `LogExporter`'s
+    /// static `DateFormatter` relies on), so a `nonisolated(unsafe)`
+    /// shared instance is safe here — both are configured at init and
+    /// only ever read.
+    nonisolated(unsafe) private static let fractionalFormatter: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+    nonisolated(unsafe) private static let plainFormatter: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        return f
+    }()
     private static func parseISO8601(_ s: String) -> Date? {
-        let frac = ISO8601DateFormatter()
-        frac.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let d = frac.date(from: s) { return d }
-        let plain = ISO8601DateFormatter()
-        plain.formatOptions = [.withInternetDateTime]
-        return plain.date(from: s)
+        if let d = fractionalFormatter.date(from: s) { return d }
+        return plainFormatter.date(from: s)
     }
 
     var asServerAsset: ServerAsset {

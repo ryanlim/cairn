@@ -1653,19 +1653,42 @@ public actor SwiftDataThumbnailStore {
     }
 
     public func saveThumbhashes(_ entries: [(assetId: String, data: Data)]) async throws {
+        guard !entries.isEmpty else { return }
+        // Bulk-fetch existing rows for the batch's assetIds (chunked IN)
+        // instead of one fetch per entry. thumbhashWork is rebuilt every
+        // sync as *every* matched server asset (~100k on a large
+        // library), and at steady state every row already has its
+        // thumbhash — so this was ~100k SELECTs per sync just to no-op.
+        // One query per 1k ids; only insert/update where data is missing,
+        // and skip the save entirely when nothing changed.
+        var existingById: [String: StoredThumbnail] = [:]
+        let ids = entries.map(\.assetId)
+        let chunkSize = 1000
+        var start = 0
+        while start < ids.count {
+            let end = min(start + chunkSize, ids.count)
+            let chunk = Set(ids[start..<end])
+            let rows = try context.fetch(FetchDescriptor<StoredThumbnail>(
+                predicate: #Predicate<StoredThumbnail> { chunk.contains($0.assetId) }
+            ))
+            for row in rows { existingById[row.assetId] = row }
+            start = end
+        }
+        var changed = false
         for entry in entries {
-            let id = entry.assetId
-            var desc = FetchDescriptor<StoredThumbnail>(predicate: #Predicate<StoredThumbnail> { $0.assetId == id })
-            desc.fetchLimit = 1
-            if let existing = try context.fetch(desc).first {
+            if let existing = existingById[entry.assetId] {
                 if existing.thumbhashData == nil {
                     existing.thumbhashData = entry.data
+                    changed = true
                 }
             } else {
-                context.insert(StoredThumbnail(assetId: id, thumbhashData: entry.data))
+                let row = StoredThumbnail(assetId: entry.assetId, thumbhashData: entry.data)
+                context.insert(row)
+                existingById[entry.assetId] = row
+                changed = true
             }
         }
-        try context.save()
+        if changed { try context.save() }
     }
 
     public func saveThumbnail(assetId: String, data: Data) async throws {
@@ -1913,15 +1936,34 @@ public actor SwiftDataServerAssetCacheStore: ServerAssetCacheStore {
     public func applyEvents(_ events: [SyncEvent]) async throws -> ApplyEventsSummary {
         guard !events.isEmpty else { return .empty }
 
-        // One bulk fetch keyed by serverAssetId so upsert + delete
-        // can both look up rows without N round-trips. The cache is
-        // proportional to the server's asset count, but the typical
-        // event batch is small (≤ 100) so the index dict over the
-        // existing rows is dominated by I/O, not memory.
-        let allRows = try context.fetch(FetchDescriptor<StoredServerAsset>())
+        // Fetch only the rows this batch references, not the whole cache.
+        // A 100k-asset bootstrap flushes ~1000 batches of 100; fetching
+        // the full (growing) table on every batch was ~O(batches ×
+        // cacheSize) — the dominant bootstrap cost. The unique
+        // serverAssetId index makes the targeted lookup a handful of rows.
+        var touchedIds: Set<String> = []
+        for event in events {
+            switch event {
+            case .asset(let payload, _): touchedIds.insert(payload.id)
+            case .assetDeleted(let payload, _): touchedIds.insert(payload.assetId)
+            case .complete, .ignored: break
+            }
+        }
         var byServerId: [String: StoredServerAsset] = [:]
-        byServerId.reserveCapacity(allRows.count)
-        for row in allRows { byServerId[row.serverAssetId] = row }
+        if !touchedIds.isEmpty {
+            let ids = Array(touchedIds)
+            let chunkSize = 1000
+            var start = 0
+            while start < ids.count {
+                let end = min(start + chunkSize, ids.count)
+                let chunk = Set(ids[start..<end])
+                let rows = try context.fetch(FetchDescriptor<StoredServerAsset>(
+                    predicate: #Predicate<StoredServerAsset> { chunk.contains($0.serverAssetId) }
+                ))
+                for row in rows { byServerId[row.serverAssetId] = row }
+                start = end
+            }
+        }
 
         var upserted = 0
         var deleted = 0
