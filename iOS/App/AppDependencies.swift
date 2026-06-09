@@ -112,6 +112,7 @@ final class AppDependencies {
             requireExplicitDeletionEvent: isLimitedAccess,
             scope: activeScope,
             propagationMaxAgeDays: { propagationCutoff },
+            maxConcurrentHashes: Self.clampHashConcurrency(model.settings.hashConcurrency),
             onHashProgress: { [weak self] done, total, newChecksums in
                 // Fetch all MainActor-isolated state in one hop.
                 struct Snapshot {
@@ -5917,6 +5918,18 @@ final class AppDependencies {
     /// force-unwrap right next to the safety check that justifies it.
     nonisolated fileprivate static func megabytesToBytes(_ mb: Int?) -> Int64? {
         mb.flatMap { $0 > 0 ? Int64($0) * 1024 * 1024 : nil }
+    }
+
+    /// Clamp the user's `hashConcurrency` setting into the supported
+    /// range before passing it to the reconciler. A persisted file from
+    /// a build with a wider range, or a debug-tools poke that wrote an
+    /// out-of-bounds value, can't crash the hash pipeline — the
+    /// reconciler also caps at `max(1, …)` defensively, but applying
+    /// the documented range here keeps "what the user picked" and
+    /// "what got used" within the slider's bounds.
+    nonisolated fileprivate static func clampHashConcurrency(_ raw: Int) -> Int {
+        let range = CairnSettings.hashConcurrencyRange
+        return min(range.upperBound, max(range.lowerBound, raw))
     }
 
     private static func serverContainerURL(for key: ServerPartitionKey) -> URL {

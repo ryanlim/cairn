@@ -242,8 +242,10 @@ public final class PhotoKitPersistentChangeReconciler {
     ///   - Lower caps peak memory (a parallel ProRes video can reserve
     ///     tens of MB each) and leaves more headroom for iOS BG slots.
     /// 4 empirically balances throughput and memory pressure on modern
-    /// iPhones. Profile before moving it.
-    private let maxConcurrentHashes: Int = 4
+    /// iPhones. Threaded through from `CairnSettings.hashConcurrency`
+    /// so advanced users can tune it via Settings → Advanced; tests
+    /// and the CLI keep the legacy default by omitting the parameter.
+    private let maxConcurrentHashes: Int
 
     /// Per-asset iCloud-download soft limit, in bytes. Summed across
     /// unavailable resources (Live Photos contribute both still and
@@ -418,6 +420,7 @@ public final class PhotoKitPersistentChangeReconciler {
         requireExplicitDeletionEvent: Bool = false,
         scope: IndexingScope = .fullLibrary,
         propagationMaxAgeDays: @escaping @Sendable () -> Int? = { nil },
+        maxConcurrentHashes: Int = 4,
         onHashProgress: @escaping @Sendable (Int, Int, Set<Checksum>) async -> Void = { _, _, _ in },
         onPhaseChange: @escaping @Sendable (String, Int) async -> Void = { _, _ in },
         onHashStarted: @escaping @Sendable (String, String, Int64) async -> Void = { _, _, _ in },
@@ -440,6 +443,7 @@ public final class PhotoKitPersistentChangeReconciler {
         self.requireExplicitDeletionEvent = requireExplicitDeletionEvent
         self.scope = scope
         self.propagationMaxAgeDays = propagationMaxAgeDays
+        self.maxConcurrentHashes = max(1, maxConcurrentHashes)
         self.onHashProgress = onHashProgress
         self.onPhaseChange = onPhaseChange
         self.onHashStarted = onHashStarted

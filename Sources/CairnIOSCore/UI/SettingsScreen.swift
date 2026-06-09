@@ -1549,6 +1549,8 @@ public struct SettingsScreen: View {
                 VStack(spacing: 0) {
                     CountFloorRow(floor: $settings.minDeleteFloor)
                     RowDivider()
+                    HashConcurrencyRow(value: $settings.hashConcurrency)
+                    RowDivider()
                     ThumbnailCacheCapRow(mb: $settings.thumbnailCacheCapMB)
                     RowDivider()
                     ThumbhashCacheCapRow(mb: $settings.thumbhashCapMB)
@@ -2257,6 +2259,66 @@ private struct CountFloorRow: View {
                 range: 1...50,
                 step: 1,
                 unitSuffix: floor == 1 ? " asset" : " assets",
+                format: { String(format: "%.0f", $0) },
+                parse: NumericInputParse.integer
+            )
+        }
+    }
+}
+
+// MARK: - Hash concurrency row
+
+/// Lets advanced users tune initial-scan parallelism — the `TaskGroup`
+/// ceiling in `PhotoKitPersistentChangeReconciler.hashAssets`. Default
+/// 4 is the previous hardcoded value; users with newer iPhones and
+/// network-bound (iCloud-optimized) libraries can push it higher,
+/// users on older devices can pull it down. Takes effect on the next
+/// sync — the reconciler reads it at construction time.
+private struct HashConcurrencyRow: View {
+    @Binding var value: Int
+    @Environment(\.cairnTokens) private var t
+
+    private var doubleBinding: Binding<Double> {
+        Binding(
+            get: { Double(value) },
+            set: { value = Int($0.rounded()) }
+        )
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline, spacing: 0) {
+                Spacer(minLength: 0)
+                HelpPopover {
+                    Text("**Concurrent hashes.** Number of photos the initial scan hashes at the same time. Default 4 is the value previous builds shipped — conservative for older hardware. Modern iPhones (15 Pro, 16, 17) can handle 8–12 comfortably; on an iCloud-heavy library that's where most of the wall-clock win lives, because each parallel slot is doing its own network fetch.")
+
+                    Text("**Trade-offs.**")
+                        .fontWeight(.semibold)
+                        .padding(.top, 2)
+                    Text("• Higher saturates iCloud bandwidth and CPU; faster scans.")
+                    Text("• Higher raises peak memory — a parallel ProRes video or Live Photo motion track can buffer tens of MB during the fetch.")
+                    Text("• Lower reduces memory pressure and leaves more headroom for iOS background slots.")
+                    Text("• `1` opts out of parallelism — useful for comparing serial vs parallel timing when diagnosing a slow scan.")
+
+                    Text("**Rule of thumb.** Start at 4. If the initial scan feels slow and you're on a recent device, try 8. Only push past 12 if you've confirmed memory isn't the bottleneck.")
+                        .padding(.top, 2)
+
+                    Text("**Takes effect on the next sync** — changing this mid-scan doesn't retroactively widen the active task group.")
+                        .padding(.top, 2)
+                        .foregroundStyle(t.textMuted)
+                }
+                .padding(.trailing, 6)
+            }
+            .padding(.top, 10)
+            .padding(.bottom, -4)
+
+            SliderInputRow(
+                label: "Concurrent hashes",
+                sub: "How many photos the initial scan hashes at once. Higher = faster on capable devices; lower = gentler on memory.",
+                value: doubleBinding,
+                range: Double(CairnSettings.hashConcurrencyRange.lowerBound)...Double(CairnSettings.hashConcurrencyRange.upperBound),
+                step: 1,
+                unitSuffix: value == 1 ? " stream" : " streams",
                 format: { String(format: "%.0f", $0) },
                 parse: NumericInputParse.integer
             )

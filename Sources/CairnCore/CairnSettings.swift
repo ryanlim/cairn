@@ -169,6 +169,30 @@ public struct CairnSettings: Sendable, Codable, Equatable {
     /// device).
     public var timeDisplayFormat: TimeDisplayFormat
 
+    /// How many assets the foreground initial-scan hash pipeline will
+    /// run concurrently. Drives the `TaskGroup` ceiling in
+    /// `PhotoKitPersistentChangeReconciler.hashAssets` — higher values
+    /// saturate iCloud bandwidth on network-bound libraries and win
+    /// some NAND parallelism on local libraries, but raise peak memory
+    /// (Live Photo videos / ProRes clips reserve tens of MB each during
+    /// the fetch). Default 4 is the conservative value previous builds
+    /// hardcoded; advanced users can raise it for faster initial scans
+    /// on devices with headroom, or lower it on memory-pressed older
+    /// hardware.
+    ///
+    /// Changes take effect on the next sync — the reconciler reads this
+    /// at construction time, not per-batch, so changing it mid-scan
+    /// doesn't retroactively widen the active TaskGroup.
+    public var hashConcurrency: Int
+
+    /// Permitted range for `hashConcurrency`. `1` opts out of parallelism
+    /// entirely (useful for diagnosing thermal / memory issues by
+    /// comparing serial vs parallel timing). `16` is the practical
+    /// ceiling — beyond that, PhotoKit's per-asset overhead and
+    /// SwiftData write serialization dominate and the next added task
+    /// produces diminishing returns. UI clamps on write.
+    public static let hashConcurrencyRange: ClosedRange<Int> = 1...16
+
     /// Opt-in switch for the incremental server-side sync path
     /// (`POST /api/sync/stream` change-data-capture instead of the
     /// paginated `search/metadata` rescan). Default **off** during
@@ -295,6 +319,7 @@ public struct CairnSettings: Sendable, Codable, Equatable {
         indexingScope: IndexingScope = .fullLibrary,
         maxRetryAttempts: Int = 5,
         timeDisplayFormat: TimeDisplayFormat = .system,
+        hashConcurrency: Int = 4,
         useIncrementalServerSync: Bool = false,
         fastInitialScan: Bool = false,
         propagationMaxAgeDays: Int? = nil,
@@ -316,6 +341,7 @@ public struct CairnSettings: Sendable, Codable, Equatable {
         self.indexingScope = indexingScope
         self.maxRetryAttempts = maxRetryAttempts
         self.timeDisplayFormat = timeDisplayFormat
+        self.hashConcurrency = hashConcurrency
         self.useIncrementalServerSync = useIncrementalServerSync
         self.fastInitialScan = fastInitialScan
         self.propagationMaxAgeDays = propagationMaxAgeDays
@@ -339,6 +365,7 @@ public struct CairnSettings: Sendable, Codable, Equatable {
         case indexingScope
         case maxRetryAttempts
         case timeDisplayFormat
+        case hashConcurrency
         case useIncrementalServerSync
         case fastInitialScan
         case propagationMaxAgeDays
@@ -364,6 +391,7 @@ public struct CairnSettings: Sendable, Codable, Equatable {
         self.indexingScope = try c.decodeIfPresent(IndexingScope.self, forKey: .indexingScope) ?? d.indexingScope
         self.maxRetryAttempts = try c.decodeIfPresent(Int.self, forKey: .maxRetryAttempts) ?? d.maxRetryAttempts
         self.timeDisplayFormat = try c.decodeIfPresent(TimeDisplayFormat.self, forKey: .timeDisplayFormat) ?? d.timeDisplayFormat
+        self.hashConcurrency = try c.decodeIfPresent(Int.self, forKey: .hashConcurrency) ?? d.hashConcurrency
         self.useIncrementalServerSync = try c.decodeIfPresent(Bool.self, forKey: .useIncrementalServerSync) ?? d.useIncrementalServerSync
         self.fastInitialScan = try c.decodeIfPresent(Bool.self, forKey: .fastInitialScan) ?? d.fastInitialScan
         self.propagationMaxAgeDays = try c.decodeIfPresent(Int.self, forKey: .propagationMaxAgeDays) ?? d.propagationMaxAgeDays
