@@ -2413,11 +2413,21 @@ final class AppDependencies {
         for asset in serverAssets where !asset.isTrashed {
             guard let filename = asset.originalFileName, !filename.isEmpty,
                   let created = asset.fileCreatedAt else { continue }
-            let key = AlivePhoneAssetKey(
-                filename: filename,
-                secondsSince1970: Int(created.timeIntervalSince1970)
-            )
-            if alivePhoneAssetKeys.contains(key) {
+            // ±1 second tolerance, matching ReconciliationEngine's
+            // alive-on-phone match exactly. An exact-second check here
+            // would let the engine suppress a 1s-drifted asset as a
+            // candidate (it tolerates ±1s) while limbo recovery still
+            // stamped it into ConfirmedDeleted — quietly aging out the
+            // quarantine clock on an asset that's actually alive, so a
+            // later genuine delete skips the held bucket. The two probes
+            // must agree on the boundary case the tolerance was added for.
+            let baseSecond = Int(created.timeIntervalSince1970)
+            let aliveOnAnyAdjacent = (baseSecond - 1...baseSecond + 1).contains { sec in
+                alivePhoneAssetKeys.contains(
+                    AlivePhoneAssetKey(filename: filename, secondsSince1970: sec)
+                )
+            }
+            if aliveOnAnyAdjacent {
                 aliveOnPhoneServerChecksums.insert(asset.checksum)
             }
         }

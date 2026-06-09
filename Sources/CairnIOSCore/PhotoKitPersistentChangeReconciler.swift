@@ -1088,9 +1088,27 @@ public final class PhotoKitPersistentChangeReconciler {
             budget: skipDrain ? 0 : foregroundDrainBudget
         )
 
+        // Restoration via the deferred-queue drain. A queued insert that
+        // finally hashes can surface a checksum that was confirmed-deleted
+        // — e.g. the user deleted a large photo, then restored it from
+        // Recently Deleted before cairn hashed it, so the restore landed
+        // as a too-large deferred entry. The insert/update restoration
+        // above only un-confirmed this pass's inserted+updated batches;
+        // drained checksums need the same treatment or the stale
+        // ConfirmedDeleted clock survives and a later genuine re-delete
+        // skips the quarantine window. Fold them into recentlyObserved so
+        // the host's restored-after-trash detection sees them too.
+        let drainedChecksums = Set(drained.batch.checksumsByID.values.flatMap { $0 })
+        var drainedRestorations: Set<Checksum> = []
+        if !drainedChecksums.isEmpty {
+            drainedRestorations = drainedChecksums.intersection(Set(try await confirmedDeleted.snapshot().keys))
+            try await confirmedDeleted.remove(drainedChecksums)
+            try await deletionSource?.remove(drainedChecksums)
+        }
+
         return Result(
             newlyConfirmedDeleted: trulyAbsent,
-            unconfirmedByRestoration: allRecentlyObserved.intersection(priorConfirmed),
+            unconfirmedByRestoration: allRecentlyObserved.intersection(priorConfirmed).union(drainedRestorations),
             didFullEnumeration: false,
             changeEventsProcessed: events,
             deferredLarge: insertedBatch.deferredLarge + updatedBatch.deferredLarge + drained.batch.deferredLarge,
@@ -1100,7 +1118,7 @@ public final class PhotoKitPersistentChangeReconciler {
             aboveHardCeiling: insertedBatch.aboveHardCeiling + updatedBatch.aboveHardCeiling + drained.batch.aboveHardCeiling,
             aboveHardCeilingBytes: insertedBatch.aboveHardCeilingBytes + updatedBatch.aboveHardCeilingBytes + drained.batch.aboveHardCeilingBytes,
             drainedFromQueue: drained.successCount,
-            recentlyObservedChecksums: allRecentlyObserved,
+            recentlyObservedChecksums: allRecentlyObserved.union(drainedChecksums),
             sourceLocalIdentifierByChecksum: sourceLocalIdentifierByChecksum,
             untrackedDiscovered: untrackedIds.count,
             confirmedFromChangeLog: confirmedFromChangeLogCount,
@@ -1627,9 +1645,29 @@ public final class PhotoKitPersistentChangeReconciler {
             savedAt: now
         ))
 
+        // Un-confirm any checksum this enumeration just re-observed on the
+        // phone. A full enumeration is a resync, not a deletion signal —
+        // but if a previously confirmed-deleted asset is now present again
+        // (restored from Recently Deleted, re-imported, or a deletion that
+        // never actually completed), its ConfirmedDeleted clock must reset.
+        // The incremental path does this for its observed batch; the
+        // full-enum path must do it for the whole re-observed set, or the
+        // stale clock ages out silently and a later genuine deletion skips
+        // the quarantine window. Checksums genuinely gone from the phone
+        // aren't in `allChecksums`, so they stay confirmed (correct).
+        var restoredByEnum: Set<Checksum> = []
+        if !allChecksums.isEmpty {
+            restoredByEnum = allChecksums.intersection(Set(try await confirmedDeleted.snapshot().keys))
+            if !restoredByEnum.isEmpty {
+                try await confirmedDeleted.remove(restoredByEnum)
+                try await deletionSource?.remove(restoredByEnum)
+                Self.reconLog.notice("[cairn.recon] full-enum un-confirmed \(restoredByEnum.count, privacy: .public) checksum(s) re-observed on phone (reset quarantine clock)")
+            }
+        }
+
         return Result(
             newlyConfirmedDeleted: [],
-            unconfirmedByRestoration: [],
+            unconfirmedByRestoration: restoredByEnum,
             didFullEnumeration: true,
             fullEnumerationCause: cause,
             changeEventsProcessed: 0,
