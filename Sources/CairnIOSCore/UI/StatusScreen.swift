@@ -145,6 +145,12 @@ public struct StatusScreen: View {
     /// Live indexed count (checksums in the hash store).
     public let indexed: Int
     public let syncPhase: CairnAppModel.SyncPhase
+    /// Live server-fetch progress, shown during `.fetchingServer` so the
+    /// (often multi-minute) paginated fetch isn't a frozen "Processing
+    /// N/N" card. `serverAssetsExpected` is nil until the statistics probe
+    /// lands; the label/bar degrade to a plain count when it's unknown.
+    public let serverAssetsFetched: Int
+    public let serverAssetsExpected: Int?
     public let onStartSync: () -> Void
     /// Pull-to-refresh handler. Returns when the sync triggered by the
     /// gesture has finished (success, error, or cancel) so SwiftUI's
@@ -263,6 +269,8 @@ public struct StatusScreen: View {
         missingPermissions: [String] = [],
         indexed: Int = 0,
         syncPhase: CairnAppModel.SyncPhase = .idle,
+        serverAssetsFetched: Int = 0,
+        serverAssetsExpected: Int? = nil,
         onStartSync: @escaping () -> Void = {},
         onRefreshSync: @escaping () async -> Void = {},
         onCancelSync: @escaping () -> Void = {},
@@ -310,6 +318,8 @@ public struct StatusScreen: View {
         self.missingPermissions = missingPermissions
         self.indexed = indexed
         self.syncPhase = syncPhase
+        self.serverAssetsFetched = serverAssetsFetched
+        self.serverAssetsExpected = serverAssetsExpected
         self.onStartSync = onStartSync
         self.onRefreshSync = onRefreshSync
         self.onCancelSync = onCancelSync
@@ -1166,7 +1176,17 @@ public struct StatusScreen: View {
                 //   - Otherwise, show the original "candidates as a
                 //     fraction of the `maxDeletePercent` cap", which
                 //     is the safety-rail budget indicator.
-                if isSyncing, let progress = syncProgress, progress.total > 0 {
+                if isSyncing, syncPhase == .fetchingServer, let expected = serverAssetsExpected, expected > 0 {
+                    // During the post-hash server fetch, show the server
+                    // fraction — not the hash bar frozen at 100% (the
+                    // "frozen Processing N/N" symptom). Falls through to the
+                    // hash bar when the expected count isn't known yet.
+                    ProgressBar(
+                        fraction: min(1.0, Double(serverAssetsFetched) / Double(expected)),
+                        tone: .pending,
+                        accessibilityLabel: "Server fetch progress"
+                    )
+                } else if isSyncing, let progress = syncProgress, progress.total > 0 {
                     ProgressBar(
                         fraction: min(1.0, Double(progress.hashed) / Double(progress.total)),
                         tone: .pending,
@@ -1379,6 +1399,12 @@ public struct StatusScreen: View {
             case .preparing:
                 return "Preparing…"
             case .fetchingServer:
+                if let expected = serverAssetsExpected, expected > 0 {
+                    return "Fetching server · \(serverAssetsFetched.formatted(.number)) / \(expected.formatted(.number))"
+                }
+                if serverAssetsFetched > 0 {
+                    return "Fetching server · \(serverAssetsFetched.formatted(.number))"
+                }
                 return "Fetching server data…"
             case .imputingFromServer:
                 return "Matching from server…"

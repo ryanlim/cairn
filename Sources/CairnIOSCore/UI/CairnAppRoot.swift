@@ -504,6 +504,8 @@ public struct CairnAppRoot: View {
                 missingPermissions: model.missingPermissions,
                 indexed: model.library.indexed,
                 syncPhase: model.syncPhase,
+                serverAssetsFetched: model.serverAssetsFetched,
+                serverAssetsExpected: model.serverAssetsExpected,
                 onStartSync: {
                     presentDryRunSheet(forceTripped: model.appState == .thresholdTripped)
                 },

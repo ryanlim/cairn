@@ -2338,18 +2338,21 @@ final class AppDependencies {
 
         syncLog.notice("[cairn.sync] store snapshots took \(Int(Date().timeIntervalSince(t2) * 1000))ms (edit-retirement-held=\(editRetirementHeld.count))")
         let t3 = Date()
+        // Drive the high-level phase to `.fetchingServer` for the blocking
+        // wait on the parallel fetch. The fetch started early (alongside
+        // hashing), but the user-visible CTA stayed pinned on
+        // "Processing N/N" at 100% while we blocked here — on a large
+        // server that's minutes of frozen-looking UI. Stepping the phase
+        // surfaces the real "Fetching server" label + the live
+        // serverAssetsFetched counter (StatusScreen reads it for this
+        // phase). The transition to `.reconciling` below closes the entry;
+        // if the fetch already finished it's a sub-frame flash. This
+        // replaces the old already-closed synthetic timeline entry (which
+        // double-counted once a real phase entry existed).
+        model.transitionSyncPhase(to: .fetchingServer)
         let (serverAssets, discoveryOutcome) = try await serverAssetsTask.value
         let serverFetchMs = max(0, Int(Date().timeIntervalSince(serverFetchStart) * 1000))
         syncLog.notice("[cairn.sync] server fetch took \(Int(Date().timeIntervalSince(t3) * 1000))ms (\(serverAssets.count) assets)")
-        // `.fetchingServer` ran in parallel with the prep+scan, so the
-        // high-level `model.syncPhase` never stepped through it. Append a
-        // synthetic timeline entry now that its duration is known so the
-        // drill-down sheet can render it as a parallel track.
-        model.syncTimeline.append(.init(
-            phase: .fetchingServer,
-            startedAt: serverFetchStart,
-            durationMs: serverFetchMs
-        ))
         model.appendSyncActivity(.init(
             kind: .fetched,
             detail: "\(serverAssets.count.formatted(.number)) server assets · \(serverFetchMs.formatted(.number))ms"
