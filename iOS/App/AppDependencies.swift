@@ -4142,10 +4142,34 @@ final class AppDependencies {
                         }
                     }
                     let restoredIdSet = Set(summary.restoredAssetIds)
-                    let restoredChecksumStrings = planningTargets
-                        .filter { restoredIdSet.contains($0.assetId) }
-                        .map(\.checksum)
-                    let cks = Set(restoredChecksumStrings.map { Checksum(base64: $0) })
+                    var cks = Set(
+                        planningTargets
+                            .filter { restoredIdSet.contains($0.assetId) }
+                            .map { Checksum(base64: $0.checksum) }
+                    )
+                    // Live Photo motion videos restore alongside their
+                    // still (the orchestrator expands the pair, so
+                    // `restoredAssetIds` includes the video ids) — but a
+                    // TrashTarget records only the still's checksum, so the
+                    // filter above misses the video's. Resolve every
+                    // restored id to its server checksum via the last
+                    // sync's asset map and fold those in. Without it, the
+                    // video's stale ConfirmedDeleted stamp survives and the
+                    // next sync re-trashes the video half of a Live Photo
+                    // we just restored — a broken Live Photo, exactly what
+                    // the pair-expansion exists to prevent. Best-effort:
+                    // if the server map is stale/absent the still cleanup
+                    // (above, journal-sourced) still happens.
+                    let idToChecksum: [String: Checksum] = await MainActor.run {
+                        var map: [String: Checksum] = [:]
+                        for asset in (self.serverAssetsByChecksum ?? [:]).values {
+                            map[asset.id] = asset.checksum
+                        }
+                        return map
+                    }
+                    for id in restoredIdSet {
+                        if let ck = idToChecksum[id] { cks.insert(ck) }
+                    }
 
                     if !cks.isEmpty {
                         try? await self.confirmedDeletedStore?.remove(cks)
@@ -4161,12 +4185,13 @@ final class AppDependencies {
                             // Forensic symmetry with `excludePending`:
                             // record the implicit exclusion in the
                             // journal so a later reader can see why
-                            // these checksums became excluded.
+                            // these checksums became excluded. Includes
+                            // the resolved video checksums.
                             try? await journal.append(.init(
                                 timestamp: now,
                                 runId: runId,
                                 event: .assetsExcluded(
-                                    checksums: restoredChecksumStrings,
+                                    checksums: cks.map(\.base64),
                                     fromRunId: runId
                                 )
                             ))
