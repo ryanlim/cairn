@@ -1068,14 +1068,26 @@ public final class PhotoKitPersistentChangeReconciler {
             try await deletionSource?.remove(allRecentlyObserved)
         }
 
-        // Save the new token using the library's current token as the
-        // safest checkpoint. Using currentChangeToken (rather than any of
-        // the per-change tokens) guarantees the next incremental scan sees
-        // every event that happened during *this* one, including events
-        // that fired between the fetch and this call.
-        let newToken = PHPhotoLibrary.shared().currentChangeToken
+        // Checkpoint at the *last consumed change's* token, not
+        // `currentChangeToken`. The old code saved the library's current
+        // token after hashing + orphan sweep finished — minutes later for
+        // a big iCloud-fetch scan. Any event that fired during that window
+        // is older than the saved token, so the next scan's
+        // fetchPersistentChanges(since:) never returns it: lost inserts are
+        // recovered by the untracked sweep and lost deletes by the orphan
+        // sweep, but lost *edits* are recovered by nothing — the cache SHA1
+        // goes permanently stale and a later delete resolves to the wrong
+        // checksum. The last-consumed token marks exactly the point up to
+        // which we fetched (scan start), so during-scan events land after
+        // it and the next scan picks them up — with no re-processing, since
+        // the watermark still advances past everything we just handled.
+        // Falls back to currentChangeToken only when the scan consumed no
+        // changes (nothing to lose). Mirrors runFullEnumeration, which
+        // already captures its baseline before enumerating.
+        let newTokenData = collected.lastChangeTokenData
+            ?? Self.archiveToken(PHPhotoLibrary.shared().currentChangeToken)
         try await tokens.save(.init(
-            data: Self.archiveToken(newToken),
+            data: newTokenData,
             savedAt: now
         ))
 
@@ -1168,6 +1180,13 @@ public final class PhotoKitPersistentChangeReconciler {
         let updatedIds: Set<String>
         let deletedIds: Set<String>
         let events: Int
+        /// Archived `PHPersistentChangeToken` of the *last consumed*
+        /// change — the precise "we've processed up to here" watermark.
+        /// `nil` when no changes were returned. Saving this (rather than
+        /// `currentChangeToken` after the scan finishes) means events that
+        /// fire *during* the scan land after this watermark and are picked
+        /// up by the next scan instead of being silently skipped.
+        let lastChangeTokenData: Data?
     }
 
     /// Off-main wrapper for the synchronous PhotoKit prelude of an
@@ -1186,8 +1205,13 @@ public final class PhotoKitPersistentChangeReconciler {
         var updatedIds: Set<String> = []
         var deletedIds: Set<String> = []
         var events = 0
+        var lastChangeToken: PHPersistentChangeToken?
         for change in fetchResult {
             events += 1
+            // Advance the watermark even for a change whose details we
+            // can't read below — we don't want to re-fetch it forever;
+            // the orphan sweep is the safety net for the missed details.
+            lastChangeToken = change.changeToken
             do {
                 let details = try change.changeDetails(for: PHObjectType.asset)
                 insertedIds.formUnion(details.insertedLocalIdentifiers)
@@ -1206,7 +1230,8 @@ public final class PhotoKitPersistentChangeReconciler {
             insertedIds: insertedIds,
             updatedIds: updatedIds,
             deletedIds: deletedIds,
-            events: events
+            events: events,
+            lastChangeTokenData: lastChangeToken.map { Self.archiveToken($0) }
         )
     }
 
@@ -2860,7 +2885,7 @@ public final class PhotoKitPersistentChangeReconciler {
     /// conforms to `NSSecureCoding`, which is the documented path for
     /// durable storage; `requiringSecureCoding: true` enforces typed
     /// unarchiving on the other end.
-    static func archiveToken(_ token: PHPersistentChangeToken) -> Data {
+    nonisolated static func archiveToken(_ token: PHPersistentChangeToken) -> Data {
         do {
             return try NSKeyedArchiver.archivedData(withRootObject: token, requiringSecureCoding: true)
         } catch {
