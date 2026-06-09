@@ -60,6 +60,12 @@ public final class CairnAppModel {
     /// sign-out.
     public var hasSessionToken: Bool = false
 
+    /// True while a data export or import is serializing/restoring. The
+    /// export walks the entire hash cache (100k+ rows) plus journals, so
+    /// it's a multi-second silent gap otherwise; Settings shows a spinner
+    /// on the Export/Import rows and disables them while this is set.
+    public var isTransferringData: Bool = false
+
     public var connectionStatus: SettingsScreen.ConnectionStatus
 
     // MARK: - State the screens read

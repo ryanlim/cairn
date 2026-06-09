@@ -122,6 +122,9 @@ public struct SettingsScreen: View {
     /// Switches the row label between "Sign in" and "Signed in ·
     /// Sign out".
     public let hasSessionToken: Bool
+    /// True while an export/import is in flight — drives a spinner on the
+    /// Data rows and disables re-tapping.
+    public let isTransferringData: Bool
     /// Token incremented by the host when the user re-taps the active
     /// tab — see `CairnTabBar.onReselect`. Each increment scrolls the
     /// screen back to the top.
@@ -211,6 +214,7 @@ public struct SettingsScreen: View {
         onExportDiagnosticLogs: @escaping () -> Void = {},
         onInspectAssetByFilename: @escaping (String) -> Void = { _ in },
         hasSessionToken: Bool = false,
+        isTransferringData: Bool = false,
         scrollResetToken: Int = 0,
         photoAuthStatus: SetupScreen.PhotoAuthOutcome? = nil
     ) {
@@ -248,6 +252,7 @@ public struct SettingsScreen: View {
         self.onExportDiagnosticLogs = onExportDiagnosticLogs
         self.onInspectAssetByFilename = onInspectAssetByFilename
         self.hasSessionToken = hasSessionToken
+        self.isTransferringData = isTransferringData
         self.scrollResetToken = scrollResetToken
         self.photoAuthStatus = photoAuthStatus
     }
@@ -1584,16 +1589,28 @@ public struct SettingsScreen: View {
                 VStack(spacing: 0) {
                     KeyValRow(
                         "Export data",
-                        value: { Text("Share backup").foregroundStyle(t.infoInk) },
-                        chevron: true,
-                        onTap: { showExportPicker = true }
+                        value: {
+                            if isTransferringData {
+                                ProgressView()
+                            } else {
+                                Text("Share backup").foregroundStyle(t.infoInk)
+                            }
+                        },
+                        chevron: !isTransferringData,
+                        onTap: { if !isTransferringData { showExportPicker = true } }
                     )
                     RowDivider()
                     KeyValRow(
                         "Import data",
-                        value: { Text("Restore from file").foregroundStyle(t.infoInk) },
-                        chevron: true,
-                        onTap: { showImportPicker = true }
+                        value: {
+                            if isTransferringData {
+                                ProgressView()
+                            } else {
+                                Text("Restore from file").foregroundStyle(t.infoInk)
+                            }
+                        },
+                        chevron: !isTransferringData,
+                        onTap: { if !isTransferringData { showImportPicker = true } }
                     )
                 }
             }

@@ -648,6 +648,8 @@ public struct CairnAppRoot: View {
                 onReplayOnboarding: { Task { await model.actions.replayOnboarding() } },
                 onExportData: { scope in
                     Task { @MainActor in
+                        model.isTransferringData = true
+                        defer { model.isTransferringData = false }
                         do {
                             let url = try await model.actions.exportData(scope)
                             exportedFileURL = url
@@ -658,6 +660,8 @@ public struct CairnAppRoot: View {
                 },
                 onImportData: { url, applySettings in
                     Task { @MainActor in
+                        model.isTransferringData = true
+                        defer { model.isTransferringData = false }
                         do {
                             let result = try await model.actions.importData(url, applySettings)
                             importResult = result
@@ -687,6 +691,7 @@ public struct CairnAppRoot: View {
                     Task { await model.actions.inspectAssetByFilename(filename) }
                 },
                 hasSessionToken: model.hasSessionToken,
+                isTransferringData: model.isTransferringData,
                 scrollResetToken: scrollResetTokens["settings"] ?? 0,
                 photoAuthStatus: model.photoAuthStatus
             )
