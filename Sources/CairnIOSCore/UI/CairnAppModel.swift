@@ -783,6 +783,17 @@ public final class CairnAppModel {
     /// ETA computation (remaining ≈ elapsed * (total - done) / done).
     public var syncStartedAt: Date?
 
+    /// Monotonic generation stamp for the in-flight sync. Bumped each
+    /// time `requestSync` actually starts a run (after passing the
+    /// reentrancy guard). A sync task captures the value at start and
+    /// checks it before mutating sync state in its completion / cancel /
+    /// error unwind — so a cancelled task whose `CancellationError`
+    /// arrives *after* a successor sync has already started can't stomp
+    /// the successor's state. Without it, the old task's unwind sees the
+    /// successor's non-nil `syncStartedAt` and flips `isSyncing` off,
+    /// silently suppressing the successor's progress callbacks.
+    public var syncGeneration: Int = 0
+
     /// Persisted per-asset hash duration (milliseconds) from prior
     /// sessions on this device. Loaded from UserDefaults at bootstrap
     /// and updated continuously as new emits arrive (see

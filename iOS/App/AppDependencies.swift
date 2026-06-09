@@ -3889,9 +3889,30 @@ final class AppDependencies {
                         IdleTimerController.setEnabled(false)
                     }
                 }
+                // Reentrancy guard + generation stamp, atomic on the
+                // MainActor. Only the foreground scheduler checked
+                // `!isSyncing` before; the Shortcut intent, both BG-task
+                // handlers, and the debug fire all called requestSync
+                // directly. Two overlapping runs interleave at every
+                // suspension point — double change-token consumption,
+                // cross-reset narration, and whichever finishes first
+                // flips isSyncing off so the survivor's progress
+                // callbacks are swallowed (minutes of work, idle UI).
+                // A paused sync has isSyncing=false (see cancelActiveSync),
+                // so a legitimate resume isn't blocked here.
+                let myGeneration: Int = await MainActor.run { () -> Int? in
+                    if self.model.isSyncing { return nil }
+                    self.model.isSyncing = true
+                    self.model.syncGeneration &+= 1
+                    return self.model.syncGeneration
+                } ?? -1
+                if myGeneration == -1 {
+                    syncLog.notice("[cairn.sync] requestSync skipped: a sync is already in flight (trigger=\(resolvedTrigger.shortToken, privacy: .public))")
+                    return
+                }
+
                 await MainActor.run {
                     self.model.lastSyncTrigger = resolvedTrigger
-                    self.model.isSyncing = true
                     // Don't clear `lastError` at sync start. Doing so
                     // caused a "transient popup that auto-dismisses"
                     // bug: a prior session's error would alert on
@@ -3992,6 +4013,12 @@ final class AppDependencies {
                         confirmed: confirmed
                     )
                     await MainActor.run {
+                        // A successor sync can only have started if this
+                        // one was cancelled (→ throws, handled below), so
+                        // this guard is belt-and-suspenders — but it keeps
+                        // the invariant "only the current generation
+                        // mutates sync state" uniform across all unwinds.
+                        guard self.model.syncGeneration == myGeneration else { return }
                         self.model.isSyncing = false
                         self.model.transitionSyncPhase(to: .idle)
                         self.model.syncProgress = nil
@@ -4024,7 +4051,15 @@ final class AppDependencies {
                         // a second time. System-initiated cancellations
                         // (BG slot expiry, etc.) hit this with
                         // syncStartedAt still set and run the full update.
-                        if self.model.syncStartedAt != nil {
+                        // The generation check is the load-bearing part:
+                        // if a successor sync already started (cancelActiveSync
+                        // flipped isSyncing off, letting it in), its
+                        // syncStartedAt is non-nil too — without the
+                        // generation gate this late CancellationError would
+                        // flip isSyncing off under the successor and swallow
+                        // all its progress callbacks.
+                        if self.model.syncGeneration == myGeneration,
+                           self.model.syncStartedAt != nil {
                             let elapsed = self.model.syncStartedAt.map {
                                 Date().timeIntervalSince($0)
                             } ?? 0
@@ -4056,6 +4091,9 @@ final class AppDependencies {
                         syncLog.notice("[cairn.sync] requestSync failed: \(desc)")
                     }
                     await MainActor.run {
+                        // Don't stomp a successor sync's state (see the
+                        // generation guards above).
+                        guard self.model.syncGeneration == myGeneration else { return }
                         self.model.recordSyncError(desc, isNetworkLike: isNetwork)
                         self.model.isSyncing = false
                         self.model.transitionSyncPhase(to: .idle)
