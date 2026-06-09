@@ -2663,6 +2663,23 @@ final class AppDependencies {
             model.restoredAfterCairnTrash = matches
         }
 
+        // Cancel any queued pending-trash intent whose checksum cairn just
+        // re-observed on the phone. The reconciler un-confirms restored
+        // checksums (resetting the quarantine clock), but a
+        // PendingTrashIntent queued from an earlier offline session is a
+        // separate retry queue that drainPendingTrashes runs immediately
+        // after this sync completes. Without this prune, a user who
+        // deleted a photo while offline (intent queued) and then restored
+        // it from Recently Deleted would have the server copy trashed
+        // anyway on the next sync — and 30 days later Immich hard-deletes
+        // a photo that's alive on the phone. Matches by checksum, so
+        // duplicate-content assets are protected too (consistent with the
+        // engine's trulyAbsent guard).
+        let restoredChecksums = scan.recentlyObservedChecksums
+        if !restoredChecksums.isEmpty {
+            try? await self.pendingTrashStore?.removeIntents(containingAnyOf: restoredChecksums)
+        }
+
         // Engine + orphan match + restoredAfterCairnTrash detection are
         // done; what's left is journal writes and the post-sync refresh
         // helpers. Bucket all of that under `.finalizing` so the
