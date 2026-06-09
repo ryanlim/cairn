@@ -1,13 +1,32 @@
-Inline incremental-sync hashing now surfaces progress in the UI when the batch is large.
+Codebase review pass — 22 fixes across deletion-safety, correctness, performance, main-thread, and UI honesty.
 
-End-user comment on the build-125 "hang" (which was actually 524 untracked-sweep assets iCloud-fetching for minutes): "It also didn't surface any of that in the UI, which is non-ideal."
+This build is the output of a five-agent review of the whole codebase, informed by the build 124-127 troubleshooting. The headline items, in order of how much they matter:
 
-Right — and not just for that 125-specific case. Any time an incremental sync gets a batch of 50+ inserts/updates (untracked-sweep, mass iCloud Photos catch-up, returning from a long suspension where many phones arrived), the hashing was silent. The `hashAssets(ids:)` overload that handles inline incremental hashing in `runIncremental`'s inserted path was calling the underlying `hashAssets(assets:)` without `reportProgressWithTotal`. That meant `onHashProgress` never fired, `syncProgress` stayed nil, and the user saw "Syncing..." for minutes with no indication of work.
+DELETION-SAFETY (these could trash a photo still alive on the phone):
+- Incremental metadata writes were erasing the per-resource filenames that the alive-on-phone check needs for edited assets — every insert/update event silently disarmed the build-121 protection. Fixed at both reconciler write sites + a defensive guard in the store.
+- Incremental insert/update events had no source-type filter, so a Cloud-Shared asset a shared-library partner added got indexed — and their later removal of it could trash YOUR Immich copy. Now narrowed to user-library only (the post-125 active-vs-safety rule, finally applied to the third entry point).
+- Three converging bugs let a stale ConfirmedDeleted clock survive on an asset that's back on the phone (drains never un-confirmed; limbo suppression used exact-second vs the engine's ±1s; full-enum never un-confirmed), so a later genuine delete skipped the quarantine window. All three reset the clock now.
+- Restore-via-cairn missed Live Photo motion-video checksums, so the next sync re-trashed the video half it just restored. Fixed.
+- The pending-trash retry queue wasn't pruned when you restored a photo on the phone — the queued intent trashed the server copy anyway. Now pruned.
 
-This build threads `reportProgressWithTotal` through the `(ids:)` overload when the batch is at or above 50 assets. Smaller batches (the typical incremental sync with a handful of inserts) still suppress reporting — the syncProgress churn isn't worth it for work that completes in a second or two. The 50-asset threshold is conservative and easy to revisit if it turns out the right line is higher or lower.
+CORRECTNESS:
+- Incremental scans now checkpoint at the last-consumed change token instead of after hashing finishes, so edits that fire during a long scan aren't lost (the cache SHA1 going stale → wrong-checksum-on-delete class).
+- requestSync got a reentrancy guard + a sync-generation token, so a Shortcut/background/automation sync can't interleave with a manual one and freeze the survivor's progress UI.
+- Background tasks now report failure (not success) when iOS expires them mid-run.
 
-Behavior at the threshold:
-- ≤49 assets: silent inline hashing (current behavior, fine for typical incremental syncs)
-- ≥50 assets: `onHashProgress(done, total, [])` fires every 25 assets or 250 ms, populates `syncProgress`, surfaces in whatever UI is showing the in-flight sync — Status banner counters, anywhere `model.syncProgress.hashed/total` is read
+PERFORMANCE (large libraries / long syncs):
+- The progress-tick indexed count was a full-table hydration on the hash writer's actor thousands of times per initial scan — now an id-only fetch.
+- Imputation seeding was ~80k individual SQLite commits (most of the multi-minute imputation phase) — now ~80 batched transactions.
+- De-N+1'd the metadata, exclusion, thumbhash, and server-cache write paths.
 
-No engine, no reconciliation, no behavioral change beyond the progress callback wiring. Just makes the UI honest about how much work is in flight.
+MAIN-THREAD / STUTTER:
+- The reconciliation pass funneled full-library PhotoKit enumeration (three times), per-Live-Photo resource calls, and the engine + orphan compute over 100k-element sets through the main thread. All moved off-main; the three redundant enumerations collapsed to one. The photo-change observer and metadata backfill got the same treatment.
+
+UI HONESTY:
+- The review-and-trash sheet showed three hardcoded green "safety check" checkmarks (asserting "Photos access is Full" even when Limited) and a dead "raise threshold" button — wired to real values / removed.
+- Settings "Hash now" drain is now actually cancellable (it kept downloading invisibly after you tapped Cancel).
+- Bootstrap no longer shows a blank screen for up to two minutes when the server is unreachable.
+
+Two larger UI items are deferred for live iteration: surfacing server-fetch progress during the post-hash wait (the "frozen Processing N/N"), and the initial-scan ETA rebaselining. Tracked in notes/review-2026-06-09.md.
+
+No schema changes. 668 tests pass.
