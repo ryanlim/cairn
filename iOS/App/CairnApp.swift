@@ -235,8 +235,20 @@ struct CairnApp: App {
                 // the reconciler but skips the journal writes the
                 // Status tab depends on.
                 try await dependencies.model.actions.requestSync(.scheduledBackground)
-                bgLog.notice("[cairn.bgtask] refresh completed successfully")
-                task.setTaskCompleted(success: true)
+                // requestSync catches CancellationError internally and
+                // returns normally, so a mid-run expiration doesn't throw
+                // here. Check the task's own cancellation flag or we'd log
+                // "completed successfully" and report success to the
+                // scheduler for a run that was actually expired and partial
+                // — corrupting both our diagnostics and iOS's future
+                // scheduling decisions.
+                if Task.isCancelled {
+                    bgLog.notice("[cairn.bgtask] refresh expired mid-run (partial) — reporting failure")
+                    task.setTaskCompleted(success: false)
+                } else {
+                    bgLog.notice("[cairn.bgtask] refresh completed successfully")
+                    task.setTaskCompleted(success: true)
+                }
             } catch {
                 bgLog.error("[cairn.bgtask] refresh failed: \(String(describing: error), privacy: .public)")
                 task.setTaskCompleted(success: false)
@@ -273,8 +285,17 @@ struct CairnApp: App {
                 // unlimited-throughput work, not a "sync" semantically).
                 try await dependencies.model.actions.requestSync(.scheduledHashContinuation)
                 try await dependencies.drainDeferredQueueOnly()
-                bgLog.notice("[cairn.bgtask] hash completed successfully")
-                task.setTaskCompleted(success: true)
+                // requestSync swallows CancellationError (the drain still
+                // rethrows it → handled below). Cover the swallowed case so
+                // an expiration during the sync half isn't reported to the
+                // scheduler as a clean success.
+                if Task.isCancelled {
+                    bgLog.notice("[cairn.bgtask] hash expired mid-run (partial) — reporting failure")
+                    task.setTaskCompleted(success: false)
+                } else {
+                    bgLog.notice("[cairn.bgtask] hash completed successfully")
+                    task.setTaskCompleted(success: true)
+                }
             } catch is CancellationError {
                 // iOS expired us; resume picks up next time.
                 bgLog.notice("[cairn.bgtask] hash cancelled by expiration handler")

@@ -1834,6 +1834,11 @@ final class AppDependencies {
         let useIncremental = model.settings.useIncrementalServerSync
         let coordinator = self.serverAssetSyncCoordinator
         let cache = self.serverAssetCacheStore
+        // Generation of the sync that owns this reconciliation. The
+        // server-fetch task's completion writes model state; gate those
+        // writes on this so a fetch that finishes after its sync was
+        // cancelled (or superseded) can't stomp the live UI.
+        let syncGeneration = await MainActor.run { self.model.syncGeneration }
         let serverAssetsTask = Task { [weak self] () -> (assets: [ServerAsset], outcome: DiscoveryOutcome) in
             let assets: [ServerAsset]
             let outcome: DiscoveryOutcome
@@ -1912,14 +1917,24 @@ final class AppDependencies {
             byChecksum.reserveCapacity(assets.count)
             for asset in assets { byChecksum[asset.checksum] = asset }
             await MainActor.run {
-                self?.serverChecksumSet = checksums
-                self?.serverAssetsByChecksum = byChecksum
-                if let self {
-                    self.model.library = self.model.library.with(server: nonTrashed, matched: initialMatched)
-                }
+                // Don't write server state for a sync that's no longer the
+                // active one. Without this guard a fetch that completes
+                // after its sync threw/was cancelled would mutate the
+                // Server / Matched counts under the idle UI (or a successor
+                // sync). Mirrors the isSyncing guard on onHashProgress.
+                guard let self, self.model.syncGeneration == syncGeneration else { return }
+                self.serverChecksumSet = checksums
+                self.serverAssetsByChecksum = byChecksum
+                self.model.library = self.model.library.with(server: nonTrashed, matched: initialMatched)
             }
             return (assets, outcome)
         }
+        // Cancel the server fetch on any early exit from this function
+        // (thrown error, cancellation). On the happy path the task is
+        // already awaited to completion before we return here, so this is
+        // a no-op; on an early throw it stops an otherwise-orphaned
+        // paginated fetch that could run for minutes of network + battery.
+        defer { serverAssetsTask.cancel() }
 
         guard let reconciler = persistentChangeReconciler else {
             throw CancellationError()
