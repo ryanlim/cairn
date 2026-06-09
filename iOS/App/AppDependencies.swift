@@ -716,38 +716,50 @@ final class AppDependencies {
         model.settings = (try? await settingsStore.load()) ?? .defaults
 
         if let client = immichClient {
-            let start = Date()
-            do {
-                let pong = try await client.ping()
-                let latencyMs = Int(Date().timeIntervalSince(start) * 1000)
-                syncLog.notice("[cairn.boot] server healthy: ping=\(pong), \(latencyMs)ms")
-                model.connectionStatus = .healthy(latencyMs: latencyMs)
-                model.degraded = .none
-            } catch {
-                syncLog.notice("[cairn.boot] ping failed: \(error)")
-                if let degraded = Self.degradedState(for: error) {
-                    model.degraded = degraded
-                    model.connectionStatus = degraded == .authStale ? .authStale : .offline
+            // Run the server probes OFF the bootstrap critical path. They
+            // only refresh the connection banner, server count, missing-
+            // permissions, and the legacy identity cache — none of which
+            // gates which screen renders. Inline, a black-holed server
+            // (VPN down, DNS hang) left the root showing Color.clear for up
+            // to 4×30s of serial request timeouts. As a task, bootstrap
+            // finishes and the UI appears immediately; the banner updates
+            // reactively as each probe lands.
+            let cachedUserIdForProbe = cachedUserId
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                let start = Date()
+                do {
+                    let pong = try await client.ping()
+                    let latencyMs = Int(Date().timeIntervalSince(start) * 1000)
+                    syncLog.notice("[cairn.boot] server healthy: ping=\(pong), \(latencyMs)ms")
+                    self.model.connectionStatus = .healthy(latencyMs: latencyMs)
+                    self.model.degraded = .none
+                } catch {
+                    syncLog.notice("[cairn.boot] ping failed: \(error)")
+                    if let degraded = Self.degradedState(for: error) {
+                        self.model.degraded = degraded
+                        self.model.connectionStatus = degraded == .authStale ? .authStale : .offline
+                    }
                 }
-            }
-            if let stats = try? await client.assetStatistics() {
-                model.library = model.library.with(server: stats.total)
-            }
-            if let keyInfo = try? await client.apiKeyInfo() {
-                let missing = ImmichClient.missingPermissions(granted: keyInfo.permissions)
-                model.missingPermissions = missing
-                if !missing.isEmpty {
-                    syncLog.notice("[cairn.boot] missing permissions: \(missing.joined(separator: ", "))")
+                if let stats = try? await client.assetStatistics() {
+                    self.model.library = self.model.library.with(server: stats.total)
                 }
-            }
-            // Opportunistic identity refresh for legacy installs. If
-            // we activated with `userId: nil` (cache empty), fetch
-            // identity now that we have a working client. Persist;
-            // user-visible re-activation happens on next launch (we
-            // don't swap containers underneath an active sync).
-            if cachedUserId == nil, let identity = try? await client.usersMe() {
-                try? secretStore.setUserIdentity(id: identity.id, email: identity.email)
-                syncLog.notice("[cairn.boot] cached user identity: \(identity.email, privacy: .public) (\(identity.id, privacy: .public)). New partition takes effect on next launch.")
+                if let keyInfo = try? await client.apiKeyInfo() {
+                    let missing = ImmichClient.missingPermissions(granted: keyInfo.permissions)
+                    self.model.missingPermissions = missing
+                    if !missing.isEmpty {
+                        syncLog.notice("[cairn.boot] missing permissions: \(missing.joined(separator: ", "))")
+                    }
+                }
+                // Opportunistic identity refresh for legacy installs. If
+                // we activated with `userId: nil` (cache empty), fetch
+                // identity now that we have a working client. Persist;
+                // user-visible re-activation happens on next launch (we
+                // don't swap containers underneath an active sync).
+                if cachedUserIdForProbe == nil, let identity = try? await client.usersMe() {
+                    try? self.secretStore.setUserIdentity(id: identity.id, email: identity.email)
+                    syncLog.notice("[cairn.boot] cached user identity: \(identity.email, privacy: .public) (\(identity.id, privacy: .public)). New partition takes effect on next launch.")
+                }
             }
         }
 

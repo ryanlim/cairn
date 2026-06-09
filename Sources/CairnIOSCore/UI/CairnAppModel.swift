@@ -80,6 +80,14 @@ public final class CairnAppModel {
     /// and "Exclude ↔ Unexclude" toggle) can reflect live state
     /// without each view doing its own store round-trip.
     public var excludedChecksums: Set<String> = []
+    /// NOTE (2026-06-09 review M7): currently never assigned in production
+    /// — it stays `.steady`, so the StatusScreen `.thresholdTripped` /
+    /// `.dryRun` banners (and the `forceTripped` plumbing into DryRunSheet)
+    /// are dead paths exercised only by previews/fixtures. The
+    /// `.thresholdTripped` banner still contains placeholder fixture math
+    /// ("2.3%"). Don't trust this for live state until it's wired from the
+    /// post-reconciliation candidate/cap comparison; the real mass-delete
+    /// guard today is DryRunSheet's own `tripped` (overPct && overFloor).
     public var appState: StatusScreen.AppState
     public var degraded: StatusScreen.Degraded
 
