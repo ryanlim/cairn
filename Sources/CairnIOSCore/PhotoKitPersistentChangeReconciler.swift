@@ -607,6 +607,33 @@ public final class PhotoKitPersistentChangeReconciler {
         }
         tick("scopeMembership")
 
+        // Source-type narrowing (active-management filter). Independent of
+        // scope: insert/update events can carry Cloud-Shared / iTunes-synced
+        // ids — including ones a shared-library partner added — which cairn
+        // must not hash, index, or observe. Indexing one lets a later
+        // partner-side removal resolve through the cache and trash the
+        // user's own Immich copy. Deletion events are deliberately left
+        // broad upstream; only these active-management hash inputs narrow.
+        // (`discoverUntrackedAssets` already emits user-library ids, so the
+        // untracked additions pass through unchanged.)
+        do {
+            let candidateIds = insertedIds.union(updatedIds)
+            if !candidateIds.isEmpty {
+                let userLibraryIds = await Task.detached(priority: .userInitiated) {
+                    Self.filterToUserLibrary(candidateIds)
+                }.value
+                let preInserts = insertedIds.count
+                let preUpdates = updatedIds.count
+                insertedIds.formIntersection(userLibraryIds)
+                updatedIds.formIntersection(userLibraryIds)
+                let dropped = (preInserts - insertedIds.count) + (preUpdates - updatedIds.count)
+                if dropped > 0 {
+                    Self.reconLog.notice("[cairn.recon] source-type filter: dropped \(dropped, privacy: .public) insert/update candidates outside .typeUserLibrary (Cloud-Shared / iTunes-synced not actively managed)")
+                }
+            }
+        }
+        tick("sourceTypeFilter")
+
         // Diagnostic log — makes "why didn't my delete propagate?"
         // answerable from the device console without rebuilding.
         Self.logIncrementalHeader(
@@ -1282,6 +1309,31 @@ public final class PhotoKitPersistentChangeReconciler {
         ids.reserveCapacity(fetch.count)
         fetch.enumerateObjects { asset, _, _ in ids.insert(asset.localIdentifier) }
         return ids
+    }
+
+    /// Narrow a set of candidate identifiers to assets the user actively
+    /// manages — `.typeUserLibrary` only. Cloud-Shared and iTunes-synced
+    /// assets fire persistent-change insert/update events (a shared-library
+    /// partner adds a photo, an iTunes re-sync), but cairn must not hash,
+    /// index, or observe them: once such an asset is in the cache, a later
+    /// removal *by that partner* fires `deletedLocalIdentifiers`, resolves
+    /// through the cache, and can trash the user's own Immich copy of a
+    /// photo the user never deleted. This is the incremental-path
+    /// counterpart to the narrow filters already on `hashAllCurrentAssets`
+    /// and `discoverUntrackedAssets` (the post-build-125 active-vs-safety
+    /// split). Fetched with default options (hidden excluded), matching
+    /// those sites. `nonisolated` — pure PhotoKit read, run detached.
+    nonisolated static func filterToUserLibrary(_ ids: Set<String>) -> Set<String> {
+        guard !ids.isEmpty else { return [] }
+        let fetch = PHAsset.fetchAssets(withLocalIdentifiers: Array(ids), options: nil)
+        var kept: Set<String> = []
+        kept.reserveCapacity(fetch.count)
+        fetch.enumerateObjects { asset, _, _ in
+            if asset.sourceType == .typeUserLibrary {
+                kept.insert(asset.localIdentifier)
+            }
+        }
+        return kept
     }
 
     /// Pure partition: split edit-retired SHA1s into "protected"
