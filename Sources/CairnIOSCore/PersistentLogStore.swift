@@ -254,7 +254,13 @@ public actor DiagnosticLogFlusher {
             var collected: [OSLogEntryLog] = []
             let raw = try osStore.getEntries(at: position, matching: predicate)
             for entry in raw {
-                if let log = entry as? OSLogEntryLog, log.date >= cutoff {
+                // Clamp to [cutoff, now). The watermark advanced to `now`
+                // before this query, so an entry timestamped >= now would
+                // be captured this flush AND again next flush (its date is
+                // >= the next cutoff) — duplicate lines in the persistent
+                // log. The upper bound drops those; they're picked up next
+                // flush exactly once.
+                if let log = entry as? OSLogEntryLog, log.date >= cutoff, log.date < now {
                     collected.append(log)
                 }
             }

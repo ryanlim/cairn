@@ -1840,7 +1840,10 @@ final class AppDependencies {
         // any changes since last launch.
         Task { [weak self] in
             guard let stats = try? await client.assetStatistics() else { return }
-            await MainActor.run { self?.model.library = self!.model.library.with(server: stats.total) }
+            await MainActor.run {
+                guard let self else { return }
+                self.model.library = self.model.library.with(server: stats.total)
+            }
         }
 
         serverChecksumSet = nil
