@@ -276,7 +276,7 @@ final class AppDependencies {
 
     nonisolated static let massOffloadRecentWindow: TimeInterval = 24 * 60 * 60
 
-    static func resolveTestingAssetCap() -> Int? {
+    nonisolated static func resolveTestingAssetCap() -> Int? {
         let key = "CAIRN_ASSET_CAP"
         let ud = UserDefaults.standard
         if let raw = ProcessInfo.processInfo.environment[key], !raw.isEmpty {
@@ -2899,96 +2899,86 @@ final class AppDependencies {
 
     @MainActor
     fileprivate func refreshLibrarySizeStats() async {
-        // Resolve scope membership once. `.selectedAlbums(...)` rescopes
-        // both the "Phone" count and the "Indexed" intersection so the
-        // numbers reflect the user's chosen managed slice rather than
-        // the full device library. `.fullLibrary` keeps legacy semantics.
         let activeScope = model.settings.indexingScope
-        let membership: PhotoKitScopeEnumerator.Membership? = await Task.detached(priority: .userInitiated) {
-            PhotoKitScopeEnumerator.membershipMap(for: activeScope)
+        let hashStore = self.localHashStore
+        let observedStore = self.observedStore
+
+        // Everything heavy — scope membership, the full-library PHAsset
+        // fetch, both full-store snapshots, and the per-localId
+        // intersection loop (100k+ elements) — runs off the MainActor.
+        // This function is @MainActor and called twice per sync (plus
+        // bootstrap and post-action sites); doing the fetch + intersection
+        // inline stuttered the UI. Only the final model write hops back.
+        struct Stats: Sendable {
+            let totalVisible: Int
+            let indexed: Int?   // nil → indexedKnown:false (stores unavailable)
+            let imputed: Int
+        }
+        let stats: Stats = await Task.detached(priority: .userInitiated) {
+            // Resolve scope membership once. `.selectedAlbums(...)`
+            // rescopes both the "Phone" count and the "Indexed"
+            // intersection so the numbers reflect the user's chosen
+            // managed slice. `.fullLibrary` keeps legacy semantics.
+            let membership = PhotoKitScopeEnumerator.membershipMap(for: activeScope)
+
+            let totalVisible: Int
+            if let membership {
+                // `.selectedAlbums(...)` — count is the union of localIds
+                // across selected albums. `Phone` reads as "photos cairn
+                // can manage right now," consistent with the engine's
+                // scope filter.
+                var n = membership.localIds.count
+                if let cap = Self.resolveTestingAssetCap(), n > cap { n = cap }
+                totalVisible = n
+            } else {
+                // Match the broader filter used by
+                // `performLiveReconciliation`'s `visibleFetch` (build
+                // 116+) and the alive-on-phone safety check's
+                // enumeration. Without this match the `library.local`
+                // "On iPhone" stat oscillates between the narrow filter's
+                // count (set at sync-start) and the broad filter's count
+                // (set mid-sync), rendering alternating values every sync.
+                let opts = PHFetchOptions()
+                opts.includeHiddenAssets = true
+                opts.includeAssetSourceTypes = [.typeUserLibrary, .typeCloudShared, .typeiTunesSynced]
+                let fetch = PHAsset.fetchAssets(with: opts)
+                var n = fetch.count
+                if let cap = Self.resolveTestingAssetCap(), n > cap { n = cap }
+                totalVisible = n
+            }
+
+            // "Indexed" counts **PHAssets** (localIdentifiers), not raw
+            // SHA1 checksums — a Live Photo is one PHAsset producing two
+            // SHA1s, so counting checksums would double-count. Per-account
+            // scoping: LocalHashStore is global, so require this localId's
+            // checksums to intersect the active account's Observed.
+            // Per-scope: when restricted, require membership too. Stores
+            // unavailable → indexed nil → UI shows "—" not a stale count.
+            var indexed: Int? = nil
+            if let observedStore,
+               let entries = try? await hashStore.snapshot(),
+               let observed = try? await observedStore.snapshot() {
+                var indexedAssets = 0
+                for (localId, checksums) in entries {
+                    guard !checksums.intersection(observed).isEmpty else { continue }
+                    if let membership, !membership.localIds.contains(localId) { continue }
+                    indexedAssets += 1
+                }
+                indexed = indexedAssets
+            }
+            let imputed = (try? await hashStore.imputedCount()) ?? 0
+            return Stats(totalVisible: totalVisible, indexed: indexed, imputed: imputed)
         }.value
 
-        let totalVisible: Int
-        if let membership {
-            // `.selectedAlbums(...)` — count is the union of localIds
-            // across selected albums. `Phone` reads as "photos cairn
-            // can manage right now," consistent with the engine's
-            // scope filter.
-            var n = membership.localIds.count
-            if let cap = Self.resolveTestingAssetCap(), n > cap { n = cap }
-            totalVisible = n
-        } else {
-            // Match the broader filter used by `performLiveReconciliation`'s
-            // `visibleFetch` (build 116+) and by the alive-on-phone safety
-            // check's enumeration. Without this match the `library.local`
-            // "On iPhone" stat oscillates between two values: the narrow
-            // filter's count sets at sync-start (when this function is
-            // called from `requestSync`) and the broad filter's count
-            // sets mid-sync from `performLiveReconciliation`'s engine
-            // pass (line 2567). The UI then renders alternating values
-            // — small, then large, then small, then large — every
-            // sync round-trip. Unifying upward to the broader filter
-            // is consistent with the rest of cairn's "what's alive on
-            // phone" reading.
-            let opts = PHFetchOptions()
-            opts.includeHiddenAssets = true
-            opts.includeAssetSourceTypes = [.typeUserLibrary, .typeCloudShared, .typeiTunesSynced]
-            let fetch = PHAsset.fetchAssets(with: opts)
-            var n = fetch.count
-            if let cap = Self.resolveTestingAssetCap(), n > cap { n = cap }
-            totalVisible = n
-        }
-
-        // "Indexed" counts **PHAssets** (localIdentifiers), not raw
-        // SHA1 checksums. A Live Photo is one PHAsset that produces
-        // two SHA1s (still + paired motion), and counting checksums
-        // would double-count those rows; counting PHAssets matches
-        // the "On iPhone" stat unit-for-unit so they're directly
-        // comparable.
-        //
-        // Per-account scoping: LocalHashStore is global (content-
-        // addressed cache shared across accounts on this device).
-        // The per-account filter is "this localId's checksums
-        // intersect the active account's Observed" — that excludes
-        // localIds cached for OTHER accounts whose checksums never
-        // entered this account's view. Without it the count would
-        // inflate when a user switches accounts on the same device.
-        //
-        // Per-scope filter: when scope is restricted to selected
-        // albums, additionally require the localId to be in the
-        // scope membership map. Out-of-scope localIds drop out.
-        //
-        // When Observed is unavailable (server not yet activated,
-        // identity not yet cached, or transient SwiftData hiccup),
-        // surface `indexedKnown: false` so the UI shows "—" instead
-        // of a stale count.
-        if let observed = self.observedStore,
-           let entries = try? await self.localHashStore.snapshot(),
-           let observed = try? await observed.snapshot() {
-            var indexedAssets = 0
-            for (localId, checksums) in entries {
-                // Per-account filter — at least one of this localId's
-                // checksums must be in the active account's Observed.
-                guard !checksums.intersection(observed).isEmpty else { continue }
-                // Per-scope filter — when restricted, require the
-                // localId to belong to a selected album.
-                if let membership, !membership.localIds.contains(localId) { continue }
-                indexedAssets += 1
-            }
-            // Imputed count is device-scoped (LocalHashStore is global;
-            // imputation marks rows regardless of which account
-            // requested the seed). Cheap to read; surfaces in the
-            // Initial scan diagnostic + gates the Re-hash imputed
-            // entries action's visibility.
-            let imputedCount = (try? await self.localHashStore.imputedCount()) ?? 0
+        if let indexed = stats.indexed {
             model.library = model.library.with(
-                local: totalVisible,
-                indexed: indexedAssets,
+                local: stats.totalVisible,
+                indexed: indexed,
                 indexedKnown: true,
-                imputed: imputedCount
+                imputed: stats.imputed
             )
         } else {
-            model.library = model.library.with(local: totalVisible, indexedKnown: false)
+            model.library = model.library.with(local: stats.totalVisible, indexedKnown: false)
         }
     }
 
