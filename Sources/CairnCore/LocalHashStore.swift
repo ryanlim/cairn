@@ -103,6 +103,19 @@ public protocol LocalHashStore: Sendable {
     /// See `docs/active-design/fast-initial-scan-plan.md`.
     func setImputed(_ checksums: Set<Checksum>, for localIdentifier: String, modificationDate: Date?) async throws
 
+    /// Batch form of `setImputed` — seed many imputed entries in a
+    /// single transaction. The fast-initial-scan imputation pass can
+    /// seed 80k+ entries at once; calling `setImputed` per entry is one
+    /// SQLite commit (fetch + delete + insert + save) each — minutes of
+    /// fsync-class overhead with no hashing I/O to hide behind. The
+    /// per-asset durability rationale `set` carries (don't lose an
+    /// expensive iCloud download to a crash) doesn't apply: imputation
+    /// is cheap to replay. Keyed by localIdentifier so duplicate ids in
+    /// the input collapse. Callers should pass bounded batches (~1k) so
+    /// the predicate IN-clause and transaction stay sized; the default
+    /// impl loops `setImputed`, concrete stores override with one save.
+    func setImputedBatch(_ entries: [String: (checksums: Set<Checksum>, modificationDate: Date?)]) async throws
+
     /// Whether the cached entries for `localIdentifier` were imputed
     /// (trusted from the server) rather than locally hashed. Used by
     /// the verify-on-touch path before propagating a deletion. Returns
@@ -194,6 +207,14 @@ public extension LocalHashStore {
     /// participate in the fast-initial-scan optimization.
     func setImputed(_ checksums: Set<Checksum>, for localIdentifier: String, modificationDate: Date?) async throws {
         try await set(checksums, for: localIdentifier, modificationDate: modificationDate)
+    }
+
+    /// Default `setImputedBatch`: loop `setImputed`. Concrete stores with
+    /// transactional batch support (SwiftData) override this.
+    func setImputedBatch(_ entries: [String: (checksums: Set<Checksum>, modificationDate: Date?)]) async throws {
+        for (id, v) in entries {
+            try await setImputed(v.checksums, for: id, modificationDate: v.modificationDate)
+        }
     }
 
     /// Fallback for stores that don't track imputation. Always false.

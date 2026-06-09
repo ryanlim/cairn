@@ -1729,27 +1729,36 @@ final class AppDependencies {
         //    "Matching from server…" phase no longer sits silent — the
         //    InitialScanScreen's trustSeededLine renders the imputed
         //    count and ticks live as setImputed finishes each batch.
+        // Seed in chunks of one transaction each rather than one commit
+        // per entry. 80k individual setImputed calls were 80k SQLite
+        // saves with no hashing I/O to amortize them — most of the
+        // observed multi-minute imputation phase. Chunk size bounds both
+        // the batch's predicate IN-clause and the progress granularity.
         var imputedCount = 0
-        for entry in seedable {
+        let seedChunkSize = 1000
+        var chunkStart = 0
+        while chunkStart < seedable.count {
             try Task.checkCancellation()
-            try await self.localHashStore.setImputed(
-                entry.checksums,
-                for: entry.localId,
-                modificationDate: entry.modDate
-            )
-            imputedCount += 1
-            if imputedCount % 50 == 0 || imputedCount == seedable.count {
-                let snapshot = imputedCount
-                await MainActor.run { [weak self] in
-                    guard let self else { return }
-                    let prev = self.model.syncProgress
-                    self.model.syncProgress = .init(
-                        hashed: prev?.hashed ?? 0,
-                        total: prev?.total ?? 0,
-                        initialHashed: prev?.initialHashed ?? 0,
-                        imputed: snapshot
-                    )
-                }
+            let chunkEnd = min(chunkStart + seedChunkSize, seedable.count)
+            var batch: [String: (checksums: Set<Checksum>, modificationDate: Date?)] = [:]
+            batch.reserveCapacity(chunkEnd - chunkStart)
+            for i in chunkStart..<chunkEnd {
+                let entry = seedable[i]
+                batch[entry.localId] = (entry.checksums, entry.modDate)
+            }
+            try await self.localHashStore.setImputedBatch(batch)
+            imputedCount += (chunkEnd - chunkStart)
+            chunkStart = chunkEnd
+            let snapshot = imputedCount
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                let prev = self.model.syncProgress
+                self.model.syncProgress = .init(
+                    hashed: prev?.hashed ?? 0,
+                    total: prev?.total ?? 0,
+                    initialHashed: prev?.initialHashed ?? 0,
+                    imputed: snapshot
+                )
             }
         }
 

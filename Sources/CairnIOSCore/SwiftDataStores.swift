@@ -929,7 +929,17 @@ public actor SwiftDataLocalHashStore: LocalHashStore {
     /// the protocol's default `snapshot().keys.count` because we
     /// never materialize the full `[String: Set<Checksum>]`.
     public func indexedCount() async throws -> Int {
-        let rows = try context.fetch(FetchDescriptor<StoredLocalHashEntry>())
+        // `onHashProgress` calls this every 25 assets / 250ms, on the same
+        // actor as the per-asset hash writes — so a full-model fetch here
+        // serializes a whole-table hydration in front of the write
+        // pipeline thousands of times during a 100k-asset initial scan.
+        // `propertiesToFetch` restricts the fetch to the id column, so the
+        // base64 checksum blob + modDate aren't hydrated — the dominant
+        // cost on a 200k-row table. (Exact distinct-id semantics retained;
+        // SwiftData has no DISTINCT-COUNT, so the in-memory dedupe stays.)
+        var descriptor = FetchDescriptor<StoredLocalHashEntry>()
+        descriptor.propertiesToFetch = [\.localIdentifier]
+        let rows = try context.fetch(descriptor)
         var seen = Set<String>()
         seen.reserveCapacity(rows.count)
         for row in rows {
@@ -944,7 +954,11 @@ public actor SwiftDataLocalHashStore: LocalHashStore {
     /// the actual hashes. Materially faster than `snapshot()` for
     /// libraries with thousands of entries.
     public func allLocalIdentifiers() async throws -> Set<String> {
-        let rows = try context.fetch(FetchDescriptor<StoredLocalHashEntry>())
+        // Id-column-only fetch (see indexedCount) — skips hydrating the
+        // checksum blob, which this caller never reads.
+        var descriptor = FetchDescriptor<StoredLocalHashEntry>()
+        descriptor.propertiesToFetch = [\.localIdentifier]
+        let rows = try context.fetch(descriptor)
         var ids = Set<String>()
         ids.reserveCapacity(rows.count)
         for row in rows {
@@ -1071,6 +1085,34 @@ public actor SwiftDataLocalHashStore: LocalHashStore {
                 modificationDate: modificationDate,
                 imputed: true
             ))
+        }
+        try context.save()
+    }
+
+    public func setImputedBatch(_ entries: [String: (checksums: Set<Checksum>, modificationDate: Date?)]) async throws {
+        guard !entries.isEmpty else { return }
+        // One transaction for the whole batch instead of one per entry.
+        // The imputation seed pass on a 100k+ library hands us tens of
+        // thousands of entries; the per-entry `setImputed` was that many
+        // separate fetch+delete+insert+save commits (the bulk of the
+        // observed multi-minute imputation phase). Delete prior rows for
+        // all incoming ids in a single predicate fetch, insert the new
+        // rows, then a single save. Callers chunk to ~1k ids so this IN
+        // clause and transaction stay bounded (see the imputation loop).
+        let ids = Set(entries.keys)
+        let existing = try context.fetch(FetchDescriptor<StoredLocalHashEntry>(
+            predicate: #Predicate<StoredLocalHashEntry> { ids.contains($0.localIdentifier) }
+        ))
+        for row in existing { context.delete(row) }
+        for (id, value) in entries where !value.checksums.isEmpty {
+            for checksum in value.checksums {
+                context.insert(StoredLocalHashEntry(
+                    localIdentifier: id,
+                    base64: checksum.base64,
+                    modificationDate: value.modificationDate,
+                    imputed: true
+                ))
+            }
         }
         try context.save()
     }
