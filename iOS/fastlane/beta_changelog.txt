@@ -1,32 +1,29 @@
-Codebase review pass — 22 fixes across deletion-safety, correctness, performance, main-thread, and UI honesty.
+Tier 5 UI polish + the rest of the codebase-review backlog (closes everything from the 2026-06-09 review).
 
-This build is the output of a five-agent review of the whole codebase, informed by the build 124-127 troubleshooting. The headline items, in order of how much they matter:
+Build 128 shipped the deletion-safety, correctness, performance, and main-thread work. This build is the UI-honesty half plus the long tail.
 
-DELETION-SAFETY (these could trash a photo still alive on the phone):
-- Incremental metadata writes were erasing the per-resource filenames that the alive-on-phone check needs for edited assets — every insert/update event silently disarmed the build-121 protection. Fixed at both reconciler write sites + a defensive guard in the store.
-- Incremental insert/update events had no source-type filter, so a Cloud-Shared asset a shared-library partner added got indexed — and their later removal of it could trash YOUR Immich copy. Now narrowed to user-library only (the post-125 active-vs-safety rule, finally applied to the third entry point).
-- Three converging bugs let a stale ConfirmedDeleted clock survive on an asset that's back on the phone (drains never un-confirmed; limbo suppression used exact-second vs the engine's ±1s; full-enum never un-confirmed), so a later genuine delete skipped the quarantine window. All three reset the clock now.
-- Restore-via-cairn missed Live Photo motion-video checksums, so the next sync re-trashed the video half it just restored. Fixed.
-- The pending-trash retry queue wasn't pruned when you restored a photo on the phone — the queued intent trashed the server copy anyway. Now pruned.
+SERVER-FETCH PROGRESS (the original "frozen Processing N/N"):
+- A regular sync, after hashing, blocks on the server fetch (minutes on a large server) — the Status card used to sit frozen at "Processing N/N" 100%. It now steps to a real "Fetching server · X / Y" phase with a live count and a server-fraction bar.
+- The incremental /sync/stream path got the same treatment via a new per-batch progress callback — relevant now that session sign-in is wired (see below).
 
-CORRECTNESS:
-- Incremental scans now checkpoint at the last-consumed change token instead of after hashing finishes, so edits that fire during a long scan aren't lost (the cache SHA1 going stale → wrong-checksum-on-delete class).
-- requestSync got a reentrancy guard + a sync-generation token, so a Shortcut/background/automation sync can't interleave with a manual one and freeze the survivor's progress UI.
-- Background tasks now report failure (not success) when iOS expires them mid-run.
+INITIAL-SCAN ETA:
+- After imputation, the first hash emit was treating the entire resumed/imputed count as "this session," producing a wildly optimistic ETA AND persisting a bogus per-asset rate that poisoned the next launch's estimate. Fixed — the baseline is now captured correctly.
+- The pre-hash library scan no longer drives the main progress bar to 100% and snaps it back to 0; it renders as its own "X / Y phone assets scanned" line and the main bar fills exactly once.
 
-PERFORMANCE (large libraries / long syncs):
-- The progress-tick indexed count was a full-table hydration on the hash writer's actor thousands of times per initial scan — now an id-only fetch.
-- Imputation seeding was ~80k individual SQLite commits (most of the multi-minute imputation phase) — now ~80 batched transactions.
-- De-N+1'd the metadata, exclusion, thumbhash, and server-cache write paths.
+DRYRUN / TRASH CONFIRMATION:
+- The "Safety checks" panel showed three hardcoded green checkmarks (it claimed "Photos access is Full" even under Limited). Wired to real values.
+- Removed the dead "Raise threshold and retry" button (its action was empty).
 
-MAIN-THREAD / STUTTER:
-- The reconciliation pass funneled full-library PhotoKit enumeration (three times), per-Live-Photo resource calls, and the engine + orphan compute over 100k-element sets through the main thread. All moved off-main; the three redundant enumerations collapsed to one. The photo-change observer and metadata backfill got the same treatment.
+SETTINGS:
+- Moved the email/password "Sign in to Immich" row out of Advanced and onto the Connection page, next to the server URL and API key — where server auth belongs. (Reminder: this is what unlocks incremental server sync; the API key can't reach Immich's /sync/* endpoints.)
+- Export/import now shows a spinner and disables re-taps while it serializes/restores.
 
-UI HONESTY:
-- The review-and-trash sheet showed three hardcoded green "safety check" checkmarks (asserting "Photos access is Full" even when Limited) and a dead "raise threshold" button — wired to real values / removed.
-- Settings "Hash now" drain is now actually cancellable (it kept downloading invisibly after you tapped Cancel).
+SMALLER FIXES:
+- "Hash now" drain in Settings is now actually cancellable.
 - Bootstrap no longer shows a blank screen for up to two minutes when the server is unreachable.
+- "Retry now" (pending trashes) shows a busy spinner.
+- "Verify imputed checksums" on an empty cache now says "Nothing to verify" instead of falsely claiming a rescan was queued.
+- Auto-sync no longer re-pops an error alert you dismissed mid-sync.
+- A few reconciler robustness fixes: assets whose every resource read fails are now deferred (instead of re-discovered every scan forever); the deferred-drain no longer mis-drops an asset you hid after it was queued; the "untracked discovered" telemetry no longer inflates in selected-albums mode.
 
-Two larger UI items are deferred for live iteration: surfacing server-fetch progress during the post-hash wait (the "frozen Processing N/N"), and the initial-scan ETA rebaselining. Tracked in notes/review-2026-06-09.md.
-
-No schema changes. 668 tests pass.
+669 tests pass. No schema changes.
