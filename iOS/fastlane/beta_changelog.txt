@@ -1,29 +1,11 @@
-Tier 5 UI polish + the rest of the codebase-review backlog (closes everything from the 2026-06-09 review).
+"Open in Immich" now opens the Immich app directly when it's installed.
 
-Build 128 shipped the deletion-safety, correctness, performance, and main-thread work. This build is the UI-honesty half plus the long tail.
+Previously this always opened the web viewer in a browser. Immich's iOS app registers a deep-link scheme (immich://asset?id=…), so cairn now tries that first and falls back to the browser (the server's /photos/<id> page) when the app isn't installed.
 
-SERVER-FETCH PROGRESS (the original "frozen Processing N/N"):
-- A regular sync, after hashing, blocks on the server fetch (minutes on a large server) — the Status card used to sit frozen at "Processing N/N" 100%. It now steps to a real "Fetching server · X / Y" phase with a live count and a server-fraction bar.
-- The incremental /sync/stream path got the same treatment via a new per-batch progress callback — relevant now that session sign-in is wired (see below).
+To test: open a run in the Runs tab, select an asset, tap "Open in Immich."
+- With the Immich app installed → it should jump straight into the Immich app's asset viewer.
+- Without it → same browser behavior as before.
 
-INITIAL-SCAN ETA:
-- After imputation, the first hash emit was treating the entire resumed/imputed count as "this session," producing a wildly optimistic ETA AND persisting a bogus per-asset rate that poisoned the next launch's estimate. Fixed — the baseline is now captured correctly.
-- The pre-hash library scan no longer drives the main progress bar to 100% and snaps it back to 0; it renders as its own "X / Y phone assets scanned" line and the main bar fills exactly once.
+Note: the deep link opens the asset in whichever server the Immich app is signed into (the link itself carries no server address — that's how Immich's own deep links work). Fine for a single-server setup; the browser fallback stays pointed at your specific server.
 
-DRYRUN / TRASH CONFIRMATION:
-- The "Safety checks" panel showed three hardcoded green checkmarks (it claimed "Photos access is Full" even under Limited). Wired to real values.
-- Removed the dead "Raise threshold and retry" button (its action was empty).
-
-SETTINGS:
-- Moved the email/password "Sign in to Immich" row out of Advanced and onto the Connection page, next to the server URL and API key — where server auth belongs. (Reminder: this is what unlocks incremental server sync; the API key can't reach Immich's /sync/* endpoints.)
-- Export/import now shows a spinner and disables re-taps while it serializes/restores.
-
-SMALLER FIXES:
-- "Hash now" drain in Settings is now actually cancellable.
-- Bootstrap no longer shows a blank screen for up to two minutes when the server is unreachable.
-- "Retry now" (pending trashes) shows a busy spinner.
-- "Verify imputed checksums" on an empty cache now says "Nothing to verify" instead of falsely claiming a rescan was queued.
-- Auto-sync no longer re-pops an error alert you dismissed mid-sync.
-- A few reconciler robustness fixes: assets whose every resource read fails are now deferred (instead of re-discovered every scan forever); the deferred-drain no longer mis-drops an asset you hid after it was queued; the "untracked discovered" telemetry no longer inflates in selected-albums mode.
-
-669 tests pass. No schema changes.
+No other changes in this build.
