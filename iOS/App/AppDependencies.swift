@@ -715,6 +715,15 @@ final class AppDependencies {
         model.hasSessionToken = (try? secretStore.sessionToken()) != nil
         model.settings = (try? await settingsStore.load()) ?? .defaults
 
+        // Start the persistent diagnostic-log flusher only if the user has
+        // opted in. Off by default, so the 20s OSLog poll + rolling-file
+        // writes don't run on every launch — they're for active bug
+        // reporting (toggle in Settings → Advanced). Live changes are
+        // handled by the onChange hook in CairnAppRoot.
+        if model.settings.persistentDiagnosticLogging {
+            Task { await DiagnosticLogFlusher.shared.start() }
+        }
+
         if let client = immichClient {
             // Run the server probes OFF the bootstrap critical path. They
             // only refresh the connection banner, server count, missing-

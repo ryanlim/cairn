@@ -269,6 +269,16 @@ public struct CairnSettings: Sendable, Codable, Equatable {
     /// from Settings to keep the screen alive for that work.
     public var keepScreenAwakeDuringSync: Bool
 
+    /// When on, the `DiagnosticLogFlusher` continuously polls OSLog and
+    /// persists cairn's recent entries to a rolling disk file so the
+    /// diagnostic export captures activity across app launches (the kind
+    /// of cross-launch history needed for a useful bug report). Off by
+    /// default — the periodic poll + file write is needless background
+    /// work for users who aren't actively reporting an issue. Toggle it
+    /// on, reproduce the problem, then Export. The export still works
+    /// while off, just limited to the current process's OSLog buffer.
+    public var persistentDiagnosticLogging: Bool
+
     public init(
         maxDeletePercent: Double = 1.0,
         minDeleteFloor: Int = 5,
@@ -288,7 +298,8 @@ public struct CairnSettings: Sendable, Codable, Equatable {
         useIncrementalServerSync: Bool = false,
         fastInitialScan: Bool = false,
         propagationMaxAgeDays: Int? = nil,
-        keepScreenAwakeDuringSync: Bool = true
+        keepScreenAwakeDuringSync: Bool = true,
+        persistentDiagnosticLogging: Bool = false
     ) {
         self.maxDeletePercent = maxDeletePercent
         self.minDeleteFloor = minDeleteFloor
@@ -309,6 +320,7 @@ public struct CairnSettings: Sendable, Codable, Equatable {
         self.fastInitialScan = fastInitialScan
         self.propagationMaxAgeDays = propagationMaxAgeDays
         self.keepScreenAwakeDuringSync = keepScreenAwakeDuringSync
+        self.persistentDiagnosticLogging = persistentDiagnosticLogging
     }
 
     /// The factory defaults. Kept as a single constant so tests and the
@@ -331,6 +343,7 @@ public struct CairnSettings: Sendable, Codable, Equatable {
         case fastInitialScan
         case propagationMaxAgeDays
         case keepScreenAwakeDuringSync
+        case persistentDiagnosticLogging
     }
 
     public init(from decoder: Decoder) throws {
@@ -355,6 +368,7 @@ public struct CairnSettings: Sendable, Codable, Equatable {
         self.fastInitialScan = try c.decodeIfPresent(Bool.self, forKey: .fastInitialScan) ?? d.fastInitialScan
         self.propagationMaxAgeDays = try c.decodeIfPresent(Int.self, forKey: .propagationMaxAgeDays) ?? d.propagationMaxAgeDays
         self.keepScreenAwakeDuringSync = try c.decodeIfPresent(Bool.self, forKey: .keepScreenAwakeDuringSync) ?? d.keepScreenAwakeDuringSync
+        self.persistentDiagnosticLogging = try c.decodeIfPresent(Bool.self, forKey: .persistentDiagnosticLogging) ?? d.persistentDiagnosticLogging
     }
 }
 

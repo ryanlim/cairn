@@ -570,6 +570,8 @@ public struct SettingsScreen: View {
               keywords: ["thumbhash", "placeholder"], page: .advanced),
         .init(id: "adv.incsync", title: "Incremental server sync", breadcrumb: "Advanced",
               keywords: ["stream", "incremental", "sync"], page: .advanced),
+        .init(id: "adv.diaglog", title: "Diagnostic logging", breadcrumb: "Advanced",
+              keywords: ["debug", "logs", "diagnostic", "bug report", "feedback"], page: .advanced),
         .init(id: "conn.signin", title: "Sign in to Immich", breadcrumb: "Connection",
               keywords: ["session", "email password", "login"], page: .connection),
         .init(id: "adv.resetindex", title: "Reset index", breadcrumb: "Advanced › Danger zone",
@@ -1544,6 +1546,12 @@ public struct SettingsScreen: View {
                         "Incremental server sync",
                         sub: "Stream only the changes since the last sync instead of refetching the whole server library each time. Much faster on large libraries. Falls back to the slower full-refetch path if you're not signed in to Immich (Connection settings) or your account doesn't allow the streaming endpoint.",
                         value: $settings.useIncrementalServerSync
+                    )
+                    RowDivider()
+                    ToggleRow(
+                        "Diagnostic logging",
+                        sub: "Continuously capture logs across launches so a bug report has full history. Off by default to skip the background work; turn it on, reproduce the issue, then Export. Export still works while off (current session only).",
+                        value: $settings.persistentDiagnosticLogging
                     )
                     RowDivider()
                     KeyValRow(

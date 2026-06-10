@@ -107,6 +107,20 @@ public struct CairnAppRoot: View {
             .onChange(of: model.settings.timeDisplayFormat) { _, _ in
                 Task { await model.actions.refreshJournalTail() }
             }
+            // Start/stop the persistent diagnostic-log flusher the moment
+            // the toggle flips, so the user doesn't have to relaunch for
+            // it to take effect (or stop running).
+            .onChange(of: model.settings.persistentDiagnosticLogging) { _, on in
+                #if canImport(OSLog) && canImport(UIKit)
+                Task {
+                    if on {
+                        await DiagnosticLogFlusher.shared.start()
+                    } else {
+                        await DiagnosticLogFlusher.shared.stop()
+                    }
+                }
+                #endif
+            }
     }
 
     @ViewBuilder

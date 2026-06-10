@@ -202,6 +202,11 @@ public actor DiagnosticLogFlusher {
     private let store: PersistentLogStore
     private var periodicTask: Task<Void, Never>?
     private var lastFlushed: Date
+    /// Gated by `CairnSettings.persistentDiagnosticLogging`. When false
+    /// (the default), the flusher does no periodic polling and `flushNow`
+    /// no-ops — so the scene-phase flush hook and any stray callers can't
+    /// write to disk behind the user's back. `start()` flips it on.
+    private var enabled = false
 
     init(
         store: PersistentLogStore = .shared,
@@ -215,9 +220,12 @@ public actor DiagnosticLogFlusher {
         self.lastFlushed = Date()
     }
 
-    /// Begin periodic polling. Idempotent — calling twice keeps a
-    /// single Task running.
+    /// Begin periodic polling + enable on-demand flushes. Idempotent —
+    /// calling twice keeps a single Task running. Called when the user
+    /// turns on `persistentDiagnosticLogging` (and at bootstrap if it was
+    /// already on).
     public func start() {
+        enabled = true
         guard periodicTask == nil else { return }
         periodicTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -229,8 +237,10 @@ public actor DiagnosticLogFlusher {
         }
     }
 
-    /// Stop the periodic Task. Used by sign-out and tests.
+    /// Stop the periodic Task and disable flushes. Called when the user
+    /// turns off `persistentDiagnosticLogging` (and by tests).
     public func stop() {
+        enabled = false
         periodicTask?.cancel()
         periodicTask = nil
     }
@@ -240,6 +250,10 @@ public actor DiagnosticLogFlusher {
     /// the watermark. Safe to call from any context that can `await`
     /// the actor hop into the flusher.
     public func flushNow() async {
+        // No-op when diagnostic logging is off — don't write to disk
+        // behind the user's back (e.g. the scene-phase background hook
+        // calls this unconditionally).
+        guard enabled else { return }
         let cutoff = lastFlushed
         let now = Date()
         // Advance the watermark before doing the work so concurrent

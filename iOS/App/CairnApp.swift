@@ -61,16 +61,12 @@ struct CairnApp: App {
         // every launch.
         CairnFonts.registerBundledFonts()
         registerBackgroundTasks()
-        // Start the persistent OSLog flusher early. Periodic polls
-        // copy cairn's recent log entries into a rolling disk file
-        // (`PersistentLogStore`) so the diagnostic export shows
-        // entries from prior launches — invaluable for triaging
-        // "sync starts, gets killed, the next process's export
-        // doesn't show what happened" bugs that the per-process
-        // OSLog scope hides.
-        Task {
-            await DiagnosticLogFlusher.shared.start()
-        }
+        // The persistent OSLog flusher is NO LONGER started here. It's
+        // gated behind `CairnSettings.persistentDiagnosticLogging` (off by
+        // default) and started from `bootstrap()` once settings load (and
+        // toggled live from Settings) — so the 20s poll + disk writes only
+        // run when the user has opted into diagnostic logging for a bug
+        // report, not on every launch.
     }
 
     #if DEBUG
