@@ -1,11 +1,12 @@
-Diagnostic logging is now a toggle (Settings → Advanced), off by default.
+Release candidate for App Store 0.4.0.
 
-Previously cairn continuously captured a rolling log file across launches on every device — useful for bug reports, but needless background work (a poll every 20s + disk writes) for everyone else. Now it's opt-in:
+Functionally identical to build 131 — this build just carries the 0.4.0 marketing version so it can be the App Store release build. Everything since the last App Store release (v0.3.1) is summarized in the App Store "What's New" notes:
 
-- Settings → Advanced → "Diagnostic logging." Off by default.
-- To send a useful bug report: turn it on, reproduce the issue, then "Export diagnostic logs" (right below the toggle).
-- Export still works while the toggle is off — it just covers the current session rather than history across launches.
+- Faster first scan (trust-from-server) — hours down to seconds on iCloud-Optimized libraries.
+- Stronger deletion safety — never proposes trashing a server photo still on your phone (edited photos, Live Photos, hidden/shared assets, capture-time rounding).
+- A broad correctness + performance review (deletion engine, off-main-thread work, large-library speedups).
+- Clearer sync progress (iCloud download visibility, live server-fetch progress, honest ETA).
+- Reworked Settings (categories, summaries, quick-settings card, search; sign-in under Connection).
+- Smaller: "Don't propagate old deletes," Open-in-Immich deep link, opt-in diagnostic logging, hash cache in backup/restore.
 
-Existing installs default to off after this update.
-
-No other changes in this build.
+If 131 tested clean, this should too.
