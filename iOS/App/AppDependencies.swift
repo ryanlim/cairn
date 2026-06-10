@@ -2954,14 +2954,12 @@ final class AppDependencies {
     fileprivate func refreshLibrarySizeStats() async {
         let activeScope = model.settings.indexingScope
         let hashStore = self.localHashStore
-        let observedStore = self.observedStore
 
         // Everything heavy — scope membership, the full-library PHAsset
-        // fetch, both full-store snapshots, and the per-localId
-        // intersection loop (100k+ elements) — runs off the MainActor.
-        // This function is @MainActor and called twice per sync (plus
-        // bootstrap and post-action sites); doing the fetch + intersection
-        // inline stuttered the UI. Only the final model write hops back.
+        // fetch, and the cache counts — runs off the MainActor. This
+        // function is @MainActor and called twice per sync (plus bootstrap
+        // and post-action sites); doing the fetch inline stuttered the UI.
+        // Only the final model write hops back.
         struct Stats: Sendable {
             let totalVisible: Int
             let indexed: Int?   // nil → indexedKnown:false (stores unavailable)
@@ -3000,25 +2998,19 @@ final class AppDependencies {
                 totalVisible = n
             }
 
-            // "Indexed" counts **PHAssets** (localIdentifiers), not raw
-            // SHA1 checksums — a Live Photo is one PHAsset producing two
-            // SHA1s, so counting checksums would double-count. Per-account
-            // scoping: LocalHashStore is global, so require this localId's
-            // checksums to intersect the active account's Observed.
-            // Per-scope: when restricted, require membership too. Stores
-            // unavailable → indexed nil → UI shows "—" not a stale count.
-            var indexed: Int? = nil
-            if let observedStore,
-               let entries = try? await hashStore.snapshot(),
-               let observed = try? await observedStore.snapshot() {
-                var indexedAssets = 0
-                for (localId, checksums) in entries {
-                    guard !checksums.intersection(observed).isEmpty else { continue }
-                    if let membership, !membership.localIds.contains(localId) { continue }
-                    indexedAssets += 1
-                }
-                indexed = indexedAssets
-            }
+            // "Indexed" counts distinct PHAssets (localIdentifiers) in the
+            // hash cache. Use the SAME global indexedCount() the engine
+            // path (liveLibrary) and the onHashProgress callback use, so
+            // the value is identical at every point in a sync — no
+            // transient dip. The previous version applied a per-account
+            // (∩ Observed) and per-scope (∩ membership) filter here, which
+            // read lower than the engine's global count whenever the cache
+            // held imputed-but-not-yet-observed rows — so the displayed
+            // "Indexed" flipped scoped → global across a sync (the reported
+            // bug). The engine path the value settles on is global, so this
+            // aligns the mid-sync writes to it. Stores unavailable → nil →
+            // UI shows "—" rather than a stale count.
+            let indexed: Int? = try? await hashStore.indexedCount()
             let imputed = (try? await hashStore.imputedCount()) ?? 0
             return Stats(totalVisible: totalVisible, indexed: indexed, imputed: imputed)
         }.value
