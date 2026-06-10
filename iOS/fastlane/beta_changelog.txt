@@ -1,11 +1,11 @@
-"Open in Immich" now opens the Immich app directly when it's installed.
+Diagnostic logging is now a toggle (Settings → Advanced), off by default.
 
-Previously this always opened the web viewer in a browser. Immich's iOS app registers a deep-link scheme (immich://asset?id=…), so cairn now tries that first and falls back to the browser (the server's /photos/<id> page) when the app isn't installed.
+Previously cairn continuously captured a rolling log file across launches on every device — useful for bug reports, but needless background work (a poll every 20s + disk writes) for everyone else. Now it's opt-in:
 
-To test: open a run in the Runs tab, select an asset, tap "Open in Immich."
-- With the Immich app installed → it should jump straight into the Immich app's asset viewer.
-- Without it → same browser behavior as before.
+- Settings → Advanced → "Diagnostic logging." Off by default.
+- To send a useful bug report: turn it on, reproduce the issue, then "Export diagnostic logs" (right below the toggle).
+- Export still works while the toggle is off — it just covers the current session rather than history across launches.
 
-Note: the deep link opens the asset in whichever server the Immich app is signed into (the link itself carries no server address — that's how Immich's own deep links work). Fine for a single-server setup; the browser fallback stays pointed at your specific server.
+Existing installs default to off after this update.
 
 No other changes in this build.
