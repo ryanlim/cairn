@@ -1,12 +1,11 @@
-Release candidate for App Store 0.4.0.
+App Store 0.4.0 release candidate (supersedes build 132).
 
-Functionally identical to build 131 — this build just carries the 0.4.0 marketing version so it can be the App Store release build. Everything since the last App Store release (v0.3.1) is summarized in the App Store "What's New" notes:
+Same as 132 plus one fix: the "Indexed" stat no longer dips during a sync and then settles to a different number. It flipped between two internal counts — a per-account/scope-filtered count and the global cache count the sync settles on. It now uses the global count consistently, so "Indexed" only grows as hashing proceeds, no transient drop.
 
-- Faster first scan (trust-from-server) — hours down to seconds on iCloud-Optimized libraries.
-- Stronger deletion safety — never proposes trashing a server photo still on your phone (edited photos, Live Photos, hidden/shared assets, capture-time rounding).
-- A broad correctness + performance review (deletion engine, off-main-thread work, large-library speedups).
-- Clearer sync progress (iCloud download visibility, live server-fetch progress, honest ETA).
-- Reworked Settings (categories, summaries, quick-settings card, search; sign-in under Connection).
-- Smaller: "Don't propagate old deletes," Open-in-Immich deep link, opt-in diagnostic logging, hash cache in backup/restore.
-
-If 131 tested clean, this should too.
+Everything since the last App Store release (v0.3.1) is in the App Store "What's New":
+- Faster first scan (trust-from-server).
+- Stronger deletion safety (never trash a server photo still on your phone).
+- A broad correctness + performance review.
+- Clearer sync progress.
+- Reworked Settings.
+- Smaller: old-delete cutoff, Open-in-Immich deep link, opt-in diagnostic logging, hash cache in backup/restore.
