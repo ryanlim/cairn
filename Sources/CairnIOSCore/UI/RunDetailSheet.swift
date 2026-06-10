@@ -799,13 +799,39 @@ public struct RunDetailSheet: View {
               let firstName = selected.first,
               let match = assets.first(where: { $0.name == firstName }),
               let assetId = match.assetId else { return }
+
+        // Web fallback — the server-specific viewer URL (prior behavior).
         var components = URLComponents()
         components.scheme = serverURL.scheme
         components.host = serverURL.host(percentEncoded: false)
         components.port = serverURL.port
         components.path = "/photos/\(assetId)"
-        guard let url = components.url else { return }
-        UIApplication.shared.open(url)
+        let webURL = components.url
+
+        // Prefer the Immich app's own deep link. Immich's iOS app
+        // registers the `immich` URL scheme and routes
+        // `immich://asset?id=<uuid>` to its asset viewer (same scheme its
+        // widget uses). `open(completionHandler:)` reports success=false
+        // when no installed app claims the scheme, so we fall back to the
+        // browser without needing `immich` in LSApplicationQueriesSchemes
+        // (which `canOpenURL` would otherwise require). Note: the deep link
+        // carries no server context, so it opens the asset in whichever
+        // server the Immich app is signed into — correct for the
+        // single-server case; the web fallback stays server-specific.
+        var appComponents = URLComponents()
+        appComponents.scheme = "immich"
+        appComponents.host = "asset"
+        appComponents.queryItems = [URLQueryItem(name: "id", value: assetId)]
+
+        if let appURL = appComponents.url {
+            UIApplication.shared.open(appURL, options: [:]) { success in
+                if !success, let webURL {
+                    UIApplication.shared.open(webURL)
+                }
+            }
+        } else if let webURL {
+            UIApplication.shared.open(webURL)
+        }
         #endif
     }
 
