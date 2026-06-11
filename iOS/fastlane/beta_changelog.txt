@@ -1,12 +1,7 @@
-0.4.1 (build 135) — sync timestamps + the auto-sync fixes from build 134.
+0.4.1 (build 136) — small fix on top of build 135.
 
-New in this build:
-- The "Last sync details" link on the Status page now shows how long ago the last sync ran ("· 1 min ago"), so it's clear at a glance without opening the sheet.
-- The phase timeline in Sync detail now shows each step's start time (e.g. "Preparing 11:10:08"), next to how long it took.
+The timestamps in Sync detail (the phase timeline and the activity feed) now respect your Settings → time format choice (System / 12-hour / 24-hour) instead of always showing 24-hour.
 
-Also carries everything from build 134 (the reopen/auto-sync consistency work):
-- Reopen after idle (cold or warm) does the same thing: one catch-up sync, only when it's been more than 5 minutes since the last successful sync.
-- Backgrounding mid-sync cleanly abandons the run instead of letting it suspend→resume into a "20-minute" zombie.
-- "Last sync details" always reflects the last sync that actually completed — an interrupted run rolls back to the previous one instead of showing a partial timeline.
-
-To test the timestamps: run a sync, open Sync detail, and confirm each phase row shows a sensible start time; back on Status, confirm the "Last sync details · N ago" reads right and updates after a fresh sync.
+Everything else is the same as build 135:
+- "Last sync details" on Status shows how long ago the last sync ran; each phase-timeline step shows its start time.
+- Reopen-after-idle auto-sync is consistent (cold or warm), backgrounding mid-sync cleanly abandons the run, and "Last sync details" always reflects a completed run.
