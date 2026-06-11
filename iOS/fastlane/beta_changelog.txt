@@ -1,11 +1,10 @@
-App Store 0.4.0 release candidate (supersedes build 132).
+0.4.1 — fixes the inconsistent auto-sync behavior on reopen.
 
-Same as 132 plus one fix: the "Indexed" stat no longer dips during a sync and then settles to a different number. It flipped between two internal counts — a per-account/scope-filtered count and the global cache count the sync settles on. It now uses the global count consistently, so "Indexed" only grows as hashing proceeds, no transient drop.
+Reopening the app after it had been idle behaved differently depending on whether iOS had killed it (cold) or just backgrounded it (warm), and a sync that got backgrounded mid-run could suspend, resume later, die on a stale server fetch, and leave "last sync details" showing a confusing partial run (e.g. "Preparing 20m 6s", orphanSweep ~1,183,000ms, everything else blank). This build addresses all of it:
 
-Everything since the last App Store release (v0.3.1) is in the App Store "What's New":
-- Faster first scan (trust-from-server).
-- Stronger deletion safety (never trash a server photo still on your phone).
-- A broad correctness + performance review.
-- Clearer sync progress.
-- Reworked Settings.
-- Smaller: old-delete cutoff, Open-in-Immich deep link, opt-in diagnostic logging, hash cache in backup/restore.
+- Reopen after idle (cold OR warm) now does the same thing: one catch-up sync, only when the initial scan is complete, nothing's already syncing, and it's been more than 5 minutes since the last successful sync.
+- Backgrounding mid-sync cleanly abandons the in-flight foreground sync instead of letting it suspend→resume into a "20-minute" zombie.
+- "Last sync details" now always reflects the last sync that actually completed — an interrupted/failed run rolls back to the previous one instead of replacing it with a partial timeline. (Tapping Stop does the same.)
+- A cancelled/failed sync stays eligible to retry on the next reopen (we don't pretend we have fresh data).
+
+To test: leave the app idle for a while, reopen it (a few times, after varying idle durations), and check that the sync animation only fires when it should and that "last sync details" always shows a complete run.
