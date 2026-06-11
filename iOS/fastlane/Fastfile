@@ -393,6 +393,47 @@ platform :ios do
     UI.important "⚠️  Submit for review in App Store Connect when ready."
   end
 
+  desc "Submit the already-uploaded build for App Store review — end-to-end via fastlane.\nPushes metadata (incl. metadata/en-US/release_notes.txt = the \"What's New\" field),\nattaches the latest uploaded build for this marketing version, and submits for review.\nRun AFTER `make beta` has uploaded the release build.\nUsage: bundle exec fastlane submit            # submit, release manually after approval\n       bundle exec fastlane submit auto_release:true   # auto-release once approved"
+  lane :submit do |options|
+    api_key = app_store_connect_api_key(
+      key_id:       ENV["APP_STORE_CONNECT_API_KEY_KEY_ID"],
+      issuer_id:    ENV["APP_STORE_CONNECT_API_KEY_ISSUER_ID"],
+      key_filepath: ENV["APP_STORE_CONNECT_API_KEY_KEY_FILEPATH"]
+    )
+
+    # Marketing version from the same source of truth the bump lanes use.
+    version = File.read(PROJECT_YML).match(/CFBundleShortVersionString: "([^"]+)"/)[1]
+    auto_release = [true, "true"].include?(options[:auto_release])
+
+    # Guard: the "What's New" must be real. release_notes.txt is gitignored
+    # and easy to forget; refuse to submit stale/empty notes.
+    notes_path = File.join(__dir__, "metadata", "en-US", "release_notes.txt")
+    UI.user_error!("Missing #{notes_path} — write the version's \"What's New\" first.") unless File.exist?(notes_path)
+    UI.user_error!("#{notes_path} is empty.") if File.read(notes_path).strip.empty?
+
+    UI.message "Submitting App Store version #{version} for review (auto_release=#{auto_release})…"
+
+    upload_to_app_store(
+      api_key:                          api_key,
+      app_version:                      version,
+      skip_binary_upload:               true,    # build already uploaded by `beta`; just attach it
+      skip_metadata:                    false,   # push release_notes.txt as "What's New" + the rest of metadata/
+      skip_screenshots:                 true,    # refresh those separately with `make metadata`
+      force:                            true,    # don't open the HTML preview, just push
+      precheck_include_in_app_purchases: false,
+      submit_for_review:                true,
+      automatic_release:                auto_release,
+      submission_information: {
+        add_id_info_uses_idfa:                       false,
+        export_compliance_uses_encryption:           false,  # matches ITSAppUsesNonExemptEncryption=false
+        content_rights_contains_third_party_content: false
+      }
+    )
+    UI.success "🚀 Submitted version #{version} for App Store review"
+    UI.important "Note: privacy nutrition labels + age rating live in ASC and fastlane can't fully set them. They carry over from the prior version, so a x.y.z update submits clean once 0.4.0 has them."
+    UI.important "skip_metadata:false pushes the WHOLE metadata/ folder — keep it the source of truth (don't hand-edit those fields in ASC)."
+  end
+
   desc "Capture App Store + README screenshots"
   # Delegates to scripts/capture-screenshots.sh because fastlane's
   # `capture_screenshots` builds its xcodebuild `-destination` from
