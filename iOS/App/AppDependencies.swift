@@ -4084,6 +4084,19 @@ final class AppDependencies {
                     return
                 }
 
+                // Snapshot the prior sync narration. performLiveReconciliation
+                // calls resetSyncNarration() at its start, wiping the
+                // timeline + activity feed. If THIS run doesn't complete
+                // (cancelled by backgrounding, or the server fetch dies
+                // during an app suspension), we restore this snapshot in the
+                // catch blocks below — so "last sync details" keeps showing
+                // the last run that actually finished, instead of a partial,
+                // suspension-inflated timeline. A run that completes keeps
+                // its own full narration.
+                let priorNarration = await MainActor.run {
+                    (timeline: self.model.syncTimeline, activity: self.model.syncActivity)
+                }
+
                 do {
                     try await self.performLiveReconciliation(
                         client: client,
@@ -4147,6 +4160,14 @@ final class AppDependencies {
                             self.model.isSyncing = false
                             self.model.transitionSyncPhase(to: .idle)
                         }
+                        // This run was interrupted — restore the prior
+                        // (complete) narration rather than leaving its
+                        // partial timeline as "last sync". Guard on
+                        // generation so we don't stomp a successor's feed.
+                        if self.model.syncGeneration == myGeneration {
+                            self.model.syncTimeline = priorNarration.timeline
+                            self.model.syncActivity = priorNarration.activity
+                        }
                         self.lastSyncEndedAt = Date()
                     }
                 } catch {
@@ -4180,6 +4201,10 @@ final class AppDependencies {
                         self.model.syncStartedAt = nil
                         self.model.pausedSyncElapsedSeconds = nil
                         if let degraded { self.model.degraded = degraded }
+                        // Failed run — restore the prior (complete)
+                        // narration instead of leaving a partial timeline.
+                        self.model.syncTimeline = priorNarration.timeline
+                        self.model.syncActivity = priorNarration.activity
                         self.lastSyncEndedAt = Date()
                         // The local PhotoKit scan ran before the
                         // server-touching part failed; any new
