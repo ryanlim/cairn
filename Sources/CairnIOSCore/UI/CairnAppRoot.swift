@@ -917,6 +917,7 @@ public struct CairnAppRoot: View {
                 timeline: model.syncTimeline,
                 activity: model.syncActivity,
                 spotlightedHash: model.spotlightedHash,
+                timeFormat: model.settings.timeDisplayFormat,
                 onCancel: {
                     cancelActiveSync()
                     model.presentedSheet = nil

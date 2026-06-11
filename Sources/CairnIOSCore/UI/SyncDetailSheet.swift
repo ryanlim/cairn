@@ -28,6 +28,11 @@ public struct SyncDetailSheet: View {
     /// the current-phase card during the Hashing phase. `nil` outside
     /// that phase or when nothing is currently hashing.
     public let spotlightedHash: CairnAppModel.HashingItem?
+    /// The user's time-format preference. Passed explicitly (not via
+    /// environment) because a sheet re-applies its own theme/environment
+    /// at the call site rather than inheriting the root's. Drives the
+    /// phase-timeline + activity clock times so they honor 12/24-hour.
+    public let timeFormat: TimeDisplayFormat
     public let onCancel: () -> Void
     public let onClose: () -> Void
 
@@ -41,6 +46,7 @@ public struct SyncDetailSheet: View {
         timeline: [CairnAppModel.PhaseEntry],
         activity: [CairnAppModel.SyncActivity],
         spotlightedHash: CairnAppModel.HashingItem? = nil,
+        timeFormat: TimeDisplayFormat = .system,
         onCancel: @escaping () -> Void = {},
         onClose: @escaping () -> Void = {}
     ) {
@@ -51,6 +57,7 @@ public struct SyncDetailSheet: View {
         self.timeline = timeline
         self.activity = activity
         self.spotlightedHash = spotlightedHash
+        self.timeFormat = timeFormat
         self.onCancel = onCancel
         self.onClose = onClose
     }
@@ -358,7 +365,7 @@ public struct SyncDetailSheet: View {
             // it reads as ambient "when" without competing with the phase
             // name. Absent for skipped/pending phases that never ran.
             if let started = row.startedAt {
-                Text(Self.formatTimestamp(started))
+                Text(timeFormat.formatClockTimeWithSeconds(started))
                     .font(.cairnScaled(size: 11, design: .monospaced))
                     .foregroundStyle(t.textHint)
             }
@@ -457,7 +464,7 @@ public struct SyncDetailSheet: View {
 
     private func activityRow(_ entry: CairnAppModel.SyncActivity) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
-            Text(Self.formatTimestamp(entry.timestamp))
+            Text(timeFormat.formatClockTimeWithSeconds(entry.timestamp))
                 .font(.cairnScaled(size: 11, design: .monospaced))
                 .foregroundStyle(t.textHint)
             Text(activityKindLabel(entry.kind))
@@ -495,12 +502,6 @@ public struct SyncDetailSheet: View {
         case .note:       t.textMuted
         case .warning:    t.pendingInk
         }
-    }
-
-    static func formatTimestamp(_ d: Date) -> String {
-        let f = DateFormatter()
-        f.dateFormat = "HH:mm:ss"
-        return f.string(from: d)
     }
 }
 

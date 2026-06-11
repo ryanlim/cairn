@@ -430,6 +430,30 @@ public enum TimeDisplayFormat: String, Sendable, Codable, Equatable, CaseIterabl
         return df.string(from: date)
     }
 
+    /// Like `formatClockTime` but includes seconds — for the sync-detail
+    /// phase timeline and activity feed, where events within the same
+    /// minute need to be distinguishable. `.system` uses the `jms`
+    /// skeleton (locale-resolved hour cycle + seconds); `.h12`/`.h24` pin
+    /// explicit patterns the same way `formatClockTime` does.
+    public func formatClockTimeWithSeconds(
+        _ date: Date,
+        locale: Locale = .autoupdatingCurrent
+    ) -> String {
+        let df = DateFormatter()
+        switch self {
+        case .system:
+            df.locale = locale
+            df.setLocalizedDateFormatFromTemplate("jms")
+        case .h12:
+            df.dateFormat = "h:mm:ss a"
+            df.locale = Locale(identifier: "en_US_POSIX")
+        case .h24:
+            df.dateFormat = "HH:mm:ss"
+            df.locale = Locale(identifier: "en_US_POSIX")
+        }
+        return df.string(from: date)
+    }
+
     /// Format `date` for the journal tail: a clock time when `date`
     /// falls on the same calendar day as `now`, else `MMM d`-prefixed
     /// so a stale row reads as "yesterday or earlier" at a glance.
