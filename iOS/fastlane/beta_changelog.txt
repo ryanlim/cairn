@@ -1,10 +1,12 @@
-0.4.1 — fixes the inconsistent auto-sync behavior on reopen.
+0.4.1 (build 135) — sync timestamps + the auto-sync fixes from build 134.
 
-Reopening the app after it had been idle behaved differently depending on whether iOS had killed it (cold) or just backgrounded it (warm), and a sync that got backgrounded mid-run could suspend, resume later, die on a stale server fetch, and leave "last sync details" showing a confusing partial run (e.g. "Preparing 20m 6s", orphanSweep ~1,183,000ms, everything else blank). This build addresses all of it:
+New in this build:
+- The "Last sync details" link on the Status page now shows how long ago the last sync ran ("· 1 min ago"), so it's clear at a glance without opening the sheet.
+- The phase timeline in Sync detail now shows each step's start time (e.g. "Preparing 11:10:08"), next to how long it took.
 
-- Reopen after idle (cold OR warm) now does the same thing: one catch-up sync, only when the initial scan is complete, nothing's already syncing, and it's been more than 5 minutes since the last successful sync.
-- Backgrounding mid-sync cleanly abandons the in-flight foreground sync instead of letting it suspend→resume into a "20-minute" zombie.
-- "Last sync details" now always reflects the last sync that actually completed — an interrupted/failed run rolls back to the previous one instead of replacing it with a partial timeline. (Tapping Stop does the same.)
-- A cancelled/failed sync stays eligible to retry on the next reopen (we don't pretend we have fresh data).
+Also carries everything from build 134 (the reopen/auto-sync consistency work):
+- Reopen after idle (cold or warm) does the same thing: one catch-up sync, only when it's been more than 5 minutes since the last successful sync.
+- Backgrounding mid-sync cleanly abandons the run instead of letting it suspend→resume into a "20-minute" zombie.
+- "Last sync details" always reflects the last sync that actually completed — an interrupted run rolls back to the previous one instead of showing a partial timeline.
 
-To test: leave the app idle for a while, reopen it (a few times, after varying idle durations), and check that the sync animation only fires when it should and that "last sync details" always shows a complete run.
+To test the timestamps: run a sync, open Sync detail, and confirm each phase row shows a sensible start time; back on Status, confirm the "Last sync details · N ago" reads right and updates after a fresh sync.
