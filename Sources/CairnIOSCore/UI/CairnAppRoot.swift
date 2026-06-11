@@ -405,19 +405,54 @@ public struct CairnAppRoot: View {
                 .ignoresSafeArea(.keyboard, edges: .bottom)
         }
         .task {
-            // Auto-kick the first sync when main tabs first appear so
-            // library/run data replaces the empty defaults. Only fires
-            // when the initial scan has already completed — for a
-            // user who hit "Skip for now" on the first-run screen,
-            // landing on main tabs should NOT silently start the very
-            // scan they just declined. The Status banner guides them
-            // back to the scan screen when they're ready.
-            guard model.hasCompletedInitialScan,
-                  !model.didAutoSyncThisSession
-            else { return }
-            model.didAutoSyncThisSession = true
-            startTrackedSync(suppressErrors: true)
+            // Cold-launch catch-up sync when main tabs first appear, so
+            // library/run data replaces the empty defaults. Routed through
+            // the same stale-gated path as warm foreground re-entry, so the
+            // two are consistent. Only fires when the initial scan is
+            // complete (a user who hit "Skip for now" lands on main tabs
+            // without silently starting the scan they declined).
+            maybeForegroundAutoSync()
         }
+        // Warm reopen (foreground from background) — same stale-gated
+        // catch-up as a cold launch.
+        .onChange(of: model.foregroundReturnToken) { _, _ in
+            maybeForegroundAutoSync()
+        }
+        // Backgrounding — cleanly abandon an in-flight foreground sync.
+        .onChange(of: model.didBackgroundToken) { _, _ in
+            cleanCancelSyncForBackground()
+        }
+    }
+
+    /// Foreground catch-up sync, shared by cold launch and warm reopen.
+    /// Stale-gated so reopening within `foregroundAutoSyncStaleSeconds` of
+    /// a *successful* sync doesn't re-sync, and guarded so it never stacks
+    /// on an in-flight run.
+    private static let foregroundAutoSyncStaleSeconds: TimeInterval = 300
+
+    private func maybeForegroundAutoSync() {
+        guard model.hasCompletedInitialScan, !model.isSyncing else { return }
+        if let last = model.lastSyncSucceededAt,
+           Date().timeIntervalSince(last) < Self.foregroundAutoSyncStaleSeconds {
+            return
+        }
+        startTrackedSync(suppressErrors: true)
+    }
+
+    /// Clean-abandon an in-flight foreground sync on backgrounding. NOT a
+    /// pause: a foreground sync can't progress while iOS suspends the
+    /// process, and the suspend→resume of one is what produced the
+    /// "20-minute" zombie runs. No `pausedSyncElapsedSeconds`, and
+    /// `lastSyncSucceededAt` isn't advanced, so the next foreground
+    /// catch-up still fires; requestSync's cancel handler restores the
+    /// prior "last sync" narration.
+    private func cleanCancelSyncForBackground() {
+        guard model.isSyncing else { return }
+        model.isSyncing = false
+        model.syncStartedAt = nil
+        model.pausedSyncElapsedSeconds = nil
+        model.transitionSyncPhase(to: .idle)
+        activeSyncTask?.cancel()
     }
 
     /// Spawn `requestSync` as a tracked Task so the UI can cancel it.

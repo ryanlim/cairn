@@ -1041,6 +1041,17 @@ final class AppDependencies {
         }
     }
 
+    /// Cancel a pending/in-flight PhotoKit-change-driven foreground sync on
+    /// backgrounding. The debounced task that hasn't fired yet is dropped;
+    /// one mid-run cooperatively cancels (the requestSync cancel handler
+    /// restores the prior narration). Called from the App's scene-phase
+    /// background hook, alongside the UI's clean-cancel of `activeSyncTask`.
+    @MainActor
+    func cancelForegroundChangeSync() {
+        pendingForegroundSyncTask?.cancel()
+        pendingForegroundSyncTask = nil
+    }
+
     // MARK: - Scheduled scan (called by BGAppRefreshTask)
 
     @discardableResult
@@ -4119,6 +4130,9 @@ final class AppDependencies {
                         self.model.degraded = .none
                         self.model.lastError = nil
                         self.lastSyncEndedAt = Date()
+                        // Success-only stamp for the foreground catch-up
+                        // sync's stale gate (cancel/error don't advance it).
+                        self.model.lastSyncSucceededAt = Date()
                         // Reaching this point means we talked to Immich
                         // successfully — clear any disconnect banner
                         // and reset the alert-dedup flag so the next

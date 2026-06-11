@@ -262,6 +262,25 @@ public final class CairnAppModel {
     /// Falls back to `reconciliation?.computedAt` when present.
     public var lastCheckedAt: Date?
 
+    /// When the last sync *successfully completed*. Distinct from the
+    /// AppDependencies-internal `lastSyncEndedAt` (which fires on cancel/
+    /// error too, for the observer cooldown) — this only advances on
+    /// success, so the foreground catch-up sync's stale gate retries after
+    /// a cancelled/failed run rather than treating it as "recently synced."
+    public var lastSyncSucceededAt: Date?
+
+    /// Bumped by the App's scene-phase bridge when the app returns to the
+    /// foreground from the background. CairnAppRoot observes it to run a
+    /// stale-gated catch-up sync, so warm reopens behave the same as cold
+    /// launches.
+    public var foregroundReturnToken: Int = 0
+
+    /// Bumped when the app enters the background. CairnAppRoot observes it
+    /// to cleanly abandon any in-flight foreground sync (a foreground sync
+    /// can't make progress while iOS suspends the process, and the
+    /// suspend→resume of one produced "20-minute" zombie runs).
+    public var didBackgroundToken: Int = 0
+
     /// Set of candidate checksums (delete + pending-review buckets
     /// merged) the user has been auto-presented with via the post-
     /// sync routing — i.e., whatever `presentDryRunSheet` last
