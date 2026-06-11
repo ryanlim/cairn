@@ -1165,6 +1165,15 @@ public struct StatusScreen: View {
                         HStack(spacing: 4) {
                             Text(activeEntry ? "Show details" : "Last sync details")
                                 .font(.cairnScaled(size: 12, weight: .medium))
+                            // Unobtrusive "when did the last sync run" hint
+                            // next to the post-sync entry, so it's obvious
+                            // at a glance without opening the sheet. Muted
+                            // so it reads as ambient next to the link.
+                            if postSyncEntry, let checked = lastCheckedAt {
+                                Text("· \(Self.relativeTime(checked))")
+                                    .font(.cairnScaled(size: 12))
+                                    .foregroundStyle(t.textMuted)
+                            }
                             Image(systemName: "chevron.right")
                                 .font(.cairnScaled(size: 9, weight: .semibold))
                         }

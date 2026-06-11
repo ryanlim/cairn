@@ -300,6 +300,10 @@ public struct SyncDetailSheet: View {
     private struct TimelineRow {
         let phase: CairnAppModel.SyncPhase
         let durationMs: Int?
+        /// Wall-clock time this phase started (nil for skipped/pending
+        /// phases that never ran). Surfaced per-row so it's obvious when
+        /// each step happened, not just how long it took.
+        let startedAt: Date?
         let isLive: Bool
         /// True when this phase has no timeline entry AND the sync
         /// has already moved past it (or completed). Differs from
@@ -336,6 +340,7 @@ public struct SyncDetailSheet: View {
             return TimelineRow(
                 phase: p,
                 durationMs: entry?.durationMs,
+                startedAt: entry?.startedAt,
                 isLive: phase == p && isSyncing,
                 isSkipped: isPending && (isLater || isPastCurrent)
             )
@@ -349,6 +354,14 @@ public struct SyncDetailSheet: View {
             Text(row.phase.displayName)
                 .font(.cairnScaled(size: 13))
                 .foregroundStyle(rowTextColor(for: row))
+            // Wall-clock start time for the step — quiet, monospaced, so
+            // it reads as ambient "when" without competing with the phase
+            // name. Absent for skipped/pending phases that never ran.
+            if let started = row.startedAt {
+                Text(Self.formatTimestamp(started))
+                    .font(.cairnScaled(size: 11, design: .monospaced))
+                    .foregroundStyle(t.textHint)
+            }
             Spacer(minLength: 8)
             Text(rowDurationLabel(for: row))
                 .font(.cairnScaled(size: 12, design: .monospaced))
