@@ -1,7 +1,7 @@
-0.4.1 (build 138) — the run history no longer grows without bound.
+0.4.1 (build 139) — large photo libraries can finish the initial scan.
 
-cairn keeps a local, append-only journal of everything it does. Until now it grew forever and was re-read in full on every sync — fine today, slower over years. This build keeps your most recent ~500 runs in the live history (Status and Runs) and moves older ones into an archive automatically. Nothing is deleted: restore still reaches archived runs, and Export still includes the full history.
+On very large libraries (100k+ photos), the first scan could sit with no visible progress for a long time. The cause: a metadata pass was running on the main thread, so the whole UI froze while it churned — including the progress bar that was supposed to show it working. That pass now runs off the main thread, so the scan makes visible progress and stays responsive (Stop indexing works again mid-pass too). Thanks to Ryan Lim for diagnosing this on his own large library and contributing the fix.
 
-You can browse the archive under Settings → Advanced → View archived history. Most testers won't have crossed the threshold yet, so it'll show an empty state until older runs start rotating out — that's expected.
+Also new: Settings → Advanced → Concurrent hashes. This tunes how many photos the initial scan hashes at once. The default (4) is unchanged and right for most devices; recent iPhones on iCloud-heavy libraries can try 8 for faster scans, older hardware can drop to 1–2 if memory feels tight. Takes effect on the next sync.
 
-To test: if you have a long history, open Settings → Advanced → View archived history and confirm older runs appear there while recent ones still show on Status/Runs. Restoring a run (including an older one) should still work.
+To test: if you have a large library, kick off (or reset and re-run) an initial scan and confirm progress actually moves and the app stays responsive. Optionally bump Concurrent hashes in Advanced and compare scan speed.
