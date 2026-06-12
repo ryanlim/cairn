@@ -29,6 +29,17 @@ public actor DeletionJournal {
         self.decoder = dec
     }
 
+    /// Sibling cold-storage file for runs rotated out of the live
+    /// journal by `rotateIfNeeded`. Same JSONL format, same directory:
+    /// `deletion-journal.jsonl` → `deletion-journal.archive.jsonl`. The
+    /// per-sync hot paths never read it; `entriesForRun` (restore /
+    /// exclude fallback) and the archive viewer do.
+    public var archivePath: URL {
+        let ext = path.pathExtension
+        let base = path.deletingPathExtension().appendingPathExtension("archive")
+        return ext.isEmpty ? base : base.appendingPathExtension(ext)
+    }
+
     /// Write one entry to the end of the file. Creates the file on
     /// first call. Writes are serialized through the actor; callers
     /// don't need their own locking.
@@ -57,44 +68,81 @@ public actor DeletionJournal {
         return Array(all.suffix(limit))
     }
 
-    /// Every entry in the journal, in on-disk order. Undecodable rows
-    /// (schema drift, hand-edits) are skipped rather than aborting the
-    /// read; a one-shot console warning surfaces the skip count on the
-    /// first read of this actor's lifetime.
+    /// Every entry in the live journal, in on-disk order. Undecodable
+    /// rows (schema drift, hand-edits) are skipped rather than aborting
+    /// the read; a one-shot console warning surfaces the skip count on
+    /// the first read of this actor's lifetime.
+    ///
+    /// Live-file only: rows that `rotateIfNeeded` has moved to the
+    /// archive are *not* returned here. The hot paths that call this
+    /// every sync (run-list refresh, `recentlyTrashedChecksums`) only
+    /// need recent history, and rotation's guard guarantees anything
+    /// they read back stays live. Restore/exclude reach archived runs
+    /// via `entriesForRun`; the archive viewer via `readArchive`.
     public func readAll() throws -> [JournalEntry] {
-        guard FileManager.default.fileExists(atPath: path.path) else { return [] }
-        let raw = try Data(contentsOf: path)
-        guard let text = String(data: raw, encoding: .utf8) else { return [] }
+        try decodeEntries(at: path)
+    }
+
+    /// Decoded archived entries — the runs `rotateIfNeeded` rotated out —
+    /// in on-disk order, with byte-identical duplicate rows collapsed (a
+    /// crash between the archive-append and the live-rewrite can
+    /// re-append a run a prior rotation already wrote).
+    public func readArchive() throws -> [JournalEntry] {
+        try decodeEntries(at: archivePath, dedupe: true)
+    }
+
+    /// Shared JSONL decoder for an arbitrary journal file. `dedupe` drops
+    /// byte-identical repeat lines (only the archive needs it). Per-row
+    /// tolerance: a schema change (e.g. adding a field to an enum case)
+    /// makes older rows fail to decode — skip the row rather than letting
+    /// it bail the whole read. Mostly relevant pre-1.0, before the wire
+    /// format is frozen.
+    private func decodeEntries(at url: URL, dedupe: Bool = false) throws -> [JournalEntry] {
         var out: [JournalEntry] = []
         var skipped = 0
-        for line in text.split(whereSeparator: \.isNewline) {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.isEmpty { continue }
-            // Per-row tolerance: a schema change (e.g. adding a field
-            // to an enum case) makes older rows fail to decode. Rather
-            // than letting one bad row bail the whole tail, skip it
-            // and keep going. Mostly relevant during development —
-            // pre-1.0 the wire format isn't frozen.
+        var seen: Set<String> = []
+        for trimmed in try rawLines(at: url) {
+            if dedupe && !seen.insert(trimmed).inserted { continue }
             do {
-                let entry = try decoder.decode(JournalEntry.self, from: Data(trimmed.utf8))
-                out.append(entry)
+                out.append(try decoder.decode(JournalEntry.self, from: Data(trimmed.utf8)))
             } catch {
                 skipped += 1
-                continue
             }
         }
         if skipped > 0 && !hasWarnedAboutSkippedRows {
-            print("[cairn.journal] skipped \(skipped) undecodable row(s) in \(path.lastPathComponent) — Settings → Clear journal to remove them")
+            print("[cairn.journal] skipped \(skipped) undecodable row(s) in \(url.lastPathComponent) — Settings → Clear journal to remove them")
             hasWarnedAboutSkippedRows = true
         }
         return out
     }
 
-    /// Read the raw JSONL file as individual lines, preserving entries
+    /// Entries for a single run, checking the live journal first and
+    /// falling back to the archive. Restore and the run-scoped exclude
+    /// cleanup use this so they keep working after a run has rotated out
+    /// of the live file — the live-only `readAll` would miss it.
+    public func entriesForRun(_ runId: String) throws -> [JournalEntry] {
+        let live = try readAll().filter { $0.runId == runId }
+        if !live.isEmpty { return live }
+        return try readArchive().filter { $0.runId == runId }
+    }
+
+    /// Read the live JSONL file as individual lines, preserving entries
     /// the current schema can't decode. Used by export.
     public func readRawLines() throws -> [String] {
-        guard FileManager.default.fileExists(atPath: path.path) else { return [] }
-        let raw = try Data(contentsOf: path)
+        try rawLines(at: path)
+    }
+
+    /// Archive counterpart of `readRawLines`, de-duplicated. Folded into
+    /// the diagnostic export so the full history survives a round-trip.
+    public func readArchiveRawLines() throws -> [String] {
+        var seen: Set<String> = []
+        return try rawLines(at: archivePath).filter { seen.insert($0).inserted }
+    }
+
+    /// Trimmed, non-empty lines of a JSONL file, or `[]` if absent.
+    private func rawLines(at url: URL) throws -> [String] {
+        guard FileManager.default.fileExists(atPath: url.path) else { return [] }
+        let raw = try Data(contentsOf: url)
         guard let text = String(data: raw, encoding: .utf8) else { return [] }
         return text.split(whereSeparator: \.isNewline)
             .map { $0.trimmingCharacters(in: .whitespaces) }
@@ -104,12 +152,16 @@ public actor DeletionJournal {
     /// Append pre-encoded JSONL lines from an import. Each line should
     /// be a complete JSON object (no trailing newline — this method adds it).
     public func appendRawLines(_ lines: [String]) throws {
+        try appendRawLines(lines, to: path)
+    }
+
+    private func appendRawLines(_ lines: [String], to url: URL) throws {
         guard !lines.isEmpty else { return }
         let fm = FileManager.default
-        if !fm.fileExists(atPath: path.path) {
-            fm.createFile(atPath: path.path, contents: nil)
+        if !fm.fileExists(atPath: url.path) {
+            fm.createFile(atPath: url.path, contents: nil)
         }
-        let handle = try FileHandle(forWritingTo: path)
+        let handle = try FileHandle(forWritingTo: url)
         try handle.seekToEnd()
         for line in lines {
             let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -119,6 +171,126 @@ public actor DeletionJournal {
             try handle.write(contentsOf: data)
         }
         try handle.close()
+    }
+
+    /// Overwrite a JSONL file with exactly `lines` (atomic). Used by
+    /// rotation to drop archived rows from the live file.
+    private func writeRawLines(_ lines: [String], to url: URL) throws {
+        let body = lines.isEmpty ? "" : lines.joined(separator: "\n") + "\n"
+        try Data(body.utf8).write(to: url, options: .atomic)
+    }
+
+    // MARK: - Rotation
+
+    /// Move whole older runs out of the live journal into the sibling
+    /// archive so the live file — and every full read of it — stays
+    /// bounded. A run stays live when EITHER it's among the
+    /// `keepingRuns` most-recent runs (by last timestamp) OR it carries
+    /// a non-sync event (trash / restore / exclude / pending / run
+    /// lifecycle) newer than `protectWindowDays` days. The latter is the
+    /// guard that keeps `recentlyTrashedChecksums` — which scans only the
+    /// live file every sync — correct without ever reading the archive.
+    /// Everything else, and only whole runs, moves to the archive;
+    /// sync-only reconcile rows are the bulk of it.
+    ///
+    /// Cheap no-op (a raw read, no decode, no write) until the live file
+    /// exceeds `keepingRuns + slack` runs, so it's safe to call every
+    /// sync without rewriting the file each time. Returns the rotation
+    /// outcome, or nil when nothing moved.
+    ///
+    /// Crash-safety: archived rows are appended to the archive *before*
+    /// the live file is rewritten. A crash in between leaves the live
+    /// file intact (no data lost) and at worst duplicates rows in the
+    /// archive, which `readArchive` collapses on read. Undecodable rows
+    /// are always retained in the live file — never archived or dropped.
+    @discardableResult
+    public func rotateIfNeeded(
+        keepingRuns: Int,
+        slack: Int = 100,
+        protectWindowDays: Int = 30,
+        now: Date = Date()
+    ) throws -> RotationOutcome? {
+        let lines = try rawLines(at: path)
+        // Run count ≤ line count, so if there aren't even
+        // `keepingRuns + slack` lines there can't be that many runs —
+        // bail before paying for a full decode.
+        guard lines.count > keepingRuns + slack else { return nil }
+
+        var decoded: [(raw: String, entry: JournalEntry?)] = []
+        decoded.reserveCapacity(lines.count)
+        var lastByRun: [String: Date] = [:]
+        for raw in lines {
+            let entry = try? decoder.decode(JournalEntry.self, from: Data(raw.utf8))
+            decoded.append((raw, entry))
+            if let e = entry {
+                if let prev = lastByRun[e.runId] {
+                    if e.timestamp > prev { lastByRun[e.runId] = e.timestamp }
+                } else {
+                    lastByRun[e.runId] = e.timestamp
+                }
+            }
+        }
+        guard lastByRun.count > keepingRuns + slack else { return nil }
+
+        // The keepingRuns most-recent runs stay, ranked by last timestamp.
+        let recentRunIds = Set(
+            lastByRun.sorted { $0.value > $1.value }
+                .prefix(keepingRuns)
+                .map(\.key)
+        )
+        // Older runs still carrying recent forensic state stay too.
+        let cutoff = now.addingTimeInterval(-Double(protectWindowDays) * 86_400)
+        var protectedRunIds: Set<String> = []
+        for (_, entry) in decoded {
+            guard let e = entry else { continue }
+            if !e.event.isSyncOnly && e.timestamp >= cutoff {
+                protectedRunIds.insert(e.runId)
+            }
+        }
+        let keepRunIds = recentRunIds.union(protectedRunIds)
+
+        var keptLines: [String] = []
+        var archivedLines: [String] = []
+        var keptRuns: Set<String> = []
+        var archivedRuns: Set<String> = []
+        for (raw, entry) in decoded {
+            // Undecodable rows always stay live — never archive or drop
+            // something we can't classify.
+            guard let e = entry else { keptLines.append(raw); continue }
+            if keepRunIds.contains(e.runId) {
+                keptLines.append(raw)
+                keptRuns.insert(e.runId)
+            } else {
+                archivedLines.append(raw)
+                archivedRuns.insert(e.runId)
+            }
+        }
+        guard !archivedLines.isEmpty else { return nil }
+
+        try appendRawLines(archivedLines, to: archivePath)
+        try writeRawLines(keptLines, to: path)
+
+        return RotationOutcome(
+            archivedRuns: archivedRuns.count,
+            archivedEntries: archivedLines.count,
+            liveRuns: keptRuns.count,
+            liveEntries: keptLines.count
+        )
+    }
+}
+
+/// Summary of one `DeletionJournal.rotateIfNeeded` pass. `archived*`
+/// counts moved to the archive; `live*` counts remain in the live file.
+public struct RotationOutcome: Sendable, Equatable {
+    public let archivedRuns: Int
+    public let archivedEntries: Int
+    public let liveRuns: Int
+    public let liveEntries: Int
+    public init(archivedRuns: Int, archivedEntries: Int, liveRuns: Int, liveEntries: Int) {
+        self.archivedRuns = archivedRuns
+        self.archivedEntries = archivedEntries
+        self.liveRuns = liveRuns
+        self.liveEntries = liveEntries
     }
 }
 
@@ -337,6 +509,22 @@ public struct JournalEntry: Codable, Sendable, Equatable {
             self.livePhotoVideoId = try c.decodeIfPresent(String.self, forKey: .livePhotoVideoId)
             self.originalFileName = try c.decodeIfPresent(String.self, forKey: .originalFileName)
             self.fileCreatedAt = try c.decodeIfPresent(Date.self, forKey: .fileCreatedAt)
+        }
+    }
+}
+
+public extension JournalEntry.Event {
+    /// True only for the routine reconciliation markers
+    /// (`syncStarted` / `syncCompleted` / `syncTransitions`). These are
+    /// the high-volume rows `rotateIfNeeded` may archive freely: no
+    /// read-back path (restore, run-scoped exclude,
+    /// `recentlyTrashedChecksums`) ever consults them. Every other event
+    /// carries forensic state a reader might need, so rotation protects
+    /// its run within the recency window.
+    var isSyncOnly: Bool {
+        switch self {
+        case .syncStarted, .syncCompleted, .syncTransitions: return true
+        default: return false
         }
     }
 }

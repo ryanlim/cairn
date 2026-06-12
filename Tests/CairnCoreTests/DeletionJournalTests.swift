@@ -189,4 +189,115 @@ struct DeletionJournalTests {
         if case .restoreFailed(_, _, _, let http) = entries[3].event { #expect(http == 500) } else { Issue.record("3") }
         if case .tagApplied(_, _, _, let dur) = entries[4].event { #expect(dur == 89) } else { Issue.record("4") }
     }
+
+    // MARK: - Rotation / archive
+
+    private func archiveURL(_ p: URL) -> URL {
+        p.deletingPathExtension().appendingPathExtension("archive").appendingPathExtension(p.pathExtension)
+    }
+
+    private func syncRun(_ id: String, at ts: Date) -> JournalEntry {
+        .init(timestamp: ts, runId: id, event: .syncCompleted(
+            indexed: 0, candidates: 0, pendingReview: 0,
+            deferredLarge: 0, deferredLargeBytes: 0, deferredTimeout: 0, elapsedMs: 1))
+    }
+
+    @Test("rotateIfNeeded is a no-op below the keep+slack threshold")
+    func rotationNoopBelowThreshold() async throws {
+        let path = tempPath()
+        defer { try? FileManager.default.removeItem(at: path); try? FileManager.default.removeItem(at: archiveURL(path)) }
+
+        let journal = DeletionJournal(path: path)
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        for i in 0..<3 { try await journal.append(syncRun("s\(i)", at: now.addingTimeInterval(Double(i) * 3600))) }
+
+        let outcome = try await journal.rotateIfNeeded(keepingRuns: 500, slack: 100, now: now)
+        #expect(outcome == nil)
+        #expect(!FileManager.default.fileExists(atPath: archiveURL(path).path))
+        #expect(try await journal.readAll().count == 3)
+    }
+
+    @Test("rotateIfNeeded archives the oldest runs and keeps the most recent N")
+    func rotationArchivesOldest() async throws {
+        let path = tempPath()
+        defer { try? FileManager.default.removeItem(at: path); try? FileManager.default.removeItem(at: archiveURL(path)) }
+
+        let journal = DeletionJournal(path: path)
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        for i in 0..<6 { try await journal.append(syncRun("s\(i)", at: now.addingTimeInterval(Double(i) * 3600))) }
+
+        let out = try #require(try await journal.rotateIfNeeded(keepingRuns: 3, slack: 0, now: now.addingTimeInterval(6 * 3600)))
+        #expect(out.archivedRuns == 3)
+        #expect(out.liveRuns == 3)
+
+        #expect(Set(try await journal.readAll().map(\.runId)) == ["s3", "s4", "s5"])
+        #expect(Set(try await journal.readArchive().map(\.runId)) == ["s0", "s1", "s2"])
+    }
+
+    @Test("guard keeps an older run that has a destructive event within the window")
+    func rotationGuardKeepsRecentDestructive() async throws {
+        let path = tempPath()
+        defer { try? FileManager.default.removeItem(at: path); try? FileManager.default.removeItem(at: archiveURL(path)) }
+
+        let journal = DeletionJournal(path: path)
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        // Trash run from ~1 day ago — older than every sync run below,
+        // so it ranks beyond the last-3 by recency, but well within the
+        // 30-day window.
+        try await journal.append(.init(
+            timestamp: now.addingTimeInterval(-86_400),
+            runId: "T",
+            event: .planningTrash(targets: [JournalEntry.TrashTarget(assetId: "a1", checksum: "ck1", livePhotoVideoId: nil)])))
+        try await journal.append(.init(
+            timestamp: now.addingTimeInterval(-86_400 + 1),
+            runId: "T",
+            event: .trashSucceeded(assetIds: ["a1"], durationMs: 10)))
+        for i in 0..<4 { try await journal.append(syncRun("s\(i)", at: now.addingTimeInterval(-Double(4 - i) * 3600))) }
+
+        let out = try #require(try await journal.rotateIfNeeded(keepingRuns: 3, slack: 0, protectWindowDays: 30, now: now))
+        // Only the oldest sync run rotates; the trash run is protected.
+        #expect(out.archivedRuns == 1)
+        let live = Set(try await journal.readAll().map(\.runId))
+        #expect(live.contains("T"))
+        #expect(Set(try await journal.readArchive().map(\.runId)) == ["s0"])
+
+        // The per-sync detector still finds the trashed checksum from the
+        // live file alone — no archive read required.
+        let idx = JournalReader.recentlyTrashedChecksums(in: try await journal.readAll(), now: now)
+        #expect(idx[Checksum(base64: "ck1")] != nil)
+    }
+
+    @Test("entriesForRun falls back to the archive for a rotated-out run")
+    func entriesForRunArchiveFallback() async throws {
+        let path = tempPath()
+        defer { try? FileManager.default.removeItem(at: path); try? FileManager.default.removeItem(at: archiveURL(path)) }
+
+        let journal = DeletionJournal(path: path)
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        for i in 0..<6 { try await journal.append(syncRun("s\(i)", at: now.addingTimeInterval(Double(i) * 3600))) }
+        _ = try await journal.rotateIfNeeded(keepingRuns: 3, slack: 0, now: now.addingTimeInterval(6 * 3600))
+
+        let archived = try await journal.entriesForRun("s0")   // rotated out
+        #expect(archived.count == 1 && archived.first?.runId == "s0")
+        let liveStill = try await journal.entriesForRun("s5")   // still live
+        #expect(liveStill.count == 1 && liveStill.first?.runId == "s5")
+    }
+
+    @Test("rotation preserves undecodable rows in the live file")
+    func rotationPreservesUndecodableRows() async throws {
+        let path = tempPath()
+        defer { try? FileManager.default.removeItem(at: path); try? FileManager.default.removeItem(at: archiveURL(path)) }
+
+        let journal = DeletionJournal(path: path)
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        try await journal.appendRawLines(["{ this is not valid json"])
+        for i in 0..<6 { try await journal.append(syncRun("s\(i)", at: now.addingTimeInterval(Double(i) * 3600))) }
+
+        _ = try await journal.rotateIfNeeded(keepingRuns: 3, slack: 0, now: now.addingTimeInterval(6 * 3600))
+
+        let live = try await journal.readRawLines()
+        #expect(live.contains { $0.contains("not valid json") })
+        let archived = try await journal.readArchiveRawLines()
+        #expect(!archived.contains { $0.contains("not valid json") })
+    }
 }
