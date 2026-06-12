@@ -2860,6 +2860,23 @@ final class AppDependencies {
             }
         }
 
+        // Keep the live journal bounded: once it exceeds ~500 runs,
+        // rotate the oldest whole runs out to the sibling archive file
+        // (browsable via Settings → View archived history). Cheap no-op
+        // until the threshold, and a no-op for the read-back paths —
+        // rotation's guard keeps anything restore / the recently-trashed
+        // detector needs in the live file. Best-effort: a rotation
+        // failure must never fail a sync.
+        if let journal {
+            do {
+                if let outcome = try await journal.rotateIfNeeded(keepingRuns: Self.journalLiveRunCap) {
+                    syncLog.notice("[cairn.journal.rotate] archived \(outcome.archivedRuns, privacy: .public) run(s) / \(outcome.archivedEntries, privacy: .public) entries; live now \(outcome.liveRuns, privacy: .public) run(s)")
+                }
+            } catch {
+                syncLog.error("[cairn.journal.rotate] failed: \(Self.describeSyncError(error), privacy: .public)")
+            }
+        }
+
         // Buffer enough history for the user to scroll back through
         // recent activity on Status without leaving the screen. 500
         // rows ≈ months of normal use; reading them once costs the
@@ -2906,6 +2923,13 @@ final class AppDependencies {
         }
     }
 
+    /// How many of the most-recent runs the live journal keeps before
+    /// `rotateIfNeeded` rotates older whole runs out to the archive.
+    /// ~500 runs spans months of normal use and far exceeds the 30-day
+    /// window the read-back paths care about, so the rotation guard
+    /// almost never has to override it. One constant to tune.
+    static let journalLiveRunCap = 500
+
     /// Repopulate `model.journalTail` from the on-disk journal. Called
     /// inline at sync end and from every mutating action (trash, restore,
     /// exclude) so the Status journal card reflects the new event
@@ -2926,6 +2950,25 @@ final class AppDependencies {
         let filtered = recent.filter { $0.timestamp >= cutoff }
         let timeFormat = model.settings.timeDisplayFormat
         model.journalTail = Array(
+            CairnFixtures.JournalTailEntry
+                .from(entries: filtered, timeFormat: timeFormat)
+                .reversed()
+        )
+    }
+
+    /// Formatted, newest-first archived history for the viewer screen.
+    /// Mirrors `refreshJournalTail` (same per-key activation filter,
+    /// same row formatting) but reads the rotated-out archive file and
+    /// *returns* the rows instead of caching them on the model — the
+    /// screen owns their lifetime, so nothing lingers once it closes.
+    @MainActor
+    fileprivate func loadArchivedHistoryImpl() async -> [CairnFixtures.JournalTailEntry] {
+        guard let journal else { return [] }
+        guard let archived = try? await journal.readArchive() else { return [] }
+        let cutoff = currentKeyActivatedAt ?? .distantPast
+        let filtered = archived.filter { $0.timestamp >= cutoff }
+        let timeFormat = model.settings.timeDisplayFormat
+        return Array(
             CairnFixtures.JournalTailEntry
                 .from(entries: filtered, timeFormat: timeFormat)
                 .reversed()
@@ -4310,9 +4353,12 @@ final class AppDependencies {
                     // The user's "restore" intent semantically matches
                     // exclude — "preserve this asset on Immich." Mirrors
                     // the cleanup that `excludePending` does.
-                    let entries = (try? await journal.readAll()) ?? []
+                    // `entriesForRun` falls back to the archive, so the
+                    // cleanup still finds the planning targets even if the
+                    // run has rotated out of the live journal.
+                    let entries = (try? await journal.entriesForRun(runId)) ?? []
                     var planningTargets: [JournalEntry.TrashTarget] = []
-                    for entry in entries where entry.runId == runId {
+                    for entry in entries {
                         if case .planningTrash(let targets) = entry.event {
                             planningTargets = targets
                         }
@@ -5193,18 +5239,23 @@ final class AppDependencies {
                 let journal = await MainActor.run { self.journal }
                 var deleteError: Swift.Error?
                 if let journal {
-                    let path = await journal.path
-                    do {
-                        try FileManager.default.removeItem(at: path)
-                    } catch {
-                        // ENOENT is fine — file simply wasn't there
-                        // (cairn never wrote a journal). Anything else
-                        // is real and the user should see it.
-                        let nsError = error as NSError
-                        if !(nsError.domain == NSCocoaErrorDomain
-                             && nsError.code == NSFileNoSuchFileError) {
-                            deleteError = error
-                            syncLog.error("[cairn.journal.all] clear failed: \(Self.describeSyncError(error), privacy: .public)")
+                    // Wipe both the live journal and its rotated-out
+                    // archive — "clear all" means the whole history.
+                    let paths = [await journal.path, await journal.archivePath]
+                    for path in paths {
+                        do {
+                            try FileManager.default.removeItem(at: path)
+                        } catch {
+                            // ENOENT is fine — file simply wasn't there
+                            // (cairn never wrote a journal, or never
+                            // rotated). Anything else is real and the
+                            // user should see it.
+                            let nsError = error as NSError
+                            if !(nsError.domain == NSCocoaErrorDomain
+                                 && nsError.code == NSFileNoSuchFileError) {
+                                deleteError = error
+                                syncLog.error("[cairn.journal.all] clear failed: \(Self.describeSyncError(error), privacy: .public)")
+                            }
                         }
                     }
                 }
@@ -5614,6 +5665,10 @@ final class AppDependencies {
                 guard let self else { return }
                 await self.refreshJournalTail()
             },
+            loadArchivedHistory: { [weak self] in
+                guard let self else { return [] }
+                return await self.loadArchivedHistoryImpl()
+            },
             recentServers: { [weak self] in
                 guard let self else { return [] }
                 let store = self.secretStore
@@ -5972,7 +6027,12 @@ final class AppDependencies {
                 )
             }
 
-        let journalLines = (try? await journal.readRawLines()) ?? []
+        // Live journal + archived history, so the full forensic record
+        // survives an export round-trip. Archived rows are appended after
+        // the live ones; on re-import they all land back in the live file
+        // (a one-time un-rotation that the next sync re-rotates).
+        let journalLines = ((try? await journal.readRawLines()) ?? [])
+            + ((try? await journal.readArchiveRawLines()) ?? [])
 
         return CairnExportPayload.ServerPayload(
             partitionKey: key.directoryName,

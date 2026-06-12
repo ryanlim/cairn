@@ -88,8 +88,10 @@ public struct RestoreOrchestrator: Sendable {
             throw RestoreError.emptyAssetIds(runId: fromRunId)
         }
 
-        let entries = try await journal.readAll()
-        let forRun = entries.filter { $0.runId == fromRunId }
+        // `entriesForRun` checks the live journal first, then the
+        // archive — so a run that has rotated out of the live file is
+        // still restorable.
+        let forRun = try await journal.entriesForRun(fromRunId)
         if forRun.isEmpty {
             throw RestoreError.runNotFoundInJournal(runId: fromRunId)
         }

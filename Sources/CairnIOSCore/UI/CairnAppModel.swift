@@ -1307,6 +1307,13 @@ public struct CairnAppActions: Sendable {
     /// alongside this if they alter what `refreshJournalTail` emits.
     public var refreshJournalTail: @Sendable () async -> Void
 
+    /// Load the archived (rotated-out) journal history, formatted and
+    /// newest-first, for the Settings → View archived history screen.
+    /// Cold path — reads the sibling archive file on demand and applies
+    /// the same per-key activation filter as the live tail. Empty until
+    /// the journal first rotates (~500 runs).
+    public var loadArchivedHistory: @Sendable () async -> [CairnFixtures.JournalTailEntry]
+
     /// Read the keychain-backed recent-servers list, sorted by
     /// `lastUsedAt` descending. Powers the URL-field autocomplete on
     /// onboarding (and the "switch account" UX once it lands).
@@ -1434,6 +1441,7 @@ public struct CairnAppActions: Sendable {
         replayOnboarding: @escaping @Sendable () async -> Void = {},
         recomputeScopeTags: @escaping @Sendable () async -> Void = {},
         refreshJournalTail: @escaping @Sendable () async -> Void = {},
+        loadArchivedHistory: @escaping @Sendable () async -> [CairnFixtures.JournalTailEntry] = { [] },
         recentServers: @escaping @Sendable () async -> [RecentServerEntry] = { [] },
         clearRecentServers: @escaping @Sendable () async -> Void = {},
         retryPendingTrashes: @escaping @Sendable () async -> Void = {},
@@ -1479,6 +1487,7 @@ public struct CairnAppActions: Sendable {
         self.replayOnboarding = replayOnboarding
         self.recomputeScopeTags = recomputeScopeTags
         self.refreshJournalTail = refreshJournalTail
+        self.loadArchivedHistory = loadArchivedHistory
         self.recentServers = recentServers
         self.clearRecentServers = clearRecentServers
         self.retryPendingTrashes = retryPendingTrashes
