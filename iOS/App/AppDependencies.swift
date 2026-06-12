@@ -200,7 +200,6 @@ final class AppDependencies {
                     // we can't mark this from the call site; the progress
                     // callback is the natural signal.
                     if self.model.syncPhase == .preparing {
-                        syncLog.notice("[cairn.debug.progress] FIRST hash progress emit done=\(done, privacy: .public) total=\(total, privacy: .public) — flipping .preparing → .hashing")
                         self.model.transitionSyncPhase(to: .hashing)
                     }
                     // Persist a fresh per-asset rate to UserDefaults
@@ -241,7 +240,6 @@ final class AppDependencies {
                 // just closed. Surface them in the activity feed as `.note`
                 // entries so the drill-down sheet shows the granular
                 // progression alongside the high-level phase.
-                syncLog.notice("[cairn.debug.phase] \(phaseName, privacy: .public) · \(elapsedMs, privacy: .public)ms")
                 guard let self else { return }
                 await MainActor.run {
                     self.model.appendSyncActivity(.init(
@@ -251,16 +249,6 @@ final class AppDependencies {
                 }
             },
             onHashStarted: { [weak self] assetID, filename, sizeBytes in
-                // Per-asset console trace. Always log the FIRST few so we
-                // can see hashing actually started; after that, sample
-                // every 200th asset to avoid flooding Console.
-                let count = AppDependencies.debugHashStartedCount.withLock { state -> Int in
-                    state += 1
-                    return state
-                }
-                if count <= 5 || count.isMultiple(of: 200) {
-                    syncLog.notice("[cairn.debug.hashStarted] #\(count, privacy: .public) id=\(assetID, privacy: .public) name=\(filename ?? "?", privacy: .public) size=\(sizeBytes, privacy: .public)b")
-                }
                 guard let self else { return }
                 await MainActor.run {
                     let item = CairnAppModel.HashingItem(
@@ -286,10 +274,6 @@ final class AppDependencies {
             }
         )
     }
-
-    /// Debug-only counter for the `onHashStarted` console trace.
-    /// Lock-protected so cross-actor callbacks can increment safely.
-    nonisolated static let debugHashStartedCount = OSAllocatedUnfairLock(initialState: 0)
 
     nonisolated static let massOffloadRecentWindow: TimeInterval = 24 * 60 * 60
 
@@ -1918,12 +1902,8 @@ final class AppDependencies {
         model.resetSyncNarration()
         model.transitionSyncPhase(to: .preparing)
         model.appendSyncActivity(.init(kind: .note, detail: "Sync started"))
-        syncLog.notice("[cairn.debug.recon] performLiveReconciliation ENTRY — phase=.preparing")
-        AppDependencies.debugHashStartedCount.withLock { $0 = 0 }
 
-        let tStats = Date()
         await refreshLibrarySizeStats()
-        syncLog.notice("[cairn.debug.recon] refreshLibrarySizeStats DONE in \(Int(Date().timeIntervalSince(tStats) * 1000), privacy: .public)ms — library.local=\(self.model.library.local, privacy: .public) indexed=\(self.model.library.indexed, privacy: .public)")
 
         // Refresh server count concurrently — don't block the scan.
         // Bootstrap already seeded this value; this just picks up
@@ -2202,10 +2182,8 @@ final class AppDependencies {
         // `onPhaseChange` for forensic detail without disrupting the
         // user-visible CTA.
         let t0 = Date()
-        syncLog.notice("[cairn.debug.recon] runDeletionScan START")
         let scan = try await reconciler.runDeletionScan(skipDrain: true)
-        syncLog.notice("[cairn.debug.recon] runDeletionScan RETURNED in \(Int(Date().timeIntervalSince(t0) * 1000), privacy: .public)ms")
-        syncLog.info("[cairn.sync] scan took \(Int(Date().timeIntervalSince(t0) * 1000))ms (events=\(scan.changeEventsProcessed))")
+        syncLog.notice("[cairn.sync] scan took \(Int(Date().timeIntervalSince(t0) * 1000))ms (events=\(scan.changeEventsProcessed))")
         let burst = scan.newlyConfirmedDeleted.count
         // Surface the propagation-cutoff outcome to the activity feed
         // when any deletions were filtered out. Without this the
