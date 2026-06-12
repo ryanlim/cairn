@@ -118,6 +118,11 @@ public struct SettingsScreen: View {
     /// into the persistent log, so the next diagnostic export shows
     /// which divergence axis is in play.
     public let onInspectAssetByFilename: (String) -> Void
+    /// Loads the rotated-out journal history for the "View archived
+    /// history" viewer. Host wires this to
+    /// `model.actions.loadArchivedHistory`. Defaults to returning empty
+    /// so previews / tests don't need to supply it.
+    public let loadArchivedHistory: @Sendable () async -> [CairnFixtures.JournalTailEntry]
     /// `true` when a session-auth token is persisted in Keychain.
     /// Switches the row label between "Sign in" and "Signed in ·
     /// Sign out".
@@ -154,6 +159,7 @@ public struct SettingsScreen: View {
     @State private var showImportPicker = false
     @State private var showAbout = false
     @State private var showInspectAssetAlert = false
+    @State private var showArchivedHistory = false
     @State private var inspectAssetFilename: String = ""
 
     /// Extracted from the alert closure to relieve type-checker
@@ -213,6 +219,7 @@ public struct SettingsScreen: View {
         onSignOutSession: @escaping () -> Void = {},
         onExportDiagnosticLogs: @escaping () -> Void = {},
         onInspectAssetByFilename: @escaping (String) -> Void = { _ in },
+        loadArchivedHistory: @escaping @Sendable () async -> [CairnFixtures.JournalTailEntry] = { [] },
         hasSessionToken: Bool = false,
         isTransferringData: Bool = false,
         scrollResetToken: Int = 0,
@@ -251,6 +258,7 @@ public struct SettingsScreen: View {
         self.onSignOutSession = onSignOutSession
         self.onExportDiagnosticLogs = onExportDiagnosticLogs
         self.onInspectAssetByFilename = onInspectAssetByFilename
+        self.loadArchivedHistory = loadArchivedHistory
         self.hasSessionToken = hasSessionToken
         self.isTransferringData = isTransferringData
         self.scrollResetToken = scrollResetToken
@@ -450,6 +458,9 @@ public struct SettingsScreen: View {
         )
         .sheet(isPresented: $showAbout) {
             AboutSheet(onClose: { showAbout = false })
+        }
+        .sheet(isPresented: $showArchivedHistory) {
+            ArchivedHistoryScreen(load: loadArchivedHistory)
         }
     }
 
@@ -1566,6 +1577,13 @@ public struct SettingsScreen: View {
                         value: { Text("Triage").foregroundStyle(t.infoInk) },
                         chevron: true,
                         onTap: { showInspectAssetAlert = true }
+                    )
+                    RowDivider()
+                    KeyValRow(
+                        "View archived history",
+                        value: { Text("Older runs").foregroundStyle(t.infoInk) },
+                        chevron: true,
+                        onTap: { showArchivedHistory = true }
                     )
                     #if DEBUG
                     RowDivider()

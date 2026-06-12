@@ -779,6 +779,7 @@ public struct CairnAppRoot: View {
                 onInspectAssetByFilename: { filename in
                     Task { await model.actions.inspectAssetByFilename(filename) }
                 },
+                loadArchivedHistory: model.actions.loadArchivedHistory,
                 hasSessionToken: model.hasSessionToken,
                 isTransferringData: model.isTransferringData,
                 scrollResetToken: scrollResetTokens["settings"] ?? 0,
