@@ -134,15 +134,12 @@ struct CairnApp: App {
             Task { @MainActor in
                 await DiagnosticLogFlusher.shared.flushNow()
             }
-            // Cleanly abandon any in-flight foreground sync — it can't make
-            // progress while suspended, and letting it suspend→resume is
-            // what produced the "20-minute" zombie runs. The token drives
-            // the UI to drop its tracked `activeSyncTask`; the dependencies
-            // call drops the PhotoKit-change-driven one.
-            Task { @MainActor in
-                dependencies.model.didBackgroundToken &+= 1
-                dependencies.cancelForegroundChangeSync()
-            }
+            // Drop the PhotoKit-change-driven foreground sync on
+            // background. The UI's tracked activeSyncTask is abandoned
+            // separately by CairnAppRoot's own scenePhase observer (which
+            // owns that task) — kept off a model token to avoid the
+            // foreground-render race that cancelled fresh catch-up syncs.
+            Task { @MainActor in dependencies.cancelForegroundChangeSync() }
             Self.scheduleNextBackgroundRefresh()
             // Always submit a BGProcessingTask too, not just when
             // there's pending initial-scan/hash work. iOS only fires
@@ -154,9 +151,8 @@ struct CairnApp: App {
             Self.scheduleInitialHashContinuation()
         } else if newPhase == .active && oldPhase == .background {
             Task { await dependencies.checkServerHealth() }
-            // Signal the UI to run a stale-gated catch-up sync, so warm
-            // reopens behave the same as cold launches.
-            Task { @MainActor in dependencies.model.foregroundReturnToken &+= 1 }
+            // The foreground catch-up sync is triggered by CairnAppRoot's
+            // own scenePhase observer (it owns the tracked sync task).
         }
     }
 

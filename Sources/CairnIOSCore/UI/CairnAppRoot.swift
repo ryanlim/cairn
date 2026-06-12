@@ -38,6 +38,16 @@ public struct CairnAppRoot: View {
     /// drives a `ScrollViewReader.scrollTo(...)`.
     @State private var scrollResetTokens: [String: Int] = [:]
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Observed directly (not via a model token) so the background-cancel
+    /// fires AT the `.background` transition rather than being deferred to
+    /// the next foreground render — where it would race the foreground
+    /// catch-up sync and occasionally cancel it the instant it started.
+    @Environment(\.scenePhase) private var scenePhase
+    /// True once we've seen a real `.background` transition, so a return to
+    /// `.active` only triggers a catch-up sync when coming back from
+    /// background — not from a transient `.inactive` (Control Center,
+    /// notification shade, the app switcher peek).
+    @State private var wasBackgrounded = false
 
     #if canImport(UIKit)
     private struct ShareSheet: UIViewControllerRepresentable {
@@ -413,14 +423,29 @@ public struct CairnAppRoot: View {
             // without silently starting the scan they declined).
             maybeForegroundAutoSync()
         }
-        // Warm reopen (foreground from background) — same stale-gated
-        // catch-up as a cold launch.
-        .onChange(of: model.foregroundReturnToken) { _, _ in
-            maybeForegroundAutoSync()
-        }
-        // Backgrounding — cleanly abandon an in-flight foreground sync.
-        .onChange(of: model.didBackgroundToken) { _, _ in
-            cleanCancelSyncForBackground()
+        // Scene-phase driven, in ONE observer so the cancel and the
+        // catch-up sync are ordered, not two separate onChange callbacks
+        // racing on the same render:
+        //   - entering .background  → cleanly abandon any in-flight sync
+        //     (it can't progress while suspended; suspend→resume produced
+        //     the "20-minute" zombie). Fires at background time.
+        //   - returning to .active from background → stale-gated catch-up,
+        //     same path as a cold launch, so warm/cold reopens match.
+        // `.inactive` (Control Center, app switcher) is ignored, so a peek
+        // that never reached background doesn't sync or cancel anything.
+        .onChange(of: scenePhase) { _, newPhase in
+            switch newPhase {
+            case .background:
+                wasBackgrounded = true
+                cleanCancelSyncForBackground()
+            case .active:
+                if wasBackgrounded {
+                    wasBackgrounded = false
+                    maybeForegroundAutoSync()
+                }
+            default:
+                break
+            }
         }
     }
 
