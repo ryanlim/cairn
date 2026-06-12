@@ -1,7 +1,7 @@
-0.4.1 (build 136) — small fix on top of build 135.
+0.4.1 (build 137) — fixes the spurious sync spinner on reopen.
 
-The timestamps in Sync detail (the phase timeline and the activity feed) now respect your Settings → time format choice (System / 12-hour / 24-hour) instead of always showing 24-hour.
+Reopening the app could briefly spin the sync icon without actually syncing (the status would stay at "1 hr ago" instead of updating). That was a race introduced in the earlier 0.4.1 builds: the catch-up sync and the background-cancel were driven by two separate signals, and on some reopens the cancel landed right after the sync started and killed it. This build reworks that to a single scene-phase observer so the two can't race — the catch-up sync on reopen now runs to completion, and "Last sync details" updates to "just now."
 
-Everything else is the same as build 135:
-- "Last sync details" on Status shows how long ago the last sync ran; each phase-timeline step shows its start time.
-- Reopen-after-idle auto-sync is consistent (cold or warm), backgrounding mid-sync cleanly abandons the run, and "Last sync details" always reflects a completed run.
+Everything else is the same as build 136 (the auto-sync consistency work + sync timestamps that honor your 12/24-hour setting).
+
+To test: leave the app idle a while (>5 min since the last sync), reopen, and confirm it actually syncs (status updates to "just now") rather than spinning briefly and staying stale.
