@@ -1,7 +1,7 @@
-0.4.1 (build 137) — fixes the spurious sync spinner on reopen.
+0.4.1 (build 138) — the run history no longer grows without bound.
 
-Reopening the app could briefly spin the sync icon without actually syncing (the status would stay at "1 hr ago" instead of updating). That was a race introduced in the earlier 0.4.1 builds: the catch-up sync and the background-cancel were driven by two separate signals, and on some reopens the cancel landed right after the sync started and killed it. This build reworks that to a single scene-phase observer so the two can't race — the catch-up sync on reopen now runs to completion, and "Last sync details" updates to "just now."
+cairn keeps a local, append-only journal of everything it does. Until now it grew forever and was re-read in full on every sync — fine today, slower over years. This build keeps your most recent ~500 runs in the live history (Status and Runs) and moves older ones into an archive automatically. Nothing is deleted: restore still reaches archived runs, and Export still includes the full history.
 
-Everything else is the same as build 136 (the auto-sync consistency work + sync timestamps that honor your 12/24-hour setting).
+You can browse the archive under Settings → Advanced → View archived history. Most testers won't have crossed the threshold yet, so it'll show an empty state until older runs start rotating out — that's expected.
 
-To test: leave the app idle a while (>5 min since the last sync), reopen, and confirm it actually syncs (status updates to "just now") rather than spinning briefly and staying stale.
+To test: if you have a long history, open Settings → Advanced → View archived history and confirm older runs appear there while recent ones still show on Status/Runs. Restoring a run (including an older one) should still work.
