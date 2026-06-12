@@ -118,6 +118,42 @@ struct CairnSettingsTests {
         #expect(CairnSettings.defaults.timeDisplayFormat == .system)
     }
 
+    @Test("hashConcurrency defaults to 4 within the documented 1...16 range")
+    func hashConcurrencyDefaultsAndRange() {
+        #expect(CairnSettings.defaults.hashConcurrency == 4)
+        #expect(CairnSettings.hashConcurrencyRange == 1...16)
+        #expect(CairnSettings.hashConcurrencyRange.contains(CairnSettings.defaults.hashConcurrency))
+    }
+
+    @Test("legacy JSON without hashConcurrency decodes with the default value")
+    func legacyJSONMissingHashConcurrencyUsesDefault() throws {
+        let legacyJSON = """
+        {
+            "maxDeletePercent": 1.0,
+            "minDeleteFloor": 5,
+            "notifyOnAbort": true,
+            "verboseLogging": false
+        }
+        """
+        let decoded = try JSONDecoder().decode(CairnSettings.self, from: Data(legacyJSON.utf8))
+        #expect(decoded.hashConcurrency == CairnSettings.defaults.hashConcurrency)
+    }
+
+    @Test("clampedHashConcurrency forces out-of-range values into the slider bounds")
+    func clampedHashConcurrencyHonorsRange() {
+        func clamped(_ raw: Int) -> Int {
+            var s = CairnSettings.defaults
+            s.hashConcurrency = raw
+            return s.clampedHashConcurrency
+        }
+        #expect(clamped(0) == 1)     // below floor (and the serial-opt-out boundary)
+        #expect(clamped(-5) == 1)    // a garbage persisted/poke value
+        #expect(clamped(1) == 1)
+        #expect(clamped(8) == 8)     // in-range passes through
+        #expect(clamped(16) == 16)
+        #expect(clamped(99) == 16)   // above ceiling
+    }
+
     @Test("legacy JSON without timeDisplayFormat decodes as .system")
     func legacyJSONMissingTimeFormatUsesSystem() throws {
         let legacyJSON = """

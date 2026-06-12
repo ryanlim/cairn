@@ -193,6 +193,16 @@ public struct CairnSettings: Sendable, Codable, Equatable {
     /// produces diminishing returns. UI clamps on write.
     public static let hashConcurrencyRange: ClosedRange<Int> = 1...16
 
+    /// `hashConcurrency` forced into `hashConcurrencyRange`. The single
+    /// place the clamp lives — a persisted file from a build with a
+    /// wider range, or an out-of-bounds debug-tools poke, can't push an
+    /// illegal width into the hash pipeline. Callers (the reconciler
+    /// construction site) use this rather than re-deriving the bound.
+    public var clampedHashConcurrency: Int {
+        min(Self.hashConcurrencyRange.upperBound,
+            max(Self.hashConcurrencyRange.lowerBound, hashConcurrency))
+    }
+
     /// Opt-in switch for the incremental server-side sync path
     /// (`POST /api/sync/stream` change-data-capture instead of the
     /// paginated `search/metadata` rescan). Default **off** during
