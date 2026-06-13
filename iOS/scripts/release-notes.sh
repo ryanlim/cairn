@@ -32,14 +32,17 @@ CHANGELOG_PATH="iOS/fastlane/beta_changelog.txt"
 git rev-parse --verify "$FROM" >/dev/null 2>&1 || { echo "error: unknown ref '$FROM'" >&2; exit 1; }
 git rev-parse --verify "$TO" >/dev/null 2>&1   || { echo "error: unknown ref '$TO'"   >&2; exit 1; }
 
-# List build-bump commits, oldest → newest. Tolerates both subject
+# List build-bump commits, oldest → newest. Tolerates all three subject
 # conventions observed in the history:
-#   "Bump to build N (...)"   — builds 56+
-#   "Bump build to N (...)"   — builds 49-55, pre-convention-shift
+#   "Bump to build N (...)"        — builds 56+
+#   "Bump build to N (...)"        — builds 49-55, pre-convention-shift
+#   "Bump to X.Y.Z build N (...)"  — builds 134+, once a marketing
+#                                    version rode along in the subject
+# The optional "([0-9][0-9.]* )?" matches that interposed version token.
 # Marketing-version bumps ("Bump marketing version to X.Y.Z") are
 # deliberately excluded — they're not per-build entries.
 COMMITS=$(git log --reverse "${FROM}..${TO}" --extended-regexp \
-    --grep='^Bump (to )?build (to )?[0-9]+' \
+    --grep='^Bump (to )?([0-9][0-9.]* )?build (to )?[0-9]+' \
     --format='%H|%ad|%s' --date=short)
 
 if [[ -z "$COMMITS" ]]; then
@@ -54,11 +57,13 @@ printf '# Generated %s. Hand-edit / group by theme before pasting into App Store
 # Walk each bump commit and dump its beta_changelog snapshot.
 while IFS='|' read -r sha date subject; do
     # Extract the build number out of the subject for the section
-    # header. Handles both "Bump to build N" and "Bump build to N".
-    # Falls back to the full subject if neither matches (defensive
-    # — should always match given the grep above).
-    if [[ "$subject" =~ ^Bump\ (to\ )?build\ (to\ )?([0-9]+) ]]; then
-        build="${BASH_REMATCH[3]}"
+    # header. Anchored on "build " so the digits captured are the build
+    # number, never a marketing version earlier in the subject (e.g.
+    # the "0.4.1" in "Bump to 0.4.1 build 139"). Handles "build N" and
+    # "build to N". Falls back to the full subject if it doesn't match
+    # (defensive — should always match given the grep above).
+    if [[ "$subject" =~ build\ (to\ )?([0-9]+) ]]; then
+        build="${BASH_REMATCH[2]}"
         header="## Build $build — $date"
     else
         header="## $subject — $date"
