@@ -59,7 +59,7 @@ public struct DeferredQueueSheet: View {
                     let aboveCap = resolved.filter { $0.aboveCeiling }
 
                     if !queued.isEmpty {
-                        KeylineSection("Queued") {
+                        KeylineSection("Pending hash") {
                             Text("\(queued.count)")
                                 .font(.cairnScaled(size: 11, weight: .semibold))
                                 .tracking(0.99)
