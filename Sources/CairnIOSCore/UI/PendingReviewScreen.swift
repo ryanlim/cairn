@@ -11,8 +11,9 @@ import CairnCore
 ///     `CairnAppModel.massOffloadThreshold`. Two primary affordances:
 ///     "Bulk exclude" (route through `actions.bulkExcludeRecentOffload`)
 ///     and an implicit "Review one-by-one" (the rest of the screen).
-///   - "Aging out" section — candidates held by quarantine, each with a
-///     countdown showing when they become eligible to trash.
+///   - "Queued" section — candidates held by quarantine, each with a
+///     countdown ("Trashes in N days" → "Ready to trash") showing when
+///     the next sync will move them to Immich's Trash.
 ///   - "Unconfirmed" section — candidates with no positive deletion signal
 ///     at all. Only appears in `.strict` mode; `.trusting` sends these
 ///     straight to trash candidates so they never land here.
@@ -483,7 +484,7 @@ public struct PendingReviewScreen: View {
     private var subtitleCopy: String {
         var parts: [String] = []
         if !heldGroups.isEmpty {
-            parts.append("\(heldGroups.count) aging out")
+            parts.append("\(heldGroups.count) queued")
         }
         if !unconfirmedGroups.isEmpty {
             parts.append("\(unconfirmedGroups.count) unconfirmed")
@@ -631,7 +632,7 @@ public struct PendingReviewScreen: View {
 
     private var heldSection: some View {
         Group {
-            KeylineSection("Aging out") {
+            KeylineSection("Queued") {
                 HStack(spacing: 12) {
                     sectionSelectAllButton(for: heldGroups)
                     Text("\(heldGroups.count)")
@@ -779,9 +780,9 @@ public struct PendingReviewScreen: View {
     private func formatCountdown(_ confirmedAt: Date) -> String {
         let eligibleAt = confirmedAt.addingTimeInterval(TimeInterval(quarantineDays) * 86_400)
         let remaining = eligibleAt.timeIntervalSinceNow
-        if remaining <= 0 { return "eligible" }
+        if remaining <= 0 { return "Ready to trash" }
         let days = Int((remaining / 86_400).rounded(.up))
-        return days == 1 ? "eligible in 1 day" : "eligible in \(days) days"
+        return days == 1 ? "Trashes in 1 day" : "Trashes in \(days) days"
     }
 
     // MARK: - Version labels

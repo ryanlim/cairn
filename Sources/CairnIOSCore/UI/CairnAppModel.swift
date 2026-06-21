@@ -144,8 +144,8 @@ public final class CairnAppModel {
         public let pendingReviewCandidates: [ServerAsset]
         public let heldByQuarantineCandidates: [ServerAsset]
         /// `confirmedAt` timestamp per held candidate checksum. Lets the
-        /// pending-review screen render per-item "eligible in N days"
-        /// without a second round trip.
+        /// pending-review screen render the per-item "Trashes in N days"
+        /// countdown without a second round trip.
         public let confirmedDeletedAt: [Checksum: Date]
         /// Quarantine window that was in effect when this reconciliation
         /// ran. Locked in at the time of compute so UI countdowns don't
