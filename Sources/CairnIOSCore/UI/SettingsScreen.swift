@@ -6,13 +6,13 @@ import CairnCore
 ///
 /// Section list (top-to-bottom):
 ///   1. Immich server — URL, API key (with Reveal/Hide + Copy + auto-hide),
-///      connection status.
+///      connection status, session sign-in, and full disconnect.
 ///   2. Safety rails — percent threshold slider, count floor, dry-run toggle,
 ///      deletion-strictness picker, excluded-assets row.
 ///   3. Notifications — abort alerts, verbose journal.
 ///   4. Permissions — Photos access, background refresh.
 ///   5. Appearance — palette editor entry point.
-///   6. Danger zone — reset index, clear journal, sign out.
+///   6. Danger zone — reset index, clear journal, clear servers/exclusions.
 ///
 /// Microcopy is verbatim from the prototype. The "Don't screenshot." warning
 /// on API-key reveal is explicitly called out in HANDOFF.md as load-bearing —
@@ -384,11 +384,11 @@ public struct SettingsScreen: View {
             }
         )
         .alert(
-            "Sign out of server?",
+            "Disconnect server?",
             isPresented: $pendingSignOut,
             actions: {
                 Button("Cancel", role: .cancel) {}
-                Button("Sign out", role: .destructive) { onSignOut() }
+                Button("Disconnect", role: .destructive) { onSignOut() }
             },
             message: {
                 Text("Forgets your Immich URL and API key, and drops the cached thumbnails fetched with them. You'll land back on the onboarding flow — indexed state on this device is preserved for when you sign in again.")
@@ -591,8 +591,8 @@ public struct SettingsScreen: View {
               keywords: ["wipe", "danger", "journal"], page: .advanced),
         .init(id: "adv.clearexcl", title: "Clear excluded assets", breadcrumb: "Advanced › Danger zone",
               keywords: ["wipe", "danger", "exclusions"], page: .advanced),
-        .init(id: "adv.signout", title: "Sign out", breadcrumb: "Advanced › Danger zone",
-              keywords: ["sign out", "danger", "logout"], page: .advanced),
+        .init(id: "conn.disconnect", title: "Disconnect server", breadcrumb: "Connection",
+              keywords: ["sign out", "disconnect", "logout", "remove key", "switch server"], page: .connection),
 
         // About
         .init(id: "about.version", title: "App version", breadcrumb: "About",
@@ -780,8 +780,10 @@ public struct SettingsScreen: View {
             // Advanced now contains the Danger zone subsection at
             // the bottom. Power-user surface in one place — both the
             // tunable knobs (cache caps, count floor, incremental
-            // sync) and the irreversible actions (reset index,
-            // clear journal, sign out) live behind one row.
+            // sync) and the irreversible data-reset actions (reset
+            // index, clear journal, clear servers/exclusions) live
+            // behind one row. Credential lifecycle (disconnect) lives
+            // in Connection, not here.
             SettingsCategoryRow(
                 icon: "wrench.and.screwdriver",
                 iconTint: t.textMuted,
@@ -1143,6 +1145,20 @@ public struct SettingsScreen: View {
                             onTap: onOpenSessionSignIn
                         )
                     }
+                    RowDivider()
+                    // Full disconnect — forgets URL + API key and returns
+                    // to onboarding. Lives here with the rest of the
+                    // server/account lifecycle rather than in Advanced ›
+                    // Danger zone, so all auth controls are in one place.
+                    // Labeled "Disconnect" (not "Sign out") to stay
+                    // distinct from the session sign-out row above, which
+                    // only drops the JWT and keeps the API key connected.
+                    KeyValRow(
+                        "Disconnect server",
+                        value: { Text("Forget URL & key").foregroundStyle(t.dangerInk) },
+                        chevron: true,
+                        onTap: { pendingSignOut = true }
+                    )
                 }
             }
         }
@@ -1704,13 +1720,10 @@ public struct SettingsScreen: View {
                             onTap: { pendingClearExclusions = true }
                         )
                     }
-                    RowDivider()
-                    KeyValRow(
-                        "Sign out of server",
-                        value: { Text("Remove key").foregroundStyle(t.dangerInk) },
-                        chevron: true,
-                        onTap: { pendingSignOut = true }
-                    )
+                    // "Disconnect server" (full sign-out) moved to
+                    // Settings → Connection, alongside the URL / API key /
+                    // session controls — Danger zone keeps only data-reset
+                    // actions, not credential lifecycle.
                 }
             }
             .padding(.bottom, 4)
