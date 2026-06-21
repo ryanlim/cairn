@@ -1,11 +1,5 @@
-0.4.2 (build 142) — clearer names for the deletion-strictness levels.
+0.4.2 (build 143) — consistent slider styling.
 
-The three safety levels are renamed so they read as an ordered scale instead of an arbitrary set. Old names "Strict / Trusting / Auto" → new names, from most to least cautious:
+Small visual fix: the sliders in Settings drew their filled track in two different colors — most were green, but a few (Quarantine window, iCloud download limit) filled white, so one screen looked like it had two slider styles. Every slider now uses the same active-green fill. No behavior change.
 
-- Cautious — only trash a photo iOS directly confirmed was deleted; anything ambiguous waits in Pending Review. (was "Strict")
-- Balanced — trash anything no longer on your device once it clears the quarantine window. The default. (was "Trusting")
-- Autonomous — skip quarantine and review; trash on the next sync, relying on Immich's 30-day Trash for recovery. (was "Auto")
-
-Behavior is unchanged — only the labels. Your current setting is preserved.
-
-To test: Settings → Safety & limits → Deletion strictness. Confirm the level you had before is still selected, and that the picker, the "?" help, and the summary all read with the new names.
+To test: Settings → Safety & limits — confirm the Quarantine window, iCloud download limit, and Never-touch ceiling sliders all fill with the same green.
