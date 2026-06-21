@@ -338,6 +338,91 @@ struct SwiftDataConfirmedDeletedStoreTests {
     }
 }
 
+// MARK: - SwiftDataQuarantinedAssetStore
+
+private func serverAsset(_ checksum: String, name: String? = nil) -> ServerAsset {
+    ServerAsset(
+        id: "id-\(checksum)",
+        checksum: Checksum(base64: checksum),
+        originalFileName: name ?? "\(checksum).jpg",
+        thumbhash: "th-\(checksum)"
+    )
+}
+
+@Suite("SwiftDataQuarantinedAssetStore")
+struct SwiftDataQuarantinedAssetStoreTests {
+    @Test("empty container snapshot is empty")
+    func emptySnapshot() async throws {
+        let container = try makeContainer()
+        let store = SwiftDataQuarantinedAssetStore(container: container)
+        #expect(try await store.snapshot().isEmpty)
+    }
+
+    @Test("replace + snapshot roundtrips the full ServerAsset payload")
+    func replaceRoundTrip() async throws {
+        let container = try makeContainer()
+        let store = SwiftDataQuarantinedAssetStore(container: container)
+        try await store.replace(with: [serverAsset("A"), serverAsset("B")])
+
+        let snap = try await store.snapshot()
+        #expect(Set(snap.keys) == cks("A", "B"))
+        #expect(snap[ck("A")] == serverAsset("A"))
+        #expect(snap[ck("A")]?.originalFileName == "A.jpg")
+        #expect(snap[ck("A")]?.thumbhash == "th-A")
+    }
+
+    @Test("replace reconciles to exactly the supplied set — drops absent, adds new")
+    func replaceReconciles() async throws {
+        let container = try makeContainer()
+        let store = SwiftDataQuarantinedAssetStore(container: container)
+        try await store.replace(with: [serverAsset("A"), serverAsset("B")])
+        // B dropped, C added; A survives.
+        try await store.replace(with: [serverAsset("A"), serverAsset("C")])
+
+        let snap = try await store.snapshot()
+        #expect(Set(snap.keys) == cks("A", "C"))
+    }
+
+    @Test("replace refreshes the payload of a surviving checksum")
+    func replaceRefreshesPayload() async throws {
+        let container = try makeContainer()
+        let store = SwiftDataQuarantinedAssetStore(container: container)
+        try await store.replace(with: [serverAsset("A", name: "old.jpg")])
+        try await store.replace(with: [serverAsset("A", name: "new.jpg")])
+
+        let snap = try await store.snapshot()
+        #expect(snap[ck("A")]?.originalFileName == "new.jpg")
+    }
+
+    @Test("replace with empty clears the table")
+    func replaceEmptyClears() async throws {
+        let container = try makeContainer()
+        let store = SwiftDataQuarantinedAssetStore(container: container)
+        try await store.replace(with: [serverAsset("A")])
+        try await store.replace(with: [])
+        #expect(try await store.snapshot().isEmpty)
+    }
+
+    @Test("clear wipes every row")
+    func clearWipes() async throws {
+        let container = try makeContainer()
+        let store = SwiftDataQuarantinedAssetStore(container: container)
+        try await store.replace(with: [serverAsset("A"), serverAsset("B")])
+        try await store.clear()
+        #expect(try await store.snapshot().isEmpty)
+    }
+
+    @Test("two stores sharing a container see each other's writes")
+    func sharedContainerVisibility() async throws {
+        let container = try makeContainer()
+        let writer = SwiftDataQuarantinedAssetStore(container: container)
+        let reader = SwiftDataQuarantinedAssetStore(container: container)
+        try await writer.replace(with: [serverAsset("A")])
+        let snap = try await reader.snapshot()
+        #expect(Set(snap.keys) == cks("A"))
+    }
+}
+
 // MARK: - SwiftDataLocalHashStore
 
 @Suite("SwiftDataLocalHashStore")

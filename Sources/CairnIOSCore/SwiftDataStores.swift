@@ -74,6 +74,27 @@ final class StoredConfirmedDeletedChecksum {
     }
 }
 
+/// Display payload for one currently-held (quarantined) server asset,
+/// keyed by checksum. Shadows the subset of `StoredConfirmedDeletedChecksum`
+/// rows still inside the quarantine window. `ConfirmedDeletedStore`
+/// remains the source of truth for *which* checksums are held + when;
+/// this row only carries the `ServerAsset` fields (id, filename,
+/// thumbhash) needed to render the Pending Review list — which would
+/// otherwise be lost on a cold launch until the next server fetch,
+/// leaving the quarantine queue blank until a sync ran. `payload` is a
+/// JSON-encoded `ServerAsset` (the type is `Codable`); storing it as an
+/// opaque blob keeps this row decoupled from `ServerAsset`'s shape.
+@Model
+final class StoredQuarantinedAsset {
+    @Attribute(.unique) var base64: String
+    var payload: Data
+
+    init(base64: String, payload: Data) {
+        self.base64 = base64
+        self.payload = payload
+    }
+}
+
 /// Local-hash row. One per `(localIdentifier, checksum)` pair — a
 /// `PHAsset` may contribute multiple checksums (Live Photo = still +
 /// paired video), so the unique key is the compound
@@ -456,6 +477,7 @@ public enum CairnSwiftDataContainer {
             StoredPendingTrashIntent.self,
             StoredServerAsset.self,
             StoredSyncAck.self,
+            StoredQuarantinedAsset.self,
         ])
         return try container(schema: schema, url: inMemory ? nil : url, inMemory: inMemory)
     }
@@ -478,6 +500,7 @@ public enum CairnSwiftDataContainer {
             StoredPendingTrashIntent.self,
             StoredServerAsset.self,
             StoredSyncAck.self,
+            StoredQuarantinedAsset.self,
         ])
         return try container(schema: schema, url: url, inMemory: inMemory)
     }
@@ -825,6 +848,78 @@ public actor SwiftDataConfirmedDeletedStore: ConfirmedDeletedStore {
     public func clear() async throws {
         var changed = false
         for row in try context.fetch(FetchDescriptor<StoredConfirmedDeletedChecksum>()) {
+            context.delete(row)
+            changed = true
+        }
+        if changed { try context.save() }
+    }
+}
+
+// MARK: - SwiftDataQuarantinedAssetStore
+
+/// SwiftData-backed cache of held-asset display payloads. Mirrors the
+/// in-window subset of `ConfirmedDeletedStore` so the Pending Review
+/// quarantine queue can render at bootstrap without waiting for a
+/// server fetch. `replace(with:)` reconciles the table to exactly the
+/// supplied set (insert new, drop absent) so it tracks the pruned
+/// reconciliation snapshot as the user approves/excludes items. See
+/// `SwiftDataObservedStore` for the plain-actor rationale.
+public actor SwiftDataQuarantinedAssetStore {
+    private let context: ModelContext
+
+    public init(container: ModelContainer) {
+        self.context = ModelContext(container)
+    }
+
+    /// Held `ServerAsset`s keyed by checksum. Rows whose payload fails
+    /// to decode (schema drift across a `ServerAsset` change) are
+    /// skipped rather than throwing — a stale display row is cosmetic
+    /// and the next sync overwrites it.
+    public func snapshot() async throws -> [Checksum: ServerAsset] {
+        let rows = try context.fetch(FetchDescriptor<StoredQuarantinedAsset>())
+        var out: [Checksum: ServerAsset] = [:]
+        out.reserveCapacity(rows.count)
+        let decoder = JSONDecoder()
+        for row in rows {
+            guard let asset = try? decoder.decode(ServerAsset.self, from: row.payload) else { continue }
+            out[Checksum(base64: row.base64)] = asset
+        }
+        return out
+    }
+
+    /// Reconcile the table to exactly `assets`: insert checksums not yet
+    /// stored, delete rows whose checksum is absent from the set, and
+    /// refresh the payload of rows that remain (filename/thumbhash can
+    /// change between syncs). Empty input clears the table — the held
+    /// bucket is genuinely empty.
+    public func replace(with assets: [ServerAsset]) async throws {
+        let encoder = JSONEncoder()
+        let desired = Dictionary(assets.map { ($0.checksum.base64, $0) }, uniquingKeysWith: { _, last in last })
+        var changed = false
+        var seen: Set<String> = []
+        // Update payloads on surviving rows; delete rows no longer held.
+        for row in try context.fetch(FetchDescriptor<StoredQuarantinedAsset>()) {
+            if let asset = desired[row.base64] {
+                seen.insert(row.base64)
+                let payload = try encoder.encode(asset)
+                if payload != row.payload { row.payload = payload; changed = true }
+            } else {
+                context.delete(row)
+                changed = true
+            }
+        }
+        // Insert rows for newly-held checksums.
+        for (base64, asset) in desired where !seen.contains(base64) {
+            context.insert(StoredQuarantinedAsset(base64: base64, payload: try encoder.encode(asset)))
+            changed = true
+        }
+        if changed { try context.save() }
+    }
+
+    /// Wipe every held-asset row. Part of Settings → Reset index.
+    public func clear() async throws {
+        var changed = false
+        for row in try context.fetch(FetchDescriptor<StoredQuarantinedAsset>()) {
             context.delete(row)
             changed = true
         }

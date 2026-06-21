@@ -64,6 +64,7 @@ final class AppDependencies {
     private(set) var observedStore: SwiftDataObservedStore?
     private(set) var exclusionStore: SwiftDataExclusionStore?
     private(set) var confirmedDeletedStore: SwiftDataConfirmedDeletedStore?
+    private(set) var quarantinedAssetStore: SwiftDataQuarantinedAssetStore?
     private(set) var deletionSourceStore: SwiftDataDeletionSourceStore?
     private(set) var tokenStore: SwiftDataPersistentChangeTokenStore?
     private(set) var thumbnailStore: SwiftDataThumbnailStore?
@@ -425,6 +426,7 @@ final class AppDependencies {
         self.observedStore = SwiftDataObservedStore(container: container)
         self.exclusionStore = SwiftDataExclusionStore(container: container)
         self.confirmedDeletedStore = SwiftDataConfirmedDeletedStore(container: container)
+        self.quarantinedAssetStore = SwiftDataQuarantinedAssetStore(container: container)
         self.deletionSourceStore = SwiftDataDeletionSourceStore(container: container)
         self.tokenStore = SwiftDataPersistentChangeTokenStore(container: container)
         self.editRetirementStore = SwiftDataEditRetirementStore(container: container)
@@ -691,6 +693,7 @@ final class AppDependencies {
             let ds = self.deletionSourceStore
             let er = self.editRetirementStore
             let ss = self.statusSnapshotStore
+            let qa = self.quarantinedAssetStore
             var ops: [(label: String, body: @Sendable () async throws -> Void)] = [
                 ("local hash cache", { try await lh.clear() }),
             ]
@@ -700,6 +703,7 @@ final class AppDependencies {
             if let ds { ops.append(("deletion-source store", { try await ds.clear() })) }
             if let er { ops.append(("edit-retirement store", { try await er.clear() })) }
             if let ss { ops.append(("status snapshot store", { try await ss.clear() })) }
+            if let qa { ops.append(("quarantined-asset store", { try await qa.clear() })) }
             let failures = await Self.aggregateClears(ops)
             if !failures.isEmpty {
                 let detail = failures.map { "\($0.label): \(Self.describeSyncError($0.error))" }.joined(separator: "; ")
@@ -839,16 +843,23 @@ final class AppDependencies {
             )
             model.inferredOrphanCount = snapshot.inferredOrphanCount
             model.lastCheckedAt = snapshot.computedAt
-            // `pendingReviewCount` lives on `model.reconciliation` so we
-            // can't surface the saved count without fabricating a fake
-            // `LiveReconciliation`. The Status pending-review badge
-            // already falls back to `model.quarantineCount` (restored
-            // separately from `ConfirmedDeletedStore`) so it's not
-            // blank in practice — the saved count is recorded for
-            // forensic completeness and used when the model gets
-            // re-saved after user actions.
+            // `pendingReviewCount` itself isn't restored from the status
+            // snapshot — it's derived from `model.reconciliation`, which
+            // `restoreQuarantineReconciliationIfNeeded` (below) rebuilds
+            // from the persisted held-asset payloads. That makes the
+            // quarantine queue render at launch instead of staying blank
+            // until the next sync.
             _ = snapshot.pendingReviewCount
         }
+
+        // Rehydrate the held (quarantine) bucket into `model.reconciliation`
+        // so the Pending Review list + Status quarantine line survive a
+        // cold launch with no sync. Without this, both are blank until a
+        // reconciliation runs — and the foreground catch-up sync is
+        // stale-gated, so relaunching shortly after a sync left the
+        // quarantine queue invisible. Cosmetic-only and best-effort: a
+        // failure leaves `reconciliation` nil (prior behavior).
+        await restoreQuarantineReconciliationIfNeeded(computedAt: restoredSnapshot?.computedAt)
 
         if let cap = Self.resolveTestingAssetCap() {
             syncLog.notice("[cairn.boot] testing asset cap in effect: \(cap)")
@@ -3272,6 +3283,25 @@ final class AppDependencies {
         } catch {
             syncLog.error("[cairn.snapshot] save failed: \(Self.describeSyncError(error), privacy: .public)")
         }
+
+        // Persist the held-asset display payloads alongside the counts
+        // so the quarantine queue rehydrates at next bootstrap without a
+        // server fetch. Guarded on a non-nil reconciliation: the only
+        // callers reach here right after setting (main sync) or pruning
+        // (approve/exclude/dismiss) `model.reconciliation`, so the held
+        // bucket is current. Skipping when nil avoids a stray empty
+        // write wiping the store on a path that hasn't loaded a
+        // reconciliation. `ConfirmedDeletedStore` stays the source of
+        // truth for *which* items are held — this is only their display
+        // data, reconciled back against it at bootstrap.
+        if let quarantineStore = quarantinedAssetStore,
+           let held = model.reconciliation?.heldByQuarantineCandidates {
+            do {
+                try await quarantineStore.replace(with: held)
+            } catch {
+                syncLog.error("[cairn.snapshot] held-asset persist failed: \(Self.describeSyncError(error), privacy: .public)")
+            }
+        }
     }
 
     @MainActor
@@ -3568,6 +3598,73 @@ final class AppDependencies {
         let cutoff = Date().addingTimeInterval(-TimeInterval(days) * 86_400)
         let inQuarantine = snapshot.values.filter { $0 > cutoff }.count
         await MainActor.run { self.model.quarantineCount = inQuarantine }
+    }
+
+    /// Rebuild the held (quarantine) bucket of `model.reconciliation`
+    /// from persisted state at bootstrap, so the Pending Review list and
+    /// Status quarantine line render before the first sync of the
+    /// session. `ConfirmedDeletedStore` is the source of truth for which
+    /// checksums are still in-window; `quarantinedAssetStore` supplies
+    /// the `ServerAsset` display payloads (the one piece not otherwise
+    /// persisted). We intersect the two, so any item the snapshot lists
+    /// but the authoritative store has since dropped (trashed, expired)
+    /// is excluded — the rebuild self-corrects against the source of
+    /// truth even if the cached payloads are stale.
+    ///
+    /// Only the held bucket is restored: held items are durable facts
+    /// (confirmed deletions waiting out the clock), whereas the
+    /// unconfirmed bucket is scan-derived and re-established by the next
+    /// reconciliation. Leaves `model.reconciliation` untouched if it's
+    /// already populated, if nothing is held, or if no payloads survive.
+    fileprivate func restoreQuarantineReconciliationIfNeeded(computedAt: Date?) async {
+        guard let confirmed = confirmedDeletedStore,
+              let quarantineStore = quarantinedAssetStore else { return }
+        // Don't clobber a live reconciliation (defensive — bootstrap
+        // reaches here with it nil, but a racing sync could have set it).
+        let alreadyPopulated = await MainActor.run { self.model.reconciliation != nil }
+        if alreadyPopulated { return }
+
+        let days = await model.settings.quarantineDays
+        let cutoff = Date().addingTimeInterval(-TimeInterval(days) * 86_400)
+        let confirmedSnapshot = (try? await confirmed.snapshot()) ?? [:]
+        let inWindow = confirmedSnapshot.filter { $0.value > cutoff }
+        guard !inWindow.isEmpty else { return }
+
+        let payloads = (try? await quarantineStore.snapshot()) ?? [:]
+        // Intersect: only items still in-window AND with a display
+        // payload. Missing payloads (held before this feature shipped)
+        // are simply omitted — the count may exceed the list, which is
+        // the pre-existing behavior and self-heals on the next sync.
+        let held = inWindow.keys.compactMap { payloads[$0] }
+        guard !held.isEmpty else { return }
+
+        let heldChecksums = Set(held.map(\.checksum))
+        let confirmedDeletedAt = inWindow.filter { heldChecksums.contains($0.key) }
+        let sourceIds = ((try? await deletionSourceStore?.snapshot()) ?? [:])
+            .filter { heldChecksums.contains($0.key) }
+
+        await MainActor.run {
+            // Re-check under the actor: a sync that started during the
+            // awaits above takes precedence over restored state.
+            guard self.model.reconciliation == nil else { return }
+            self.model.reconciliation = .init(
+                // Held items only — `deleteCandidates` (ready-to-trash)
+                // stays empty; that list is repopulated by the next sync
+                // and its count is restored separately via the status
+                // snapshot's `library.candidates`.
+                deleteCandidates: [],
+                // Held ⊆ pending review, and the unconfirmed remainder
+                // isn't restored, so pending review == held here. Drives
+                // the "N in quarantine" Status line and the list.
+                pendingReviewCandidates: held,
+                heldByQuarantineCandidates: held,
+                confirmedDeletedAt: confirmedDeletedAt,
+                quarantineDays: days,
+                computedAt: computedAt ?? Date(),
+                sourceLocalIdentifiersByChecksum: sourceIds
+            )
+            syncLog.notice("[cairn.boot] restored \(held.count, privacy: .public) held quarantine item(s) from persisted state")
+        }
     }
 
     func checkServerHealth() async {
@@ -5367,6 +5464,7 @@ final class AppDependencies {
                     self.observedStore = nil
                     self.exclusionStore = nil
                     self.confirmedDeletedStore = nil
+                    self.quarantinedAssetStore = nil
                     self.deletionSourceStore = nil
                     self.tokenStore = nil
                     self.editRetirementStore = nil
@@ -5556,8 +5654,8 @@ final class AppDependencies {
             },
             startOverInitialScan: { [weak self] in
                 guard let self else { return }
-                let (lh, dh, tk, eh, cd, er, ds, mdStore, ss) = await MainActor.run {
-                    (self.localHashStore, self.deferredHashStore, self.tokenStore, self.observedStore, self.confirmedDeletedStore, self.editRetirementStore, self.deletionSourceStore, self.localAssetMetadataStore, self.statusSnapshotStore)
+                let (lh, dh, tk, eh, cd, er, ds, mdStore, ss, qa) = await MainActor.run {
+                    (self.localHashStore, self.deferredHashStore, self.tokenStore, self.observedStore, self.confirmedDeletedStore, self.editRetirementStore, self.deletionSourceStore, self.localAssetMetadataStore, self.statusSnapshotStore, self.quarantinedAssetStore)
                 }
                 var ops: [(label: String, body: @Sendable () async throws -> Void)] = [
                     ("local hash cache", { try await lh.clear() }),
@@ -5570,6 +5668,7 @@ final class AppDependencies {
                 if let er { ops.append(("edit-retirement store", { try await er.clear() })) }
                 if let ds { ops.append(("deletion-source store", { try await ds.clear() })) }
                 if let ss { ops.append(("status snapshot store", { try await ss.clear() })) }
+                if let qa { ops.append(("quarantined-asset store", { try await qa.clear() })) }
                 let failures = await Self.aggregateClears(ops)
                 if !failures.isEmpty {
                     let detail = failures.map { "\($0.label): \(Self.describeSyncError($0.error))" }.joined(separator: "; ")
