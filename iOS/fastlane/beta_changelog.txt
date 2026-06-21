@@ -1,9 +1,11 @@
-0.4.2 (build 140) — quarantine queue shows instantly on launch.
+0.4.2 (build 141) — clearer Pending Review wording + a tidier Connection screen.
 
-Reopening the app no longer briefly shows an empty Pending Review screen. If you had photos waiting in quarantine, they're restored from saved state the moment the app opens, instead of appearing only after the next sync finishes. Previously, relaunching soon after a sync could leave the quarantine queue blank until you synced again — the count and the list are now both there immediately.
+Pending Review now says what it means. The held section is "Queued" (was "Aging out"), and each photo shows "Trashes in N days" → "Ready to trash" instead of the vaguer "eligible." The Deferred queue's waiting list is now "Pending hash" so the two queues don't both say "Queued."
 
-Settings is also tidier around your server connection. The full sign-out — the one that forgets your Immich URL and API key — moved out of Advanced and into Connection, alongside the URL, API key, and session sign-in. It's now called "Disconnect server" so it reads as distinct from the session "Sign out" right above it (which only drops the streaming login and keeps your API key connected).
+Connection settings picked up three improvements:
 
-Smaller fix: the Status card no longer shows the "last checked" time twice.
+- Tap "API key" to open one place to view/copy it, rotate it, or disconnect. "Replace key" lets you paste a new key for the same Immich account and swap it in without re-onboarding — your index, journal, and run history are kept. (Rotating to a different account's key is refused; that's still the Disconnect path.)
+- The "?" next to "Sign in to Immich" now explains what email/password sign-in adds over the API key — it unlocks Immich's faster incremental-sync stream.
+- The sign-in screen remembers addresses you've used, in a recent-first dropdown like the server URL on setup.
 
-To test: with items in quarantine, force-quit and reopen the app — the Pending Review queue should be populated right away, before any sync runs. In Settings → Connection, confirm "Disconnect server" sits at the bottom of the server card and still returns you to onboarding.
+To test: open Settings → Connection → API key and try Reveal/Copy. If you have a spare API key for the same account, try Replace key and confirm your runs/history are intact afterward. Tap the "?" on the sign-in row. Sign in once, sign out, then reopen the sheet and confirm your email is offered in the dropdown.
