@@ -1209,7 +1209,14 @@ public struct SliderInputRow: View {
                     .padding(.bottom, 4)
             }
             Slider(value: $value, in: range, step: step)
-                .tint(t.text)
+                // `t.verified` (the active-green) matches every other
+                // slider in Settings — the inline iCloud-ceiling /
+                // propagation sliders and the InitialScan sliders all
+                // tint their filled track green. `t.text` here left this
+                // shared row (Quarantine window, iCloud download limit,
+                // etc.) rendering a white filled track, out of step with
+                // the rest of the screen.
+                .tint(t.verified)
             // Compact style puts the sub-text below the slider so
             // the slider + field stay visually paired at the top
             // of the row — matches the InitialScan scan-options

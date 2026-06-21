@@ -803,7 +803,10 @@ public struct SetupScreen: View {
                 )
             }
             Slider(value: value, in: range, step: step)
-                .tint(t.primary)
+                // Match every other slider in the app (Settings rows,
+                // InitialScan) on the active-green fill, rather than
+                // t.primary which read as a slightly different tint.
+                .tint(t.verified)
             Text(sub)
                 .font(.cairnScaled(size: 12))
                 .foregroundStyle(t.textMuted)
