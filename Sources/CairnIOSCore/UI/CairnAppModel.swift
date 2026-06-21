@@ -1320,10 +1320,17 @@ public struct CairnAppActions: Sendable {
     /// Returns `[]` for installs that predate the storage.
     public var recentServers: @Sendable () async -> [RecentServerEntry]
 
-    /// Wipe the recent-servers list. Surfaced as a Settings → Privacy
-    /// row so the user can clear the autocomplete history without
-    /// taking the heavier "Reset Index — all accounts" path.
+    /// Wipe the recent-servers list (and the recent session-emails list
+    /// alongside it). Surfaced as a Settings → Danger zone row so the
+    /// user can clear the autocomplete history without taking the heavier
+    /// "Reset Index — all accounts" path.
     public var clearRecentServers: @Sendable () async -> Void
+
+    /// Read the keychain-backed recent session-sign-in emails, sorted by
+    /// `lastUsedAt` descending. Powers the email-field autocomplete on
+    /// the session sign-in sheet. Returns `[]` for installs that predate
+    /// the storage.
+    public var recentSessionEmails: @Sendable () async -> [String]
 
     /// Drain the persistent retry queue: re-attempt every pending
     /// trash intent that hasn't hit `maxRetryAttempts` yet. Wired
@@ -1444,6 +1451,7 @@ public struct CairnAppActions: Sendable {
         loadArchivedHistory: @escaping @Sendable () async -> [CairnFixtures.JournalTailEntry] = { [] },
         recentServers: @escaping @Sendable () async -> [RecentServerEntry] = { [] },
         clearRecentServers: @escaping @Sendable () async -> Void = {},
+        recentSessionEmails: @escaping @Sendable () async -> [String] = { [] },
         retryPendingTrashes: @escaping @Sendable () async -> Void = {},
         loadPendingTrashes: @escaping @Sendable () async -> [PendingTrashIntent] = { [] },
         discardPendingTrash: @escaping @Sendable (UUID) async -> Void = { _ in },
@@ -1490,6 +1498,7 @@ public struct CairnAppActions: Sendable {
         self.loadArchivedHistory = loadArchivedHistory
         self.recentServers = recentServers
         self.clearRecentServers = clearRecentServers
+        self.recentSessionEmails = recentSessionEmails
         self.retryPendingTrashes = retryPendingTrashes
         self.loadPendingTrashes = loadPendingTrashes
         self.discardPendingTrash = discardPendingTrash

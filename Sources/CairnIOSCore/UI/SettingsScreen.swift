@@ -402,7 +402,7 @@ public struct SettingsScreen: View {
                 Button("Clear", role: .destructive) { onClearRecentServers() }
             },
             message: {
-                Text("Wipes the URL autocomplete list shown on the onboarding screen. Credentials, indexed state, journal, and exclusions are kept.")
+                Text("Wipes the saved server URLs and sign-in emails used for autocomplete. Credentials, indexed state, journal, and exclusions are kept.")
             }
         )
         .alert(
@@ -1750,7 +1750,7 @@ public struct SettingsScreen: View {
                     )
                     RowDivider()
                     KeyValRow(
-                        "Clear saved servers",
+                        "Clear saved servers & logins",
                         value: { Text("Wipe autocomplete").foregroundStyle(t.dangerInk) },
                         chevron: true,
                         onTap: { pendingClearRecentServers = true }

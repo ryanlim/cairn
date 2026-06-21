@@ -1031,6 +1031,7 @@ public struct CairnAppRoot: View {
                 signIn: { email, password in
                     await model.actions.signInForSession(email, password)
                 },
+                loadRecentEmails: { await model.actions.recentSessionEmails() },
                 onDismiss: { model.presentedSheet = nil }
             )
             .cairnTheme(palette)

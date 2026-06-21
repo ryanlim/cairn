@@ -57,6 +57,18 @@ public protocol MutableSecretStore: SecretStore {
     /// Surfaced through Settings → Privacy as a less-nuclear option
     /// than "Reset index — all accounts."
     func clearRecentServers() throws
+    /// Read the recent session-sign-in emails, sorted by `lastUsedAt`
+    /// descending. Powers the email-field autocomplete on the session
+    /// sign-in sheet. Empty on installs that predate this storage.
+    func recentSessionEmails() throws -> [RecentSessionEmail]
+    /// Upsert a recent session-email entry. Dedups case-insensitively on
+    /// the trimmed/lowercased address, moves the match to the head with a
+    /// fresh `lastUsedAt`, and caps at `RecentSessionEmail.maxRetained`.
+    func recordRecentSessionEmail(_ entry: RecentSessionEmail) throws
+    /// Wipe the recent session-emails list without touching anything
+    /// else. Cleared alongside `clearRecentServers()` (same user intent:
+    /// forget what I've typed into the connection fields).
+    func clearRecentSessionEmails() throws
     /// Remove every secret this store manages. Idempotent — safe to
     /// call on sign-out even if one secret was already missing.
     func clear() throws
@@ -117,6 +129,33 @@ public struct RecentServerEntry: Sendable, Codable, Equatable {
         var s = c.string ?? trimmed
         while s.hasSuffix("/") { s.removeLast() }
         return s
+    }
+}
+
+/// One entry in the recent session-sign-in emails list. Stored in
+/// Keychain as JSON. Mirrors `RecentServerEntry` for the email field on
+/// the session sign-in sheet: dedup on the canonicalized (trimmed,
+/// lowercased) address, most-recent-first, capped. No password is ever
+/// stored — only the address the user typed, for faster re-entry.
+public struct RecentSessionEmail: Sendable, Codable, Equatable {
+    public let email: String
+    public let lastUsedAt: Date
+
+    public init(email: String, lastUsedAt: Date = Date()) {
+        self.email = email
+        self.lastUsedAt = lastUsedAt
+    }
+
+    /// Same retention cap as `RecentServerEntry` — a user rarely has
+    /// more than a couple of Immich accounts to switch between.
+    public static let maxRetained: Int = 10
+
+    /// Trim + lowercase for dedup. Email addresses are case-insensitive
+    /// in the local part on every mainstream provider and in the domain
+    /// always; treating them case-insensitively avoids duplicate rows
+    /// for the same account typed with different casing.
+    public static func canonicalize(_ raw: String) -> String {
+        raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 }
 
@@ -198,6 +237,10 @@ public struct KeychainSecretStore: MutableSecretStore, Sendable {
     /// Stored as a JSON array of `RecentServerEntry`. Wipeable
     /// independently of credentials via `clearRecentServers()`.
     public let recentServersAccount: String
+    /// `kSecAttrAccount` for the recent session-sign-in emails list.
+    /// Stored as a JSON array of `RecentSessionEmail`. Wipeable
+    /// alongside the recent-servers list.
+    public let recentSessionEmailsAccount: String
     /// `kSecAttrAccount` for the cached Immich session-auth access
     /// token. Stored as a raw JWT string. Absent on installs that
     /// haven't enabled the session flow; non-fatal — sync-coordinator
@@ -211,6 +254,7 @@ public struct KeychainSecretStore: MutableSecretStore, Sendable {
                 userEmailAccount: String = "user-email",
                 keyActivationsAccount: String = "key-activations",
                 recentServersAccount: String = "recent-servers",
+                recentSessionEmailsAccount: String = "recent-session-emails",
                 sessionTokenAccount: String = "session-token") {
         self.service = service
         self.urlAccount = urlAccount
@@ -219,6 +263,7 @@ public struct KeychainSecretStore: MutableSecretStore, Sendable {
         self.userEmailAccount = userEmailAccount
         self.keyActivationsAccount = keyActivationsAccount
         self.recentServersAccount = recentServersAccount
+        self.recentSessionEmailsAccount = recentSessionEmailsAccount
         self.sessionTokenAccount = sessionTokenAccount
     }
 
@@ -351,6 +396,40 @@ public struct KeychainSecretStore: MutableSecretStore, Sendable {
         try delete(account: recentServersAccount)
     }
 
+    public func recentSessionEmails() throws -> [RecentSessionEmail] {
+        guard let raw = try readOptionalString(account: recentSessionEmailsAccount) else {
+            return []
+        }
+        guard let data = raw.data(using: .utf8) else {
+            return []
+        }
+        let entries = (try? JSONDecoder().decode([RecentSessionEmail].self, from: data)) ?? []
+        return entries.sorted { $0.lastUsedAt > $1.lastUsedAt }
+    }
+
+    public func recordRecentSessionEmail(_ entry: RecentSessionEmail) throws {
+        let canonical = RecentSessionEmail.canonicalize(entry.email)
+        guard !canonical.isEmpty else { return }
+        var current = try recentSessionEmails()
+        current.removeAll { RecentSessionEmail.canonicalize($0.email).caseInsensitiveCompare(canonical) == .orderedSame }
+        current.insert(
+            RecentSessionEmail(email: canonical, lastUsedAt: entry.lastUsedAt),
+            at: 0
+        )
+        if current.count > RecentSessionEmail.maxRetained {
+            current = Array(current.prefix(RecentSessionEmail.maxRetained))
+        }
+        let data = try JSONEncoder().encode(current)
+        guard let json = String(data: data, encoding: .utf8) else {
+            throw KeychainError.unexpectedItemFormat
+        }
+        try writeString(json, account: recentSessionEmailsAccount)
+    }
+
+    public func clearRecentSessionEmails() throws {
+        try delete(account: recentSessionEmailsAccount)
+    }
+
     public func clear() throws {
         try delete(account: urlAccount)
         try delete(account: keyAccount)
@@ -358,15 +437,15 @@ public struct KeychainSecretStore: MutableSecretStore, Sendable {
         try delete(account: userEmailAccount)
         try delete(account: keyActivationsAccount)
         try delete(account: sessionTokenAccount)
-        // `recentServersAccount` is intentionally preserved here.
-        // Sign-out brings the user back to the onboarding flow,
-        // and the whole point of the autocomplete is to make
-        // returning to a known server fast — wiping it on
-        // sign-out defeats that. Two explicit user-driven paths
-        // wipe it: "Clear saved servers" (Settings → Danger zone
-        // → just this list) and "Reset Index — all accounts"
-        // (the nuclear, which calls `clearRecentServers()`
-        // alongside its other wipes).
+        // `recentServersAccount` and `recentSessionEmailsAccount` are
+        // intentionally preserved here. Sign-out brings the user back to
+        // the onboarding / sign-in flow, and the whole point of the
+        // autocomplete is to make returning to a known server + account
+        // fast — wiping it on sign-out defeats that. Two explicit
+        // user-driven paths wipe them: "Clear saved servers" (Settings →
+        // Danger zone) and "Reset Index — all accounts" (the nuclear),
+        // both of which call `clearRecentServers()` +
+        // `clearRecentSessionEmails()` alongside their other wipes.
     }
 
     // MARK: - Keychain primitives

@@ -5293,13 +5293,14 @@ final class AppDependencies {
                 try? secrets.setKeyActivationMap([fp: now])
                 await MainActor.run { self.currentKeyActivatedAt = now }
 
-                // Step 4: wipe the recent-servers autocomplete list.
-                // Pointing at accounts that were just removed is at
-                // best stale and at worst confusing — the user
-                // explicitly asked to clear everything cairn knew.
-                // (Plain sign-out preserves the list; this is the
+                // Step 4: wipe the recent-servers + recent-email
+                // autocomplete lists. Pointing at accounts that were just
+                // removed is at best stale and at worst confusing — the
+                // user explicitly asked to clear everything cairn knew.
+                // (Plain sign-out preserves the lists; this is the
                 // hard-nuclear path.)
                 try? secrets.clearRecentServers()
+                try? secrets.clearRecentSessionEmails()
 
                 // Step 5: wipe the active partition's exclusions and
                 // reset the one-shot Limited-Photos heads-up. Both
@@ -5795,7 +5796,18 @@ final class AppDependencies {
                 guard let self else { return }
                 let store = self.secretStore
                 await Task.detached(priority: .userInitiated) {
+                    // Same user intent — "forget what I've typed into the
+                    // connection fields" — clears both the URL and email
+                    // autocomplete lists.
                     try? store.clearRecentServers()
+                    try? store.clearRecentSessionEmails()
+                }.value
+            },
+            recentSessionEmails: { [weak self] in
+                guard let self else { return [] }
+                let store = self.secretStore
+                return await Task.detached(priority: .userInitiated) {
+                    ((try? store.recentSessionEmails()) ?? []).map(\.email)
                 }.value
             },
             retryPendingTrashes: { [weak self] in
@@ -5929,6 +5941,13 @@ final class AppDependencies {
                         }
                     }
                     syncLog.notice("[cairn.session] signed in as \(resp.userEmail, privacy: .public)")
+                    // Remember the address for the sign-in field's
+                    // autocomplete. Only on success — a failed attempt's
+                    // typo'd address shouldn't pollute the list. Records
+                    // the server-confirmed email (canonical casing), not
+                    // the raw input. Survives sign-out; cleared by "Clear
+                    // saved servers" / full reset.
+                    try? self.secretStore.recordRecentSessionEmail(.init(email: resp.userEmail))
                     return .success
                 } catch let err as ImmichClientError {
                     if case .httpStatus(let code, let body) = err {

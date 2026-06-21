@@ -45,6 +45,48 @@ struct KeychainSecretStoreTests {
         #expect(try store.apiKey() == key)
     }
 
+    @Test("recent session emails: record dedups case-insensitively, newest-first, capped, clearable")
+    func recentSessionEmailsContract() throws {
+        let store = makeStore()
+        defer { try? store.clearRecentSessionEmails() }
+
+        #expect(try store.recentSessionEmails().isEmpty)
+
+        let t0 = Date(timeIntervalSince1970: 1_700_000_000)
+        try store.recordRecentSessionEmail(.init(email: "a@example.com", lastUsedAt: t0))
+        try store.recordRecentSessionEmail(.init(email: "b@example.com", lastUsedAt: t0.addingTimeInterval(10)))
+        // Re-record A with a newer stamp and different casing — should
+        // dedup to one row and move to the head.
+        try store.recordRecentSessionEmail(.init(email: "A@Example.com", lastUsedAt: t0.addingTimeInterval(20)))
+
+        let emails = try store.recentSessionEmails().map(\.email)
+        #expect(emails == ["a@example.com", "b@example.com"])
+
+        // Cap at maxRetained.
+        for i in 0..<(RecentSessionEmail.maxRetained + 5) {
+            try store.recordRecentSessionEmail(.init(email: "user\(i)@example.com", lastUsedAt: t0.addingTimeInterval(Double(100 + i))))
+        }
+        #expect(try store.recentSessionEmails().count == RecentSessionEmail.maxRetained)
+
+        try store.clearRecentSessionEmails()
+        #expect(try store.recentSessionEmails().isEmpty)
+    }
+
+    @Test("clear() preserves recent session emails (mirrors recent-servers)")
+    func clearPreservesRecentEmails() throws {
+        let store = makeStore()
+        defer { try? store.clearRecentSessionEmails() }
+
+        try store.recordRecentSessionEmail(.init(email: "keep@example.com"))
+        try store.setAPIKey("k_test_123")
+        try store.clear()
+        // Credentials gone, autocomplete kept.
+        #expect(throws: SecretStoreError.missing(name: store.keyAccount)) {
+            _ = try store.apiKey()
+        }
+        #expect(try store.recentSessionEmails().map(\.email) == ["keep@example.com"])
+    }
+
     @Test("setting the URL twice does not throw errSecDuplicateItem; second set wins")
     func upsertDoesNotDuplicate() throws {
         let store = makeStore()

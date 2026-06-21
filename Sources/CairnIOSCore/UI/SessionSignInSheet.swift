@@ -13,12 +13,16 @@ import CairnCore
 /// "Signed in."
 public struct SessionSignInSheet: View {
     public let signIn: @Sendable (_ email: String, _ password: String) async -> CairnAppActions.SessionSignInResult
+    /// Recently-used sign-in addresses, most-recent-first. Powers the
+    /// email-field autocomplete. Loaded once on appear.
+    public let loadRecentEmails: @Sendable () async -> [String]
     public let onDismiss: () -> Void
 
     @State private var email: String = ""
     @State private var password: String = ""
     @State private var isSubmitting: Bool = false
     @State private var inlineError: String?
+    @State private var recentEmails: [String] = []
 
     @Environment(\.cairnTokens) private var t
     @FocusState private var focusedField: Field?
@@ -27,9 +31,11 @@ public struct SessionSignInSheet: View {
 
     public init(
         signIn: @escaping @Sendable (String, String) async -> CairnAppActions.SessionSignInResult,
+        loadRecentEmails: @escaping @Sendable () async -> [String] = { [] },
         onDismiss: @escaping () -> Void
     ) {
         self.signIn = signIn
+        self.loadRecentEmails = loadRecentEmails
         self.onDismiss = onDismiss
     }
 
@@ -38,7 +44,10 @@ public struct SessionSignInSheet: View {
             VStack(alignment: .leading, spacing: 18) {
                 header
                 explainer
-                emailField
+                VStack(alignment: .leading, spacing: 6) {
+                    emailField
+                    emailSuggestions
+                }
                 passwordField
                 signInButton
                 if let inlineError {
@@ -54,6 +63,7 @@ public struct SessionSignInSheet: View {
         }
         .background(t.bg)
         .scrollDismissesKeyboard(.interactively)
+        .task { recentEmails = await loadRecentEmails() }
     }
 
     private var header: some View {
@@ -106,6 +116,60 @@ public struct SessionSignInSheet: View {
                 )
                 .accessibilityLabel("Email")
         }
+    }
+
+    /// Up to four recently-used addresses, filtered by the current input.
+    /// Empty input shows the full recent list; typing narrows to
+    /// substring matches and drops an exact match (nothing to suggest).
+    private var filteredEmailSuggestions: [String] {
+        let q = email.trimmingCharacters(in: .whitespaces).lowercased()
+        let matches = q.isEmpty
+            ? recentEmails
+            : recentEmails.filter { $0.lowercased().contains(q) && $0.lowercased() != q }
+        return Array(matches.prefix(4))
+    }
+
+    /// Recent-email dropdown, shown only while the email field is focused
+    /// (so it doesn't linger over the password field). Mirrors the
+    /// recent-servers autocomplete on the onboarding URL field.
+    @ViewBuilder
+    private var emailSuggestions: some View {
+        if focusedField == .email, !filteredEmailSuggestions.isEmpty {
+            CairnCard {
+                VStack(spacing: 0) {
+                    ForEach(Array(filteredEmailSuggestions.enumerated()), id: \.element) { idx, addr in
+                        Button(action: { applyEmailSuggestion(addr) }) {
+                            HStack(spacing: 10) {
+                                Image(systemName: "clock.arrow.circlepath")
+                                    .font(.cairnScaled(size: 12))
+                                    .foregroundStyle(t.textHint)
+                                Text(addr)
+                                    .font(.cairnScaled(size: 13))
+                                    .foregroundStyle(t.textBody)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                Spacer()
+                                Image(systemName: "arrow.up.left")
+                                    .font(.cairnScaled(size: 11))
+                                    .foregroundStyle(t.textHint)
+                            }
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 10)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        if idx < filteredEmailSuggestions.count - 1 {
+                            RowDivider()
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func applyEmailSuggestion(_ addr: String) {
+        email = addr
+        focusedField = .password
     }
 
     private var passwordField: some View {
