@@ -1130,16 +1130,18 @@ public struct SettingsScreen: View {
                     // covers everything except the /sync/* endpoints, which
                     // Immich gates behind a real session — so this is what
                     // unlocks "Incremental server sync" (toggle in Advanced).
+                    // The "?" explains that advantage (what session auth
+                    // buys you over the API key alone).
                     if hasSessionToken {
-                        KeyValRow(
-                            "Signed in to Immich",
+                        sessionRow(
+                            label: "Signed in to Immich",
                             value: { Text("Sign out").foregroundStyle(t.dangerInk) },
                             chevron: false,
                             onTap: onSignOutSession
                         )
                     } else {
-                        KeyValRow(
-                            "Sign in to Immich",
+                        sessionRow(
+                            label: "Sign in to Immich",
                             value: { Text("Enables incremental sync").foregroundStyle(t.textMuted) },
                             chevron: true,
                             onTap: onOpenSessionSignIn
@@ -1162,6 +1164,48 @@ public struct SettingsScreen: View {
                 }
             }
         }
+    }
+
+    /// Session sign-in/out row with an inline "?" explaining what
+    /// email/password auth adds over the API key. The help glyph is its
+    /// own button (its tap opens the popover); the rest of the row taps
+    /// through to `onTap`. Factored out so the signed-in and
+    /// signed-out variants share one layout + one help body.
+    @ViewBuilder
+    private func sessionRow<V: View>(
+        label: String,
+        @ViewBuilder value: () -> V,
+        chevron: Bool,
+        onTap: @escaping () -> Void
+    ) -> some View {
+        HStack(spacing: 8) {
+            Text(label)
+                .font(.cairnScaled(size: 15))
+                .foregroundStyle(t.textBody)
+            HelpPopover { sessionAuthHelp }
+            Spacer(minLength: 12)
+            value()
+                .font(.cairnScaled(size: 15))
+            if chevron {
+                Image(systemName: "chevron.right")
+                    .font(.cairnScaled(size: 12, weight: .semibold))
+                    .foregroundStyle(t.textHint)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 14)
+        .contentShape(Rectangle())
+        .onTapGesture { onTap() }
+        .accessibilityAddTraits(.isButton)
+    }
+
+    @ViewBuilder
+    private var sessionAuthHelp: some View {
+        Text("Your API key already covers everything ") + .cairnWord + Text(" needs to detect deletions and move photos to Immich's Trash. Signing in with your Immich email and password adds one extra capability.")
+        (Text("Immich only allows its incremental-sync stream over a logged-in session, not an API key. With it, ") + .cairnWord + Text(" fetches just what changed on the server since the last sync instead of re-listing every asset — noticeably faster on large libraries."))
+            .padding(.top, 4)
+        (Text("The session token is stored in your iPhone's Keychain and used only for that streaming path. Sign out anytime — your API key stays connected."))
+            .padding(.top, 4)
     }
 
     // MARK: - Excluded-value sub-view
