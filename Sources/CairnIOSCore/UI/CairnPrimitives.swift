@@ -1698,8 +1698,8 @@ public struct CairnRadioList<Value: Hashable>: View {
                 CairnSegmentedPicker(
                     selection: $value,
                     options: [
-                        .init(value: "a", label: "Strict"),
-                        .init(value: "b", label: "Trusting"),
+                        .init(value: "a", label: "Cautious"),
+                        .init(value: "b", label: "Balanced"),
                     ]
                 )
                 CairnSegmentedPicker(
@@ -1724,8 +1724,8 @@ public struct CairnRadioList<Value: Hashable>: View {
             CairnRadioList(
                 selection: $value,
                 options: [
-                    .init(value: "strict",   title: "Strict",   subtitle: "Only move server photos that iOS directly confirmed were deleted."),
-                    .init(value: "trusting", title: "Trusting", subtitle: "Move anything that's no longer on your device, confirmed or not."),
+                    .init(value: "strict",   title: "Cautious", subtitle: "Only move server photos that iOS directly confirmed were deleted."),
+                    .init(value: "trusting", title: "Balanced", subtitle: "Move anything that's no longer on your device, confirmed or not."),
                 ]
             )
             .padding()

@@ -528,7 +528,7 @@ public struct SettingsScreen: View {
         .init(id: "safety.percent", title: "Percent threshold", breadcrumb: "Safety & limits",
               keywords: ["mass delete", "abort", "rail", "fraction"], page: .safetyLimits),
         .init(id: "safety.strictness", title: "Deletion strictness", breadcrumb: "Safety & limits",
-              keywords: ["strict", "trusting", "auto", "autonomous"], page: .safetyLimits),
+              keywords: ["cautious", "balanced", "autonomous", "strict", "trusting", "auto"], page: .safetyLimits),
         .init(id: "safety.quarantine", title: "Quarantine window", breadcrumb: "Safety & limits",
               keywords: ["days", "hold", "aging", "quarantine"], page: .safetyLimits),
         .init(id: "safety.icloud", title: "iCloud download limit", breadcrumb: "Safety & limits",
@@ -836,9 +836,9 @@ public struct SettingsScreen: View {
     private var safetyLimitsSummary: String? {
         let strictness: String
         switch settings.deletionStrictness {
-        case .strict: strictness = "Strict"
-        case .trusting: strictness = "Trusting"
-        case .autonomous: strictness = "Auto"
+        case .strict: strictness = "Cautious"
+        case .trusting: strictness = "Balanced"
+        case .autonomous: strictness = "Autonomous"
         }
         let days = settings.quarantineDays
         let quarantine = days == 0 ? "no quarantine" : "\(days)d"
@@ -2140,18 +2140,18 @@ private struct StrictnessRow: View {
                     .font(.cairnScaled(size: 15))
                     .foregroundStyle(t.textBody)
                 HelpPopover {
-                    Text("**Strict** requires a positive deletion signal before trashing. Ambiguous candidates go to Pending Review.")
-                    Text("**Trusting** trashes past-quarantine candidates automatically. Held deletions still wait out the window.")
-                    Text("**Auto** skips quarantine entirely. Every candidate trashes on the next sync. Rely on Immich's 30-day Trash for recovery.")
+                    Text("**Cautious** requires a positive deletion signal before trashing. Ambiguous candidates go to Pending Review.")
+                    Text("**Balanced** trashes past-quarantine candidates automatically. Held deletions still wait out the window.")
+                    Text("**Autonomous** skips quarantine entirely. Every candidate trashes on the next sync. Rely on Immich's 30-day Trash for recovery.")
                 }
                 Spacer()
             }
             CairnSegmentedPicker(
                 selection: $strictness,
                 options: [
-                    .init(value: DeletionStrictness.strict,     label: "Strict"),
-                    .init(value: DeletionStrictness.trusting,   label: "Trusting"),
-                    .init(value: DeletionStrictness.autonomous, label: "Auto"),
+                    .init(value: DeletionStrictness.strict,     label: "Cautious"),
+                    .init(value: DeletionStrictness.trusting,   label: "Balanced"),
+                    .init(value: DeletionStrictness.autonomous, label: "Autonomous"),
                 ]
             )
             Text(explanation)

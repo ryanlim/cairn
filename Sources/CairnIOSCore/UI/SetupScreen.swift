@@ -838,17 +838,17 @@ public struct SetupScreen: View {
                 options: [
                     .init(
                         value: DeletionStrictness.strict,
-                        title: "Strict",
+                        title: "Cautious",
                         subtitle: "Only move a server photo to Immich's Trash when iOS directly confirmed it was deleted on this device. Anything else gets held for your review. Recommended with iCloud Photo Library and iCloud-Optimized Storage."
                     ),
                     .init(
                         value: DeletionStrictness.trusting,
-                        title: "Trusting",
+                        title: "Balanced",
                         subtitle: "Move any server photo to Immich's Trash when it's no longer on your device, even if iOS didn't directly confirm the deletion. Faster, but can accidentally send photos to Trash during iCloud sync hiccups or library restores."
                     ),
                     .init(
                         value: DeletionStrictness.autonomous,
-                        title: "Auto",
+                        title: "Autonomous",
                         subtitle: "Skip quarantine and review entirely. Every candidate moves to Immich's Trash on the next sync — no waiting, no preview list. The only safety net is Immich's 30-day Trash window. Pick this only if you'd rather catch mistakes after the fact than pre-approve every batch."
                     ),
                 ]
