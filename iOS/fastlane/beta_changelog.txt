@@ -1,11 +1,11 @@
-0.4.2 (build 141) — clearer Pending Review wording + a tidier Connection screen.
+0.4.2 (build 142) — clearer names for the deletion-strictness levels.
 
-Pending Review now says what it means. The held section is "Queued" (was "Aging out"), and each photo shows "Trashes in N days" → "Ready to trash" instead of the vaguer "eligible." The Deferred queue's waiting list is now "Pending hash" so the two queues don't both say "Queued."
+The three safety levels are renamed so they read as an ordered scale instead of an arbitrary set. Old names "Strict / Trusting / Auto" → new names, from most to least cautious:
 
-Connection settings picked up three improvements:
+- Cautious — only trash a photo iOS directly confirmed was deleted; anything ambiguous waits in Pending Review. (was "Strict")
+- Balanced — trash anything no longer on your device once it clears the quarantine window. The default. (was "Trusting")
+- Autonomous — skip quarantine and review; trash on the next sync, relying on Immich's 30-day Trash for recovery. (was "Auto")
 
-- Tap "API key" to open one place to view/copy it, rotate it, or disconnect. "Replace key" lets you paste a new key for the same Immich account and swap it in without re-onboarding — your index, journal, and run history are kept. (Rotating to a different account's key is refused; that's still the Disconnect path.)
-- The "?" next to "Sign in to Immich" now explains what email/password sign-in adds over the API key — it unlocks Immich's faster incremental-sync stream.
-- The sign-in screen remembers addresses you've used, in a recent-first dropdown like the server URL on setup.
+Behavior is unchanged — only the labels. Your current setting is preserved.
 
-To test: open Settings → Connection → API key and try Reveal/Copy. If you have a spare API key for the same account, try Replace key and confirm your runs/history are intact afterward. Tap the "?" on the sign-in row. Sign in once, sign out, then reopen the sheet and confirm your email is offered in the dropdown.
+To test: Settings → Safety & limits → Deletion strictness. Confirm the level you had before is still selected, and that the picker, the "?" help, and the summary all read with the new names.
