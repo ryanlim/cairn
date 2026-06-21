@@ -5994,6 +5994,109 @@ final class AppDependencies {
                     }
                 }
                 syncLog.notice("[cairn.session] signed out")
+            },
+            replaceAPIKey: { [weak self] newKey in
+                guard let self else { return .networkError(message: "app not ready") }
+                let trimmedKey = newKey.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmedKey.isEmpty else { return .invalidKey }
+
+                // Rotation only makes sense against the currently-
+                // connected server + account.
+                let modelURL = await MainActor.run { self.model.serverURL }
+                guard let url = modelURL ?? (try? secrets.serverURL()) else {
+                    return .networkError(message: "No server connected.")
+                }
+                let partitionUserId = await MainActor.run { self.currentPartitionKey?.userId }
+                let currentUserId = partitionUserId ?? (try? secrets.userId())
+
+                // Verify the new key against the same server.
+                let probe = ImmichClient(baseURL: url, apiKey: trimmedKey, session: ImmichClient.makeAppURLSession(timeoutSeconds: 10))
+                let assets: [ServerAsset]
+                do {
+                    assets = try await probe.listAllAssets()
+                } catch let err as ImmichClientError {
+                    if case .httpStatus(let code, _) = err, code == 401 || code == 403 {
+                        return .invalidKey
+                    }
+                    return .networkError(message: Self.describeSyncError(err))
+                } catch {
+                    return .networkError(message: Self.describeSyncError(error))
+                }
+
+                // Identity guard: rotation must be POSITIVELY confirmed to
+                // be the same Immich account, not merely "not proven
+                // different." The index is partitioned per (URL, userId);
+                // accepting a different account's key would point the
+                // existing index at the wrong account (and, if we cached
+                // the new identity, silently relabel the partition on next
+                // launch). So resolve both identities and require a match:
+                //   - new key's identity via the probe;
+                //   - current account's identity from the cached userId,
+                //     or fetched live via the existing client if the
+                //     partition is URL-only (legacy installs).
+                // If either side can't be resolved, or they differ, refuse
+                // and route the user to Disconnect.
+                let newIdentity = try? await probe.usersMe()
+                // Resolve the current account's id: from the cached userId
+                // when known, otherwise fetched live off the existing
+                // client (URL-only legacy partitions).
+                let resolvedCurrentId: String?
+                if let currentUserId {
+                    resolvedCurrentId = currentUserId
+                } else if let existing = await MainActor.run(body: { self.immichClient }) {
+                    resolvedCurrentId = (try? await existing.usersMe())?.id
+                } else {
+                    resolvedCurrentId = nil
+                }
+                guard let newId = newIdentity?.id, let curId = resolvedCurrentId else {
+                    return .cannotConfirmAccount
+                }
+                guard newId == curId else {
+                    return .wrongAccount(email: newIdentity?.email ?? "a different account")
+                }
+
+                // Preserve the run-history window: the per-key filter
+                // keys on an API key's first-seen timestamp, so a
+                // brand-new fingerprint would otherwise hide every prior
+                // run. Seed the new key's activation with the OLD key's
+                // timestamp instead of `now`.
+                let oldActivatedAt = await MainActor.run { self.currentKeyActivatedAt } ?? .distantPast
+
+                // Persist the new key with a checked write — if the
+                // Keychain write fails, bail before swapping the live
+                // client so we don't end up "rotated" in memory but
+                // booting the old (likely-revoked) key next launch.
+                do {
+                    try secrets.setAPIKey(trimmedKey)
+                } catch {
+                    return .networkError(message: "Couldn't save the new key to the Keychain. \(Self.describeSyncError(error))")
+                }
+                // Deliberately NOT calling setUserIdentity here: rotation
+                // doesn't change the account (we just confirmed it's the
+                // same), and writing identity into a previously URL-only
+                // partition would move it on next launch. The normal
+                // bootstrap identity refresh handles any legacy migration.
+                //
+                // Re-activate against the SAME partition (unchanged
+                // userId): re-opens the existing on-disk stores and
+                // rebuilds the ImmichClient with the new key — no index,
+                // journal, or run-history loss.
+                try? await MainActor.run {
+                    try self.activateServer(url: url, apiKey: trimmedKey, userId: currentUserId)
+                }
+                let fingerprint = AppDependencies.apiKeyFingerprint(trimmedKey)
+                let activatedAt = AppDependencies.upsertKeyActivation(in: secrets, fingerprint: fingerprint, seedAt: oldActivatedAt)
+                let serverCount = assets.filter { !$0.isTrashed }.count
+                await MainActor.run {
+                    self.currentKeyActivatedAt = activatedAt
+                    self.model.apiKey = trimmedKey
+                    self.model.apiKeyMasked = AppDependencies.mask(trimmedKey)
+                    self.model.library = self.model.library.with(server: serverCount)
+                    self.rewireActions()
+                    self.registerPhotoLibraryObserver()
+                }
+                syncLog.notice("[cairn.apikey] rotated in place (same account, history preserved)")
+                return .success
             }
         )
 

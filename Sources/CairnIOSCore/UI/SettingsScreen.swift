@@ -61,6 +61,9 @@ public struct SettingsScreen: View {
     /// Doesn't touch credentials, journal, or index — surgical.
     public let onClearRecentServers: () -> Void
     public let onSignOut: () -> Void
+    /// Rotate the API key in place (verify + swap, preserving index +
+    /// history). Surfaced from the API-key sheet's "Replace key".
+    public let onReplaceAPIKey: @Sendable (String) async -> CairnAppActions.ReplaceKeyResult
     public let onRescanLibrary: () -> Void
     public let onClearHashCache: () -> Void
     public let onVerifyImputedChecksums: () -> Void
@@ -147,7 +150,6 @@ public struct SettingsScreen: View {
     @State private var pendingClearHashCache: Bool = false
     @State private var pendingVerifyImputed: Bool = false
     @State private var pendingClearJournal: Bool = false
-    @State private var pendingSignOut: Bool = false
     @State private var pendingClearRecentServers: Bool = false
     @State private var pendingClearExclusions: Bool = false
     @State private var howItWorksExpanded: Bool = false
@@ -160,6 +162,7 @@ public struct SettingsScreen: View {
     @State private var showAbout = false
     @State private var showInspectAssetAlert = false
     @State private var showArchivedHistory = false
+    @State private var showApiKeyDetail = false
     @State private var inspectAssetFilename: String = ""
 
     /// Extracted from the alert closure to relieve type-checker
@@ -201,6 +204,7 @@ public struct SettingsScreen: View {
         onClearExclusions: @escaping () -> Void = {},
         onClearRecentServers: @escaping () -> Void = {},
         onSignOut: @escaping () -> Void = {},
+        onReplaceAPIKey: @escaping @Sendable (String) async -> CairnAppActions.ReplaceKeyResult = { _ in .success },
         onRescanLibrary: @escaping () -> Void = {},
         onClearHashCache: @escaping () -> Void = {},
         onVerifyImputedChecksums: @escaping () -> Void = {},
@@ -240,6 +244,7 @@ public struct SettingsScreen: View {
         self.onClearExclusions = onClearExclusions
         self.onClearRecentServers = onClearRecentServers
         self.onSignOut = onSignOut
+        self.onReplaceAPIKey = onReplaceAPIKey
         self.onRescanLibrary = onRescanLibrary
         self.onClearHashCache = onClearHashCache
         self.onVerifyImputedChecksums = onVerifyImputedChecksums
@@ -381,17 +386,6 @@ public struct SettingsScreen: View {
             },
             message: {
                 Text("This key: hides existing runs from the active API key's view. Other keys on this account still see their own history if you rotate back. The on-disk journal is preserved.\n\nAll keys: deletes deletion-journal.jsonl from disk. Past runs disappear from every key's view, permanently.")
-            }
-        )
-        .alert(
-            "Disconnect server?",
-            isPresented: $pendingSignOut,
-            actions: {
-                Button("Cancel", role: .cancel) {}
-                Button("Disconnect", role: .destructive) { onSignOut() }
-            },
-            message: {
-                Text("Forgets your Immich URL and API key, and drops the cached thumbnails fetched with them. You'll land back on the onboarding flow — indexed state on this device is preserved for when you sign in again.")
             }
         )
         .alert(
@@ -1121,7 +1115,18 @@ public struct SettingsScreen: View {
                         mono: true
                     )
                     RowDivider()
-                    ApiKeyRow(rawKey: apiKey, masked: apiKeyMasked)
+                    // Single entry point for everything API-key: tapping
+                    // opens a sheet to reveal/copy, rotate the key in
+                    // place, or disconnect. Consolidates what used to be a
+                    // separate inline key display and a separate Disconnect
+                    // row.
+                    KeyValRow(
+                        "API key",
+                        value: { Text(apiKeyMasked).foregroundStyle(t.textMuted) },
+                        mono: true,
+                        chevron: true,
+                        onTap: { showApiKeyDetail = true }
+                    )
                     RowDivider()
                     KeyValRow("Connection", value: { ConnectionPill(status: connectionStatus) })
                     RowDivider()
@@ -1147,22 +1152,23 @@ public struct SettingsScreen: View {
                             onTap: onOpenSessionSignIn
                         )
                     }
-                    RowDivider()
-                    // Full disconnect — forgets URL + API key and returns
-                    // to onboarding. Lives here with the rest of the
-                    // server/account lifecycle rather than in Advanced ›
-                    // Danger zone, so all auth controls are in one place.
-                    // Labeled "Disconnect" (not "Sign out") to stay
-                    // distinct from the session sign-out row above, which
-                    // only drops the JWT and keeps the API key connected.
-                    KeyValRow(
-                        "Disconnect server",
-                        value: { Text("Forget URL & key").foregroundStyle(t.dangerInk) },
-                        chevron: true,
-                        onTap: { pendingSignOut = true }
-                    )
+                    // Disconnect lives inside the API-key sheet now (the
+                    // single home for the server credential lifecycle),
+                    // not as its own card row.
                 }
             }
+        }
+        .sheet(isPresented: $showApiKeyDetail) {
+            ApiKeyDetailSheet(
+                rawKey: apiKey,
+                masked: apiKeyMasked,
+                replaceKey: onReplaceAPIKey,
+                onDisconnect: {
+                    showApiKeyDetail = false
+                    onSignOut()
+                },
+                onDismiss: { showApiKeyDetail = false }
+            )
         }
     }
 

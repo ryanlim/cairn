@@ -1383,6 +1383,36 @@ public struct CairnAppActions: Sendable {
     /// surface success / invalid-credentials / transport-failure.
     public var signInForSession: @Sendable (_ email: String, _ password: String) async -> SessionSignInResult
 
+    /// Outcome of `replaceAPIKey`. Drives the inline result copy in the
+    /// API-key sheet.
+    public enum ReplaceKeyResult: Sendable, Equatable {
+        case success
+        /// The new key was rejected by the server (HTTP 401/403) or is
+        /// otherwise unusable. The user should paste a different key.
+        case invalidKey
+        /// The new key authenticates as a *different* Immich account than
+        /// the one cairn is indexed against. Rotating in place would
+        /// orphan the existing index, so it's blocked — the user should
+        /// Disconnect and re-onboard to switch accounts. Carries the
+        /// other account's email for the error copy.
+        case wrongAccount(email: String)
+        /// Couldn't positively confirm the new key belongs to the same
+        /// account (the new key or the current connection didn't return
+        /// an identity). Rotation refuses rather than risk pointing the
+        /// existing index at the wrong account — the user should use
+        /// Disconnect to switch servers/accounts.
+        case cannotConfirmAccount
+        /// Transport failure reaching the server. Message is plain-language.
+        case networkError(message: String)
+    }
+
+    /// Rotate the Immich API key in place: verify `newKey` against the
+    /// currently-connected server, confirm it belongs to the same Immich
+    /// account, then swap it without re-onboarding — the index, journal,
+    /// runs, and run-history filter are all preserved. Surfaced from the
+    /// API-key sheet's "Replace key" affordance.
+    public var replaceAPIKey: @Sendable (_ newKey: String) async -> ReplaceKeyResult
+
     /// Drop the persisted session token (Keychain row deleted) and
     /// rebuild `ImmichClient` in API-key-only mode. After this, the
     /// sync coordinator falls back to the paginated `searchAllAssets`
@@ -1459,7 +1489,8 @@ public struct CairnAppActions: Sendable {
         trashMissedDeletions: @escaping @Sendable ([ServerAsset]) async throws -> Void = { _ in },
         simulateBackgroundRefresh: @escaping @Sendable () async -> Void = {},
         signInForSession: @escaping @Sendable (String, String) async -> SessionSignInResult = { _, _ in .success },
-        signOutSession: @escaping @Sendable () async -> Void = {}
+        signOutSession: @escaping @Sendable () async -> Void = {},
+        replaceAPIKey: @escaping @Sendable (String) async -> ReplaceKeyResult = { _ in .success }
     ) {
         self.requestSync = requestSync
         self.confirmTrash = confirmTrash
@@ -1506,6 +1537,7 @@ public struct CairnAppActions: Sendable {
         self.trashMissedDeletions = trashMissedDeletions
         self.simulateBackgroundRefresh = simulateBackgroundRefresh
         self.signInForSession = signInForSession
+        self.replaceAPIKey = replaceAPIKey
         self.signOutSession = signOutSession
     }
 

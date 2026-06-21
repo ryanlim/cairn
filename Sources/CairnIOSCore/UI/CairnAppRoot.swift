@@ -713,6 +713,7 @@ public struct CairnAppRoot: View {
                 onClearExclusions: { Task { await model.actions.clearExclusions() } },
                 onClearRecentServers: { Task { await model.actions.clearRecentServers() } },
                 onSignOut: { Task { await model.actions.signOut() } },
+                onReplaceAPIKey: { newKey in await model.actions.replaceAPIKey(newKey) },
                 onRescanLibrary: { Task { await model.actions.rescanLibrary() } },
                 onClearHashCache: { Task { await model.actions.clearHashCache() } },
                 onVerifyImputedChecksums: { Task { await model.actions.verifyImputedChecksums() } },
