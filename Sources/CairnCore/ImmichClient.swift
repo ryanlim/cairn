@@ -294,6 +294,16 @@ public struct ImmichClient: Sendable {
         return try JSONDecoder().decode(UserIdentity.self, from: data)
     }
 
+    /// `GET /api/server/version` → `{ major, minor, patch }`. Used to
+    /// surface a soft "newer than verified" advisory (see
+    /// `ImmichVersionSupport`); never gates functionality.
+    public func serverVersion() async throws -> ServerVersion {
+        let req = try makeRequest(method: "GET", path: "server/version")
+        let (data, resp) = try await session.data(for: req)
+        try Self.expectOK(resp, data: data)
+        return try JSONDecoder().decode(ServerVersion.self, from: data)
+    }
+
     /// Permissions cairn requires for full functionality. Declared once
     /// so the UI, bootstrap check, and documentation stay in sync.
     public static let requiredPermissions: [String] = [

@@ -108,6 +108,16 @@ public final class CairnAppModel {
     /// Populated at bootstrap and on verify; surfaces a banner on Status.
     public var missingPermissions: [String] = []
 
+    /// Immich server version, fetched best-effort by the bootstrap probe.
+    /// `nil` until read (or if the server doesn't answer /server/version).
+    public var serverVersion: ServerVersion?
+
+    /// Soft advisory when the server is outside the verified range
+    /// (currently: a newer major than cairn was validated against). `nil`
+    /// when the version is verified or unknown. Surfaced on the
+    /// Connection settings page — advisory only, never blocks.
+    public var serverVersionAdvisory: String?
+
     /// Live PhotoKit authorization outcome. `.full` is the canonical
     /// healthy state; `.limited` triggers the safety guards described
     /// in `AppDependencies.performLiveReconciliation` (forced `.strict`

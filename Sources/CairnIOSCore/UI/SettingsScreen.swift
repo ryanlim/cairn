@@ -38,6 +38,11 @@ public struct SettingsScreen: View {
     public let apiKeyMasked: String
     public let excludedCount: Int
     public let connectionStatus: ConnectionStatus
+    /// Immich server version + soft advisory (set when newer than the
+    /// version cairn was verified against). Both nil until the bootstrap
+    /// probe reads them, or on a server without /server/version.
+    public let serverVersion: ServerVersion?
+    public let serverVersionAdvisory: String?
     /// Triggers a re-ping of the configured server. Wired to a
     /// `.task` on the Connection sub-page so opening it always
     /// shows a fresh latency reading, and to other manual refresh
@@ -195,6 +200,8 @@ public struct SettingsScreen: View {
         apiKeyMasked: String,
         excludedCount: Int,
         connectionStatus: ConnectionStatus,
+        serverVersion: ServerVersion? = nil,
+        serverVersionAdvisory: String? = nil,
         onRefreshConnection: @escaping () -> Void = {},
         onOpenExcluded: @escaping () -> Void = {},
         onResetIndex: @escaping () -> Void = {},
@@ -235,6 +242,8 @@ public struct SettingsScreen: View {
         self.apiKeyMasked = apiKeyMasked
         self.excludedCount = excludedCount
         self.connectionStatus = connectionStatus
+        self.serverVersion = serverVersion
+        self.serverVersionAdvisory = serverVersionAdvisory
         self.onRefreshConnection = onRefreshConnection
         self.onOpenExcluded = onOpenExcluded
         self.onResetIndex = onResetIndex
@@ -1129,6 +1138,27 @@ public struct SettingsScreen: View {
                     )
                     RowDivider()
                     KeyValRow("Connection", value: { ConnectionPill(status: connectionStatus) })
+                    if let serverVersion {
+                        RowDivider()
+                        KeyValRow(
+                            "Server version",
+                            value: {
+                                Text(serverVersion.description)
+                                    .foregroundStyle(serverVersionAdvisory == nil ? t.textMuted : t.pendingInk)
+                            },
+                            mono: true
+                        )
+                        if let serverVersionAdvisory {
+                            // Soft advisory only — a newer Immich major than
+                            // cairn was verified against. Not a blocker.
+                            Text(serverVersionAdvisory)
+                                .font(.cairnScaled(size: 12))
+                                .foregroundStyle(t.pendingInk)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .padding(.horizontal, 14)
+                                .padding(.bottom, 10)
+                        }
+                    }
                     RowDivider()
                     // Email/password session sign-in lives here with the
                     // rest of server auth (URL + API key). The API key
