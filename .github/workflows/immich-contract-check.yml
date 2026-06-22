@@ -1,0 +1,75 @@
+name: Immich API contract check
+
+# cairn talks to Immich's REST API through a hand-rolled client, so cosmetic
+# upstream changes don't affect us — but a change to an endpoint we call or a
+# JSON shape we decode would. This job fetches the latest upstream OpenAPI spec
+# weekly and diffs the slice cairn actually depends on (see immich-contract/)
+# against the committed snapshot, opening an issue when that slice drifts. It's
+# the automated version of "did this Immich change break us?" — see
+# immich-contract/README.md.
+
+on:
+  schedule:
+    # Mondays 08:17 UTC. Off the hour to dodge the cron stampede.
+    - cron: "17 8 * * 1"
+  workflow_dispatch:
+  # Also run when the contract files themselves change, so a snapshot/manifest
+  # edit is validated against current upstream in the same PR.
+  pull_request:
+    paths:
+      - "immich-contract/**"
+      - ".github/workflows/immich-contract-check.yml"
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: immich-contract-check
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Fetch latest upstream Immich OpenAPI spec
+        run: |
+          curl -fsSL --retry 3 \
+            https://raw.githubusercontent.com/immich-app/immich/main/open-api/immich-openapi-specs.json \
+            -o /tmp/immich-spec.json
+          python3 -c "import json; print('upstream spec version:', json.load(open('/tmp/immich-spec.json')).get('info',{}).get('version'))"
+
+      - name: Diff cairn's API subset against upstream
+        id: check
+        run: |
+          set +e
+          python3 immich-contract/extract_contract.py check \
+            --spec /tmp/immich-spec.json \
+            --endpoints immich-contract/endpoints.json \
+            --snapshot immich-contract/contract-snapshot.json \
+            > /tmp/contract.out 2>&1
+          echo "exit=$?" >> "$GITHUB_OUTPUT"
+          cat /tmp/contract.out
+
+      - name: Open / update issue on drift
+        # Only on the scheduled / manual runs — on a PR the failed step itself
+        # is the signal, no issue needed.
+        if: steps.check.outputs.exit != '0' && github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          title="Immich API drift in cairn's endpoint subset"
+          # Cap the report so a huge diff doesn't blow the issue-body limit.
+          report=$(head -c 50000 /tmp/contract.out)
+          body=$(printf 'The weekly contract check found upstream changes to the Immich endpoints/schemas cairn depends on (exit %s).\n\nReview whether cairn needs a change. Once reconciled, refresh the baseline:\n\n```\npython3 immich-contract/extract_contract.py write \\\n  --spec <path-to-latest-immich-openapi-specs.json> \\\n  --endpoints immich-contract/endpoints.json \\\n  --snapshot immich-contract/contract-snapshot.json\n```\n\n<details><summary>Drift report</summary>\n\n```\n%s\n```\n\n</details>\n' "${{ steps.check.outputs.exit }}" "$report")
+          existing=$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            echo "Updating existing issue #$existing"
+            printf '%s' "$body" | gh issue comment "$existing" --body-file -
+          else
+            echo "Opening new issue"
+            printf '%s' "$body" | gh issue create --title "$title" --label "immich-api" --body-file - || \
+            printf '%s' "$body" | gh issue create --title "$title" --body-file -
+          fi

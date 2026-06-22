@@ -1,0 +1,24 @@
+{
+  "_comment": "The exact set of Immich OpenAPI operations cairn's ImmichClient calls. Source of truth for the scoped contract snapshot: extract_contract.py pulls each operation below (plus every schema it transitively references) out of the upstream spec and diffs it against contract-snapshot.json. Keep this in sync with Sources/CairnCore/ImmichClient.swift — when you add or drop an endpoint there, update this list and regenerate the snapshot. Paths are OpenAPI paths (no /api prefix; that's the server base path).",
+  "endpoints": [
+    { "method": "GET",    "path": "/api-keys/me",          "used_by": "apiKeyInfo (permission/scope check)" },
+    { "method": "GET",    "path": "/users/me",             "used_by": "usersMe (per-user partition identity)" },
+    { "method": "GET",    "path": "/server/ping",          "used_by": "ping (health check)" },
+    { "method": "GET",    "path": "/server/version",       "used_by": "serverVersion (supported-range warning)" },
+    { "method": "GET",    "path": "/assets/statistics",    "used_by": "assetStatistics (server asset count)" },
+    { "method": "GET",    "path": "/assets/{id}",          "used_by": "asset detail" },
+    { "method": "DELETE", "path": "/assets",               "used_by": "trash assets" },
+    { "method": "POST",   "path": "/search/metadata",      "used_by": "listAllAssets / search by filename" },
+    { "method": "POST",   "path": "/auth/login",           "used_by": "session sign-in (incremental sync)" },
+    { "method": "POST",   "path": "/auth/logout",          "used_by": "session sign-out" },
+    { "method": "GET",    "path": "/tags",                 "used_by": "list tags" },
+    { "method": "POST",   "path": "/tags",                 "used_by": "create run breadcrumb tag" },
+    { "method": "PUT",    "path": "/tags/assets",          "used_by": "bulk tag assets" },
+    { "method": "DELETE", "path": "/tags/{id}",            "used_by": "delete tag" },
+    { "method": "POST",   "path": "/trash/restore/assets", "used_by": "restore from Immich trash" },
+    { "method": "GET",    "path": "/sync/ack",             "used_by": "incremental sync ack state" },
+    { "method": "POST",   "path": "/sync/ack",             "used_by": "incremental sync ack" },
+    { "method": "DELETE", "path": "/sync/ack",             "used_by": "incremental sync ack reset" },
+    { "method": "POST",   "path": "/sync/stream",          "used_by": "incremental sync CDC stream" }
+  ]
+}
