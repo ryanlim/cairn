@@ -1,5 +1,7 @@
-0.4.2 (build 143) — consistent slider styling.
+0.4.2 (build 144) — server version shown in Connection settings.
 
-Small visual fix: the sliders in Settings drew their filled track in two different colors — most were green, but a few (Quarantine window, iCloud download limit) filled white, so one screen looked like it had two slider styles. Every slider now uses the same active-green fill. No behavior change.
+Settings → Connection now shows your Immich server's version. If your server is a newer major release than cairn has been verified against, you'll see a one-line heads-up there — advisory only, nothing is blocked, and cairn keeps working. It's just a hint to check for a cairn update if anything looks off.
 
-To test: Settings → Safety & limits — confirm the Quarantine window, iCloud download limit, and Never-touch ceiling sliders all fill with the same green.
+(Under the hood this build also adds a CI guardrail that watches Immich's API for changes to the specific endpoints cairn uses — no user-facing effect, but it's how we'll catch breaking server changes early. First run already confirmed the upcoming Immich 3.0 doesn't affect anything cairn relies on.)
+
+To test: Settings → Connection → check the "Server version" row matches your server. Everything else should behave exactly as before.
