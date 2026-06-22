@@ -1,0 +1,2964 @@
+{
+  "operations": {
+    "DELETE /assets": {
+      "description": "Deletes multiple assets at the same time.",
+      "operationId": "deleteAssets",
+      "parameters": [],
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/AssetBulkDeleteDto"
+            }
+          }
+        },
+        "required": true
+      },
+      "responses": {
+        "204": {
+          "description": ""
+        }
+      },
+      "security": [
+        {
+          "bearer": []
+        },
+        {
+          "cookie": []
+        },
+        {
+          "api_key": []
+        }
+      ],
+      "summary": "Delete assets",
+      "tags": [
+        "Assets"
+      ],
+      "x-immich-history": [
+        {
+          "state": "Added",
+          "version": "v1"
+        },
+        {
+          "state": "Beta",
+          "version": "v1"
+        },
+        {
+          "state": "Stable",
+          "version": "v2"
+        }
+      ],
+      "x-immich-permission": "asset.delete",
+      "x-immich-state": "Stable"
+    },
+    "DELETE /sync/ack": {
+      "description": "Delete specific synchronization acknowledgments.",
+      "operationId": "deleteSyncAck",
+      "parameters": [],
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/SyncAckDeleteDto"
+            }
+          }
+        },
+        "required": true
+      },
+      "responses": {
+        "204": {
+          "description": ""
+        }
+      },
+      "security": [
+        {
+          "bearer": []
+        },
+        {
+          "cookie": []
+        },
+        {
+          "api_key": []
+        }
+      ],
+      "summary": "Delete acknowledgements",
+      "tags": [
+        "Sync"
+      ],
+      "x-immich-history": [
+        {
+          "state": "Added",
+          "version": "v1"
+        },
+        {
+          "state": "Beta",
+          "version": "v1"
+        },
+        {
+          "state": "Stable",
+          "version": "v2"
+        }
+      ],
+      "x-immich-permission": "syncCheckpoint.delete",
+      "x-immich-state": "Stable"
+    },
+    "DELETE /tags/{id}": {
+      "description": "Delete a specific tag by its ID.",
+      "operationId": "deleteTag",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+            "type": "string"
+          }
+        }
+      ],
+      "responses": {
+        "204": {
+          "description": ""
+        }
+      },
+      "security": [
+        {
+          "bearer": []
+        },
+        {
+          "cookie": []
+        },
+        {
+          "api_key": []
+        }
+      ],
+      "summary": "Delete a tag",
+      "tags": [
+        "Tags"
+      ],
+      "x-immich-history": [
+        {
+          "state": "Added",
+          "version": "v1"
+        },
+        {
+          "state": "Beta",
+          "version": "v1"
+        },
+        {
+          "state": "Stable",
+          "version": "v2"
+        }
+      ],
+      "x-immich-permission": "tag.delete",
+      "x-immich-state": "Stable"
+    },
+    "GET /api-keys/me": {
+      "description": "Retrieve the API key that is used to access this endpoint.",
+      "operationId": "getMyApiKey",
+      "parameters": [],
+      "responses": {
+        "200": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApiKeyResponseDto"
+              }
+            }
+          },
+          "description": ""
+        }
+      },
+      "security": [
+        {
+          "bearer": []
+        },
+        {
+          "cookie": []
+        },
+        {
+          "api_key": []
+        }
+      ],
+      "summary": "Retrieve the current API key",
+      "tags": [
+        "API keys"
+      ],
+      "x-immich-history": [
+        {
+          "state": "Added",
+          "version": "v1"
+        },
+        {
+          "state": "Beta",
+          "version": "v1"
+        },
+        {
+          "state": "Stable",
+          "version": "v2"
+        }
+      ],
+      "x-immich-state": "Stable"
+    },
+    "GET /assets/statistics": {
+      "description": "Retrieve various statistics about the assets owned by the authenticated user.",
+      "operationId": "getAssetStatistics",
+      "parameters": [
+        {
+          "description": "Filter by favorite status",
+          "in": "query",
+          "name": "isFavorite",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        },
+        {
+          "description": "Filter by trash status",
+          "in": "query",
+          "name": "isTrashed",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        },
+        {
+          "in": "query",
+          "name": "visibility",
+          "required": false,
+          "schema": {
+            "$ref": "#/components/schemas/AssetVisibility"
+          }
+        }
+      ],
+      "responses": {
+        "200": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssetStatsResponseDto"
+              }
+            }
+          },
+          "description": ""
+        }
+      },
+      "security": [
+        {
+          "bearer": []
+        },
+        {
+          "cookie": []
+        },
+        {
+          "api_key": []
+        }
+      ],
+      "summary": "Get asset statistics",
+      "tags": [
+        "Assets"
+      ],
+      "x-immich-history": [
+        {
+          "state": "Added",
+          "version": "v1"
+        },
+        {
+          "state": "Beta",
+          "version": "v1"
+        },
+        {
+          "state": "Stable",
+          "version": "v2"
+        }
+      ],
+      "x-immich-permission": "asset.statistics",
+      "x-immich-state": "Stable"
+    },
+    "GET /assets/{id}": {
+      "description": "Retrieve detailed information about a specific asset.",
+      "operationId": "getAssetInfo",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+            "type": "string"
+          }
+        },
+        {
+          "in": "query",
+          "name": "key",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "query",
+          "name": "slug",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "responses": {
+        "200": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssetResponseDto"
+              }
+            }
+          },
+          "description": ""
+        }
+      },
+      "security": [
+        {
+          "bearer": []
+        },
+        {
+          "cookie": []
+        },
+        {
+          "api_key": []
+        }
+      ],
+      "summary": "Retrieve an asset",
+      "tags": [
+        "Assets"
+      ],
+      "x-immich-history": [
+        {
+          "state": "Added",
+          "version": "v1"
+        },
+        {
+          "state": "Beta",
+          "version": "v1"
+        },
+        {
+          "state": "Stable",
+          "version": "v2"
+        }
+      ],
+      "x-immich-permission": "asset.read",
+      "x-immich-state": "Stable"
+    },
+    "GET /server/ping": {
+      "description": "Pong",
+      "operationId": "pingServer",
+      "parameters": [],
+      "responses": {
+        "200": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ServerPingResponse"
+              }
+            }
+          },
+          "description": ""
+        }
+      },
+      "summary": "Ping",
+      "tags": [
+        "Server"
+      ],
+      "x-immich-history": [
+        {
+          "state": "Added",
+          "version": "v1"
+        },
+        {
+          "state": "Beta",
+          "version": "v1"
+        },
+        {
+          "state": "Stable",
+          "version": "v2"
+        }
+      ],
+      "x-immich-state": "Stable"
+    },
+    "GET /server/version": {
+      "description": "Retrieve the current server version in semantic versioning (semver) format.",
+      "operationId": "getServerVersion",
+      "parameters": [],
+      "responses": {
+        "200": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ServerVersionResponseDto"
+              }
+            }
+          },
+          "description": ""
+        }
+      },
+      "summary": "Get server version",
+      "tags": [
+        "Server"
+      ],
+      "x-immich-history": [
+        {
+          "state": "Added",
+          "version": "v1"
+        },
+        {
+          "state": "Beta",
+          "version": "v1"
+        },
+        {
+          "state": "Stable",
+          "version": "v2"
+        }
+      ],
+      "x-immich-state": "Stable"
+    },
+    "GET /sync/ack": {
+      "description": "Retrieve the synchronization acknowledgments for the current session.",
+      "operationId": "getSyncAck",
+      "parameters": [],
+      "responses": {
+        "200": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "items": {
+                  "$ref": "#/components/schemas/SyncAckDto"
+                },
+                "type": "array"
+              }
+            }
+          },
+          "description": ""
+        }
+      },
+      "security": [
+        {
+          "bearer": []
+        },
+        {
+          "cookie": []
+        },
+        {
+          "api_key": []
+        }
+      ],
+      "summary": "Retrieve acknowledgements",
+      "tags": [
+        "Sync"
+      ],
+      "x-immich-history": [
+        {
+          "state": "Added",
+          "version": "v1"
+        },
+        {
+          "state": "Beta",
+          "version": "v1"
+        },
+        {
+          "state": "Stable",
+          "version": "v2"
+        }
+      ],
+      "x-immich-permission": "syncCheckpoint.read",
+      "x-immich-state": "Stable"
+    },
+    "GET /tags": {
+      "description": "Retrieve a list of all tags.",
+      "operationId": "getAllTags",
+      "parameters": [],
+      "responses": {
+        "200": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "items": {
+                  "$ref": "#/components/schemas/TagResponseDto"
+                },
+                "type": "array"
+              }
+            }
+          },
+          "description": ""
+        }
+      },
+      "security": [
+        {
+          "bearer": []
+        },
+        {
+          "cookie": []
+        },
+        {
+          "api_key": []
+        }
+      ],
+      "summary": "Retrieve tags",
+      "tags": [
+        "Tags"
+      ],
+      "x-immich-history": [
+        {
+          "state": "Added",
+          "version": "v1"
+        },
+        {
+          "state": "Beta",
+          "version": "v1"
+        },
+        {
+          "state": "Stable",
+          "version": "v2"
+        }
+      ],
+      "x-immich-permission": "tag.read",
+      "x-immich-state": "Stable"
+    },
+    "GET /users/me": {
+      "description": "Retrieve information about the user making the API request.",
+      "operationId": "getMyUser",
+      "parameters": [],
+      "responses": {
+        "200": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UserAdminResponseDto"
+              }
+            }
+          },
+          "description": ""
+        }
+      },
+      "security": [
+        {
+          "bearer": []
+        },
+        {
+          "cookie": []
+        },
+        {
+          "api_key": []
+        }
+      ],
+      "summary": "Get current user",
+      "tags": [
+        "Users"
+      ],
+      "x-immich-history": [
+        {
+          "state": "Added",
+          "version": "v1"
+        },
+        {
+          "state": "Beta",
+          "version": "v1"
+        },
+        {
+          "state": "Stable",
+          "version": "v2"
+        }
+      ],
+      "x-immich-permission": "user.read",
+      "x-immich-state": "Stable"
+    },
+    "POST /auth/login": {
+      "description": "Login with username and password and receive a session token.",
+      "operationId": "login",
+      "parameters": [],
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/LoginCredentialDto"
+            }
+          }
+        },
+        "required": true
+      },
+      "responses": {
+        "201": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginResponseDto"
+              }
+            }
+          },
+          "description": ""
+        }
+      },
+      "summary": "Login",
+      "tags": [
+        "Authentication"
+      ],
+      "x-immich-history": [
+        {
+          "state": "Added",
+          "version": "v1"
+        },
+        {
+          "state": "Beta",
+          "version": "v1"
+        },
+        {
+          "state": "Stable",
+          "version": "v2"
+        }
+      ],
+      "x-immich-state": "Stable"
+    },
+    "POST /auth/logout": {
+      "description": "Logout the current user and invalidate the session token.",
+      "operationId": "logout",
+      "parameters": [],
+      "responses": {
+        "200": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LogoutResponseDto"
+              }
+            }
+          },
+          "description": ""
+        }
+      },
+      "security": [
+        {
+          "bearer": []
+        },
+        {
+          "cookie": []
+        },
+        {
+          "api_key": []
+        }
+      ],
+      "summary": "Logout",
+      "tags": [
+        "Authentication"
+      ],
+      "x-immich-history": [
+        {
+          "state": "Added",
+          "version": "v1"
+        },
+        {
+          "state": "Beta",
+          "version": "v1"
+        },
+        {
+          "state": "Stable",
+          "version": "v2"
+        }
+      ],
+      "x-immich-state": "Stable"
+    },
+    "POST /search/metadata": {
+      "description": "Search for assets based on various metadata criteria.",
+      "operationId": "searchAssets",
+      "parameters": [],
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/MetadataSearchDto"
+            }
+          }
+        },
+        "required": true
+      },
+      "responses": {
+        "200": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SearchResponseDto"
+              }
+            }
+          },
+          "description": ""
+        }
+      },
+      "security": [
+        {
+          "bearer": []
+        },
+        {
+          "cookie": []
+        },
+        {
+          "api_key": []
+        }
+      ],
+      "summary": "Search assets by metadata",
+      "tags": [
+        "Search"
+      ],
+      "x-immich-history": [
+        {
+          "state": "Added",
+          "version": "v1"
+        },
+        {
+          "state": "Beta",
+          "version": "v1"
+        },
+        {
+          "state": "Stable",
+          "version": "v2"
+        }
+      ],
+      "x-immich-permission": "asset.read",
+      "x-immich-state": "Stable"
+    },
+    "POST /sync/ack": {
+      "description": "Send a list of synchronization acknowledgements to confirm that the latest changes have been received.",
+      "operationId": "sendSyncAck",
+      "parameters": [],
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/SyncAckSetDto"
+            }
+          }
+        },
+        "required": true
+      },
+      "responses": {
+        "204": {
+          "description": ""
+        }
+      },
+      "security": [
+        {
+          "bearer": []
+        },
+        {
+          "cookie": []
+        },
+        {
+          "api_key": []
+        }
+      ],
+      "summary": "Acknowledge changes",
+      "tags": [
+        "Sync"
+      ],
+      "x-immich-history": [
+        {
+          "state": "Added",
+          "version": "v1"
+        },
+        {
+          "state": "Beta",
+          "version": "v1"
+        },
+        {
+          "state": "Stable",
+          "version": "v2"
+        }
+      ],
+      "x-immich-permission": "syncCheckpoint.update",
+      "x-immich-state": "Stable"
+    },
+    "POST /sync/stream": {
+      "description": "Retrieve a JSON lines streamed response of changes for synchronization. This endpoint is used by the mobile app to efficiently stay up to date with changes.",
+      "operationId": "getSyncStream",
+      "parameters": [],
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/SyncStreamDto"
+            }
+          }
+        },
+        "required": true
+      },
+      "responses": {
+        "200": {
+          "description": ""
+        }
+      },
+      "security": [
+        {
+          "bearer": []
+        },
+        {
+          "cookie": []
+        },
+        {
+          "api_key": []
+        }
+      ],
+      "summary": "Stream sync changes",
+      "tags": [
+        "Sync"
+      ],
+      "x-immich-history": [
+        {
+          "state": "Added",
+          "version": "v1"
+        },
+        {
+          "state": "Beta",
+          "version": "v1"
+        },
+        {
+          "state": "Stable",
+          "version": "v2"
+        }
+      ],
+      "x-immich-permission": "sync.stream",
+      "x-immich-state": "Stable"
+    },
+    "POST /tags": {
+      "description": "Create a new tag by providing a name and optional color.",
+      "operationId": "createTag",
+      "parameters": [],
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/TagCreateDto"
+            }
+          }
+        },
+        "required": true
+      },
+      "responses": {
+        "201": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TagResponseDto"
+              }
+            }
+          },
+          "description": ""
+        }
+      },
+      "security": [
+        {
+          "bearer": []
+        },
+        {
+          "cookie": []
+        },
+        {
+          "api_key": []
+        }
+      ],
+      "summary": "Create a tag",
+      "tags": [
+        "Tags"
+      ],
+      "x-immich-history": [
+        {
+          "state": "Added",
+          "version": "v1"
+        },
+        {
+          "state": "Beta",
+          "version": "v1"
+        },
+        {
+          "state": "Stable",
+          "version": "v2"
+        }
+      ],
+      "x-immich-permission": "tag.create",
+      "x-immich-state": "Stable"
+    },
+    "POST /trash/restore/assets": {
+      "description": "Restore specific assets from the trash.",
+      "operationId": "restoreAssets",
+      "parameters": [],
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/BulkIdsDto"
+            }
+          }
+        },
+        "required": true
+      },
+      "responses": {
+        "200": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TrashResponseDto"
+              }
+            }
+          },
+          "description": ""
+        }
+      },
+      "security": [
+        {
+          "bearer": []
+        },
+        {
+          "cookie": []
+        },
+        {
+          "api_key": []
+        }
+      ],
+      "summary": "Restore assets",
+      "tags": [
+        "Trash"
+      ],
+      "x-immich-history": [
+        {
+          "state": "Added",
+          "version": "v1"
+        },
+        {
+          "state": "Beta",
+          "version": "v1"
+        },
+        {
+          "state": "Stable",
+          "version": "v2"
+        }
+      ],
+      "x-immich-permission": "asset.delete",
+      "x-immich-state": "Stable"
+    },
+    "PUT /tags/assets": {
+      "description": "Add multiple tags to multiple assets in a single request.",
+      "operationId": "bulkTagAssets",
+      "parameters": [],
+      "requestBody": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/TagBulkAssetsDto"
+            }
+          }
+        },
+        "required": true
+      },
+      "responses": {
+        "200": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TagBulkAssetsResponseDto"
+              }
+            }
+          },
+          "description": ""
+        }
+      },
+      "security": [
+        {
+          "bearer": []
+        },
+        {
+          "cookie": []
+        },
+        {
+          "api_key": []
+        }
+      ],
+      "summary": "Tag assets",
+      "tags": [
+        "Tags"
+      ],
+      "x-immich-history": [
+        {
+          "state": "Added",
+          "version": "v1"
+        },
+        {
+          "state": "Beta",
+          "version": "v1"
+        },
+        {
+          "state": "Stable",
+          "version": "v2"
+        }
+      ],
+      "x-immich-permission": "tag.asset",
+      "x-immich-state": "Stable"
+    }
+  },
+  "schemas": {
+    "AlbumResponseDto": {
+      "properties": {
+        "albumName": {
+          "description": "Album name",
+          "type": "string"
+        },
+        "albumThumbnailAssetId": {
+          "description": "Thumbnail asset ID",
+          "nullable": true,
+          "type": "string"
+        },
+        "albumUsers": {
+          "items": {
+            "$ref": "#/components/schemas/AlbumUserResponseDto"
+          },
+          "type": "array"
+        },
+        "assetCount": {
+          "description": "Number of assets",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "contributorCounts": {
+          "items": {
+            "$ref": "#/components/schemas/ContributorCountResponseDto"
+          },
+          "type": "array"
+        },
+        "createdAt": {
+          "description": "Creation date",
+          "format": "date-time",
+          "type": "string"
+        },
+        "description": {
+          "description": "Album description",
+          "type": "string"
+        },
+        "endDate": {
+          "description": "End date (latest asset)",
+          "format": "date-time",
+          "type": "string"
+        },
+        "hasSharedLink": {
+          "description": "Has shared link",
+          "type": "boolean"
+        },
+        "id": {
+          "description": "Album ID",
+          "type": "string"
+        },
+        "isActivityEnabled": {
+          "description": "Activity feed enabled",
+          "type": "boolean"
+        },
+        "lastModifiedAssetTimestamp": {
+          "description": "Last modified asset timestamp",
+          "format": "date-time",
+          "type": "string"
+        },
+        "order": {
+          "$ref": "#/components/schemas/AssetOrder"
+        },
+        "owner": {
+          "$ref": "#/components/schemas/UserResponseDto"
+        },
+        "ownerId": {
+          "description": "Owner user ID",
+          "type": "string"
+        },
+        "shared": {
+          "description": "Is shared album",
+          "type": "boolean"
+        },
+        "startDate": {
+          "description": "Start date (earliest asset)",
+          "format": "date-time",
+          "type": "string"
+        },
+        "updatedAt": {
+          "description": "Last update date",
+          "format": "date-time",
+          "type": "string"
+        }
+      },
+      "required": [
+        "albumName",
+        "albumThumbnailAssetId",
+        "albumUsers",
+        "assetCount",
+        "createdAt",
+        "description",
+        "hasSharedLink",
+        "id",
+        "isActivityEnabled",
+        "owner",
+        "ownerId",
+        "shared",
+        "updatedAt"
+      ],
+      "type": "object"
+    },
+    "AlbumUserResponseDto": {
+      "properties": {
+        "role": {
+          "$ref": "#/components/schemas/AlbumUserRole"
+        },
+        "user": {
+          "$ref": "#/components/schemas/UserResponseDto"
+        }
+      },
+      "required": [
+        "role",
+        "user"
+      ],
+      "type": "object"
+    },
+    "AlbumUserRole": {
+      "description": "Album user role",
+      "enum": [
+        "editor",
+        "viewer"
+      ],
+      "type": "string"
+    },
+    "ApiKeyResponseDto": {
+      "properties": {
+        "createdAt": {
+          "description": "Creation date",
+          "example": "2024-01-01T00:00:00.000Z",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
+          "type": "string"
+        },
+        "id": {
+          "description": "API key ID",
+          "type": "string"
+        },
+        "name": {
+          "description": "API key name",
+          "type": "string"
+        },
+        "permissions": {
+          "description": "List of permissions",
+          "items": {
+            "$ref": "#/components/schemas/Permission"
+          },
+          "type": "array"
+        },
+        "updatedAt": {
+          "description": "Last update date",
+          "example": "2024-01-01T00:00:00.000Z",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "createdAt",
+        "id",
+        "name",
+        "permissions",
+        "updatedAt"
+      ],
+      "type": "object"
+    },
+    "AssetBulkDeleteDto": {
+      "properties": {
+        "force": {
+          "description": "Force delete even if in use",
+          "type": "boolean"
+        },
+        "ids": {
+          "description": "IDs to process",
+          "items": {
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "ids"
+      ],
+      "type": "object"
+    },
+    "AssetFaceWithoutPersonResponseDto": {
+      "description": "Asset face without person",
+      "properties": {
+        "boundingBoxX1": {
+          "description": "Bounding box X1 coordinate",
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        },
+        "boundingBoxX2": {
+          "description": "Bounding box X2 coordinate",
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        },
+        "boundingBoxY1": {
+          "description": "Bounding box Y1 coordinate",
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        },
+        "boundingBoxY2": {
+          "description": "Bounding box Y2 coordinate",
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        },
+        "id": {
+          "description": "Face ID",
+          "format": "uuid",
+          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+          "type": "string"
+        },
+        "imageHeight": {
+          "description": "Image height in pixels",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "imageWidth": {
+          "description": "Image width in pixels",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sourceType": {
+          "$ref": "#/components/schemas/SourceType"
+        }
+      },
+      "required": [
+        "boundingBoxX1",
+        "boundingBoxX2",
+        "boundingBoxY1",
+        "boundingBoxY2",
+        "id",
+        "imageHeight",
+        "imageWidth"
+      ],
+      "type": "object"
+    },
+    "AssetOrder": {
+      "description": "Asset sort order",
+      "enum": [
+        "asc",
+        "desc"
+      ],
+      "type": "string"
+    },
+    "AssetResponseDto": {
+      "properties": {
+        "checksum": {
+          "description": "Base64 encoded SHA1 hash",
+          "type": "string"
+        },
+        "createdAt": {
+          "description": "The UTC timestamp when the asset was originally uploaded to Immich.",
+          "format": "date-time",
+          "type": "string"
+        },
+        "duplicateId": {
+          "description": "Duplicate group ID",
+          "nullable": true,
+          "type": "string"
+        },
+        "duration": {
+          "description": "Video/gif duration in hh:mm:ss.SSS format (null for static images)",
+          "nullable": true,
+          "type": "string"
+        },
+        "exifInfo": {
+          "$ref": "#/components/schemas/ExifResponseDto"
+        },
+        "fileCreatedAt": {
+          "description": "The actual UTC timestamp when the file was created/captured, preserving timezone information. This is the authoritative timestamp for chronological sorting within timeline groups. Combined with timezone data, this can be used to determine the exact moment the photo was taken.",
+          "format": "date-time",
+          "type": "string"
+        },
+        "fileModifiedAt": {
+          "description": "The UTC timestamp when the file was last modified on the filesystem. This reflects the last time the physical file was changed, which may be different from when the photo was originally taken.",
+          "format": "date-time",
+          "type": "string"
+        },
+        "hasMetadata": {
+          "description": "Whether asset has metadata",
+          "type": "boolean"
+        },
+        "height": {
+          "description": "Asset height",
+          "minimum": 0,
+          "nullable": true,
+          "type": "number"
+        },
+        "id": {
+          "description": "Asset ID",
+          "type": "string"
+        },
+        "isArchived": {
+          "description": "Is archived",
+          "type": "boolean"
+        },
+        "isEdited": {
+          "description": "Is edited",
+          "type": "boolean",
+          "x-immich-history": [
+            {
+              "state": "Added",
+              "version": "v2.5.0"
+            },
+            {
+              "state": "Beta",
+              "version": "v2.5.0"
+            }
+          ],
+          "x-immich-state": "Beta"
+        },
+        "isFavorite": {
+          "description": "Is favorite",
+          "type": "boolean"
+        },
+        "isOffline": {
+          "description": "Is offline",
+          "type": "boolean"
+        },
+        "isTrashed": {
+          "description": "Is trashed",
+          "type": "boolean"
+        },
+        "libraryId": {
+          "description": "Library ID",
+          "format": "uuid",
+          "nullable": true,
+          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+          "type": "string",
+          "x-immich-history": [
+            {
+              "state": "Added",
+              "version": "v1"
+            },
+            {
+              "state": "Deprecated",
+              "version": "v1"
+            }
+          ],
+          "x-immich-state": "Deprecated"
+        },
+        "livePhotoVideoId": {
+          "description": "Live photo video ID",
+          "nullable": true,
+          "type": "string"
+        },
+        "localDateTime": {
+          "description": "The local date and time when the photo/video was taken, derived from EXIF metadata. This represents the photographer's local time regardless of timezone, stored as a timezone-agnostic timestamp. Used for timeline grouping by \"local\" days and months.",
+          "format": "date-time",
+          "type": "string"
+        },
+        "originalFileName": {
+          "description": "Original file name",
+          "type": "string"
+        },
+        "originalMimeType": {
+          "description": "Original MIME type",
+          "type": "string"
+        },
+        "originalPath": {
+          "description": "Original file path",
+          "type": "string"
+        },
+        "owner": {
+          "$ref": "#/components/schemas/UserResponseDto"
+        },
+        "ownerId": {
+          "description": "Owner user ID",
+          "type": "string"
+        },
+        "people": {
+          "items": {
+            "$ref": "#/components/schemas/PersonWithFacesResponseDto"
+          },
+          "type": "array"
+        },
+        "resized": {
+          "description": "Is resized",
+          "type": "boolean",
+          "x-immich-history": [
+            {
+              "state": "Added",
+              "version": "v1"
+            },
+            {
+              "state": "Deprecated",
+              "version": "v1.113.0"
+            }
+          ],
+          "x-immich-state": "Deprecated"
+        },
+        "stack": {
+          "allOf": [
+            {
+              "$ref": "#/components/schemas/AssetStackResponseDto"
+            }
+          ],
+          "nullable": true
+        },
+        "tags": {
+          "items": {
+            "$ref": "#/components/schemas/TagResponseDto"
+          },
+          "type": "array"
+        },
+        "thumbhash": {
+          "description": "Thumbhash for thumbnail generation (base64) also used as the c query param for thumbnail cache busting.",
+          "nullable": true,
+          "type": "string"
+        },
+        "type": {
+          "$ref": "#/components/schemas/AssetTypeEnum"
+        },
+        "unassignedFaces": {
+          "items": {
+            "$ref": "#/components/schemas/AssetFaceWithoutPersonResponseDto"
+          },
+          "type": "array"
+        },
+        "updatedAt": {
+          "description": "The UTC timestamp when the asset record was last updated in the database. This is automatically maintained by the database and reflects when any field in the asset was last modified.",
+          "format": "date-time",
+          "type": "string"
+        },
+        "visibility": {
+          "$ref": "#/components/schemas/AssetVisibility"
+        },
+        "width": {
+          "description": "Asset width",
+          "minimum": 0,
+          "nullable": true,
+          "type": "number"
+        }
+      },
+      "required": [
+        "checksum",
+        "createdAt",
+        "duration",
+        "fileCreatedAt",
+        "fileModifiedAt",
+        "hasMetadata",
+        "height",
+        "id",
+        "isArchived",
+        "isEdited",
+        "isFavorite",
+        "isOffline",
+        "isTrashed",
+        "localDateTime",
+        "originalFileName",
+        "originalPath",
+        "ownerId",
+        "thumbhash",
+        "type",
+        "updatedAt",
+        "visibility",
+        "width"
+      ],
+      "type": "object"
+    },
+    "AssetStackResponseDto": {
+      "properties": {
+        "assetCount": {
+          "description": "Number of assets in stack",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "id": {
+          "description": "Stack ID",
+          "type": "string"
+        },
+        "primaryAssetId": {
+          "description": "Primary asset ID",
+          "type": "string"
+        }
+      },
+      "required": [
+        "assetCount",
+        "id",
+        "primaryAssetId"
+      ],
+      "type": "object"
+    },
+    "AssetStatsResponseDto": {
+      "properties": {
+        "images": {
+          "description": "Number of images",
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        },
+        "total": {
+          "description": "Total number of assets",
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        },
+        "videos": {
+          "description": "Number of videos",
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "images",
+        "total",
+        "videos"
+      ],
+      "type": "object"
+    },
+    "AssetTypeEnum": {
+      "description": "Asset type",
+      "enum": [
+        "IMAGE",
+        "VIDEO",
+        "AUDIO",
+        "OTHER"
+      ],
+      "type": "string"
+    },
+    "AssetVisibility": {
+      "description": "Asset visibility",
+      "enum": [
+        "archive",
+        "timeline",
+        "hidden",
+        "locked"
+      ],
+      "type": "string"
+    },
+    "BulkIdsDto": {
+      "properties": {
+        "ids": {
+          "description": "IDs to process",
+          "items": {
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "ids"
+      ],
+      "type": "object"
+    },
+    "ContributorCountResponseDto": {
+      "properties": {
+        "assetCount": {
+          "description": "Number of assets contributed",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "userId": {
+          "description": "User ID",
+          "type": "string"
+        }
+      },
+      "required": [
+        "assetCount",
+        "userId"
+      ],
+      "type": "object"
+    },
+    "ExifResponseDto": {
+      "description": "EXIF response",
+      "properties": {
+        "city": {
+          "default": null,
+          "description": "City name",
+          "nullable": true,
+          "type": "string"
+        },
+        "country": {
+          "default": null,
+          "description": "Country name",
+          "nullable": true,
+          "type": "string"
+        },
+        "dateTimeOriginal": {
+          "default": null,
+          "description": "Original date/time",
+          "format": "date-time",
+          "nullable": true,
+          "type": "string"
+        },
+        "description": {
+          "default": null,
+          "description": "Image description",
+          "nullable": true,
+          "type": "string"
+        },
+        "exifImageHeight": {
+          "default": null,
+          "description": "Image height in pixels",
+          "minimum": 0,
+          "nullable": true,
+          "type": "number"
+        },
+        "exifImageWidth": {
+          "default": null,
+          "description": "Image width in pixels",
+          "minimum": 0,
+          "nullable": true,
+          "type": "number"
+        },
+        "exposureTime": {
+          "default": null,
+          "description": "Exposure time",
+          "nullable": true,
+          "type": "string"
+        },
+        "fNumber": {
+          "default": null,
+          "description": "F-number (aperture)",
+          "nullable": true,
+          "type": "number"
+        },
+        "fileSizeInByte": {
+          "default": null,
+          "description": "File size in bytes",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "nullable": true,
+          "type": "integer"
+        },
+        "focalLength": {
+          "default": null,
+          "description": "Focal length in mm",
+          "nullable": true,
+          "type": "number"
+        },
+        "iso": {
+          "default": null,
+          "description": "ISO sensitivity",
+          "nullable": true,
+          "type": "number"
+        },
+        "latitude": {
+          "default": null,
+          "description": "GPS latitude",
+          "nullable": true,
+          "type": "number"
+        },
+        "lensModel": {
+          "default": null,
+          "description": "Lens model",
+          "nullable": true,
+          "type": "string"
+        },
+        "longitude": {
+          "default": null,
+          "description": "GPS longitude",
+          "nullable": true,
+          "type": "number"
+        },
+        "make": {
+          "default": null,
+          "description": "Camera make",
+          "nullable": true,
+          "type": "string"
+        },
+        "model": {
+          "default": null,
+          "description": "Camera model",
+          "nullable": true,
+          "type": "string"
+        },
+        "modifyDate": {
+          "default": null,
+          "description": "Modification date/time",
+          "format": "date-time",
+          "nullable": true,
+          "type": "string"
+        },
+        "orientation": {
+          "default": null,
+          "description": "Image orientation",
+          "nullable": true,
+          "type": "string"
+        },
+        "projectionType": {
+          "default": null,
+          "description": "Projection type",
+          "nullable": true,
+          "type": "string"
+        },
+        "rating": {
+          "default": null,
+          "description": "Rating",
+          "nullable": true,
+          "type": "number"
+        },
+        "state": {
+          "default": null,
+          "description": "State/province name",
+          "nullable": true,
+          "type": "string"
+        },
+        "timeZone": {
+          "default": null,
+          "description": "Time zone",
+          "nullable": true,
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "LoginCredentialDto": {
+      "properties": {
+        "email": {
+          "description": "User email",
+          "example": "testuser@email.com",
+          "format": "email",
+          "pattern": "^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$",
+          "type": "string"
+        },
+        "password": {
+          "description": "User password",
+          "example": "password",
+          "type": "string"
+        }
+      },
+      "required": [
+        "email",
+        "password"
+      ],
+      "type": "object"
+    },
+    "LoginResponseDto": {
+      "properties": {
+        "accessToken": {
+          "description": "Access token",
+          "type": "string"
+        },
+        "isAdmin": {
+          "description": "Is admin user",
+          "type": "boolean"
+        },
+        "isOnboarded": {
+          "description": "Is onboarded",
+          "type": "boolean"
+        },
+        "name": {
+          "description": "User name",
+          "type": "string"
+        },
+        "profileImagePath": {
+          "description": "Profile image path",
+          "type": "string"
+        },
+        "shouldChangePassword": {
+          "description": "Should change password",
+          "type": "boolean"
+        },
+        "userEmail": {
+          "description": "User email",
+          "format": "email",
+          "pattern": "^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$",
+          "type": "string"
+        },
+        "userId": {
+          "description": "User ID",
+          "type": "string"
+        }
+      },
+      "required": [
+        "accessToken",
+        "isAdmin",
+        "isOnboarded",
+        "name",
+        "profileImagePath",
+        "shouldChangePassword",
+        "userEmail",
+        "userId"
+      ],
+      "type": "object"
+    },
+    "LogoutResponseDto": {
+      "properties": {
+        "redirectUri": {
+          "description": "Redirect URI",
+          "type": "string"
+        },
+        "successful": {
+          "description": "Logout successful",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "redirectUri",
+        "successful"
+      ],
+      "type": "object"
+    },
+    "MetadataSearchDto": {
+      "properties": {
+        "albumIds": {
+          "description": "Filter by album IDs",
+          "items": {
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "checksum": {
+          "description": "Filter by file checksum",
+          "type": "string"
+        },
+        "city": {
+          "description": "Filter by city name",
+          "nullable": true,
+          "type": "string"
+        },
+        "country": {
+          "description": "Filter by country name",
+          "nullable": true,
+          "type": "string"
+        },
+        "createdAfter": {
+          "description": "Filter by creation date (after)",
+          "example": "2024-01-01T00:00:00.000Z",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
+          "type": "string"
+        },
+        "createdBefore": {
+          "description": "Filter by creation date (before)",
+          "example": "2024-01-01T00:00:00.000Z",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
+          "type": "string"
+        },
+        "description": {
+          "description": "Filter by description text",
+          "type": "string"
+        },
+        "encodedVideoPath": {
+          "description": "Filter by encoded video file path",
+          "type": "string"
+        },
+        "id": {
+          "description": "Filter by asset ID",
+          "format": "uuid",
+          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+          "type": "string"
+        },
+        "isEncoded": {
+          "description": "Filter by encoded status",
+          "type": "boolean"
+        },
+        "isFavorite": {
+          "description": "Filter by favorite status",
+          "type": "boolean"
+        },
+        "isMotion": {
+          "description": "Filter by motion photo status",
+          "type": "boolean"
+        },
+        "isNotInAlbum": {
+          "description": "Filter assets not in any album",
+          "type": "boolean"
+        },
+        "isOffline": {
+          "description": "Filter by offline status",
+          "type": "boolean"
+        },
+        "lensModel": {
+          "description": "Filter by lens model",
+          "nullable": true,
+          "type": "string"
+        },
+        "libraryId": {
+          "description": "Library ID to filter by",
+          "format": "uuid",
+          "nullable": true,
+          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+          "type": "string"
+        },
+        "make": {
+          "description": "Filter by camera make",
+          "nullable": true,
+          "type": "string"
+        },
+        "model": {
+          "description": "Filter by camera model",
+          "nullable": true,
+          "type": "string"
+        },
+        "ocr": {
+          "description": "Filter by OCR text content",
+          "type": "string"
+        },
+        "order": {
+          "$ref": "#/components/schemas/AssetOrder",
+          "default": "desc",
+          "description": "Sort order"
+        },
+        "originalFileName": {
+          "description": "Filter by original file name",
+          "type": "string"
+        },
+        "originalPath": {
+          "description": "Filter by original file path",
+          "type": "string"
+        },
+        "page": {
+          "description": "Page number",
+          "minimum": 1,
+          "type": "number"
+        },
+        "personIds": {
+          "description": "Filter by person IDs",
+          "items": {
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "previewPath": {
+          "description": "Filter by preview file path",
+          "type": "string"
+        },
+        "rating": {
+          "description": "Filter by rating [1-5], or null for unrated",
+          "maximum": 5,
+          "minimum": -1,
+          "nullable": true,
+          "type": "number",
+          "x-immich-history": [
+            {
+              "state": "Added",
+              "version": "v1"
+            },
+            {
+              "state": "Stable",
+              "version": "v2"
+            },
+            {
+              "description": "Using -1 as a rating is deprecated and will be removed in the next major version.",
+              "state": "Updated",
+              "version": "v2.6.0"
+            }
+          ],
+          "x-immich-state": "Stable"
+        },
+        "size": {
+          "description": "Number of results to return",
+          "maximum": 1000,
+          "minimum": 1,
+          "type": "number"
+        },
+        "state": {
+          "description": "Filter by state/province name",
+          "nullable": true,
+          "type": "string"
+        },
+        "tagIds": {
+          "description": "Filter by tag IDs",
+          "items": {
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+            "type": "string"
+          },
+          "nullable": true,
+          "type": "array"
+        },
+        "takenAfter": {
+          "description": "Filter by taken date (after)",
+          "example": "2024-01-01T00:00:00.000Z",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
+          "type": "string"
+        },
+        "takenBefore": {
+          "description": "Filter by taken date (before)",
+          "example": "2024-01-01T00:00:00.000Z",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
+          "type": "string"
+        },
+        "thumbnailPath": {
+          "description": "Filter by thumbnail file path",
+          "type": "string"
+        },
+        "trashedAfter": {
+          "description": "Filter by trash date (after)",
+          "example": "2024-01-01T00:00:00.000Z",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
+          "type": "string"
+        },
+        "trashedBefore": {
+          "description": "Filter by trash date (before)",
+          "example": "2024-01-01T00:00:00.000Z",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
+          "type": "string"
+        },
+        "type": {
+          "$ref": "#/components/schemas/AssetTypeEnum"
+        },
+        "updatedAfter": {
+          "description": "Filter by update date (after)",
+          "example": "2024-01-01T00:00:00.000Z",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
+          "type": "string"
+        },
+        "updatedBefore": {
+          "description": "Filter by update date (before)",
+          "example": "2024-01-01T00:00:00.000Z",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
+          "type": "string"
+        },
+        "visibility": {
+          "$ref": "#/components/schemas/AssetVisibility"
+        },
+        "withDeleted": {
+          "description": "Include deleted assets",
+          "type": "boolean"
+        },
+        "withExif": {
+          "description": "Include EXIF data in response",
+          "type": "boolean"
+        },
+        "withPeople": {
+          "description": "Include people data in response",
+          "type": "boolean"
+        },
+        "withStacked": {
+          "description": "Include stacked assets",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "Permission": {
+      "description": "List of permissions",
+      "enum": [
+        "all",
+        "activity.create",
+        "activity.read",
+        "activity.update",
+        "activity.delete",
+        "activity.statistics",
+        "apiKey.create",
+        "apiKey.read",
+        "apiKey.update",
+        "apiKey.delete",
+        "asset.read",
+        "asset.update",
+        "asset.delete",
+        "asset.statistics",
+        "asset.share",
+        "asset.view",
+        "asset.download",
+        "asset.upload",
+        "asset.copy",
+        "asset.derive",
+        "asset.edit.get",
+        "asset.edit.create",
+        "asset.edit.delete",
+        "album.create",
+        "album.read",
+        "album.update",
+        "album.delete",
+        "album.statistics",
+        "album.share",
+        "album.download",
+        "albumAsset.create",
+        "albumAsset.delete",
+        "albumUser.create",
+        "albumUser.update",
+        "albumUser.delete",
+        "auth.changePassword",
+        "authDevice.delete",
+        "archive.read",
+        "backup.list",
+        "backup.download",
+        "backup.upload",
+        "backup.delete",
+        "duplicate.read",
+        "duplicate.delete",
+        "face.create",
+        "face.read",
+        "face.update",
+        "face.delete",
+        "folder.read",
+        "job.create",
+        "job.read",
+        "library.create",
+        "library.read",
+        "library.update",
+        "library.delete",
+        "library.statistics",
+        "timeline.read",
+        "timeline.download",
+        "maintenance",
+        "map.read",
+        "map.search",
+        "memory.create",
+        "memory.read",
+        "memory.update",
+        "memory.delete",
+        "memory.statistics",
+        "memoryAsset.create",
+        "memoryAsset.delete",
+        "notification.create",
+        "notification.read",
+        "notification.update",
+        "notification.delete",
+        "partner.create",
+        "partner.read",
+        "partner.update",
+        "partner.delete",
+        "person.create",
+        "person.read",
+        "person.update",
+        "person.delete",
+        "person.statistics",
+        "person.merge",
+        "person.reassign",
+        "pinCode.create",
+        "pinCode.update",
+        "pinCode.delete",
+        "plugin.create",
+        "plugin.read",
+        "plugin.update",
+        "plugin.delete",
+        "server.about",
+        "server.apkLinks",
+        "server.storage",
+        "server.statistics",
+        "server.versionCheck",
+        "serverLicense.read",
+        "serverLicense.update",
+        "serverLicense.delete",
+        "session.create",
+        "session.read",
+        "session.update",
+        "session.delete",
+        "session.lock",
+        "sharedLink.create",
+        "sharedLink.read",
+        "sharedLink.update",
+        "sharedLink.delete",
+        "stack.create",
+        "stack.read",
+        "stack.update",
+        "stack.delete",
+        "sync.stream",
+        "syncCheckpoint.read",
+        "syncCheckpoint.update",
+        "syncCheckpoint.delete",
+        "systemConfig.read",
+        "systemConfig.update",
+        "systemMetadata.read",
+        "systemMetadata.update",
+        "tag.create",
+        "tag.read",
+        "tag.update",
+        "tag.delete",
+        "tag.asset",
+        "user.read",
+        "user.update",
+        "userLicense.create",
+        "userLicense.read",
+        "userLicense.update",
+        "userLicense.delete",
+        "userOnboarding.read",
+        "userOnboarding.update",
+        "userOnboarding.delete",
+        "userPreference.read",
+        "userPreference.update",
+        "userProfileImage.create",
+        "userProfileImage.read",
+        "userProfileImage.update",
+        "userProfileImage.delete",
+        "queue.read",
+        "queue.update",
+        "queueJob.create",
+        "queueJob.read",
+        "queueJob.update",
+        "queueJob.delete",
+        "workflow.create",
+        "workflow.read",
+        "workflow.update",
+        "workflow.delete",
+        "adminUser.create",
+        "adminUser.read",
+        "adminUser.update",
+        "adminUser.delete",
+        "adminSession.read",
+        "adminAuth.unlinkAll"
+      ],
+      "type": "string"
+    },
+    "PersonWithFacesResponseDto": {
+      "properties": {
+        "birthDate": {
+          "description": "Person date of birth",
+          "format": "date",
+          "nullable": true,
+          "type": "string"
+        },
+        "color": {
+          "description": "Person color (hex)",
+          "type": "string",
+          "x-immich-history": [
+            {
+              "state": "Added",
+              "version": "v1.126.0"
+            },
+            {
+              "state": "Stable",
+              "version": "v2"
+            }
+          ],
+          "x-immich-state": "Stable"
+        },
+        "faces": {
+          "items": {
+            "$ref": "#/components/schemas/AssetFaceWithoutPersonResponseDto"
+          },
+          "type": "array"
+        },
+        "id": {
+          "description": "Person ID",
+          "type": "string"
+        },
+        "isFavorite": {
+          "description": "Is favorite",
+          "type": "boolean",
+          "x-immich-history": [
+            {
+              "state": "Added",
+              "version": "v1.126.0"
+            },
+            {
+              "state": "Stable",
+              "version": "v2"
+            }
+          ],
+          "x-immich-state": "Stable"
+        },
+        "isHidden": {
+          "description": "Is hidden",
+          "type": "boolean"
+        },
+        "name": {
+          "description": "Person name",
+          "type": "string"
+        },
+        "thumbnailPath": {
+          "description": "Thumbnail path",
+          "type": "string"
+        },
+        "updatedAt": {
+          "description": "Last update date",
+          "format": "date-time",
+          "type": "string",
+          "x-immich-history": [
+            {
+              "state": "Added",
+              "version": "v1.107.0"
+            },
+            {
+              "state": "Stable",
+              "version": "v2"
+            }
+          ],
+          "x-immich-state": "Stable"
+        }
+      },
+      "required": [
+        "birthDate",
+        "faces",
+        "id",
+        "isHidden",
+        "name",
+        "thumbnailPath"
+      ],
+      "type": "object"
+    },
+    "SearchAlbumResponseDto": {
+      "properties": {
+        "count": {
+          "description": "Number of albums in this page",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "facets": {
+          "items": {
+            "$ref": "#/components/schemas/SearchFacetResponseDto"
+          },
+          "type": "array"
+        },
+        "items": {
+          "items": {
+            "$ref": "#/components/schemas/AlbumResponseDto"
+          },
+          "type": "array"
+        },
+        "total": {
+          "description": "Total number of matching albums",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "count",
+        "facets",
+        "items",
+        "total"
+      ],
+      "type": "object"
+    },
+    "SearchAssetResponseDto": {
+      "properties": {
+        "count": {
+          "description": "Number of assets in this page",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "facets": {
+          "items": {
+            "$ref": "#/components/schemas/SearchFacetResponseDto"
+          },
+          "type": "array"
+        },
+        "items": {
+          "items": {
+            "$ref": "#/components/schemas/AssetResponseDto"
+          },
+          "type": "array"
+        },
+        "nextPage": {
+          "description": "Next page token",
+          "nullable": true,
+          "type": "string"
+        },
+        "total": {
+          "description": "Total number of matching assets",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "count",
+        "facets",
+        "items",
+        "nextPage",
+        "total"
+      ],
+      "type": "object"
+    },
+    "SearchFacetCountResponseDto": {
+      "properties": {
+        "count": {
+          "description": "Number of assets with this facet value",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "value": {
+          "description": "Facet value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "count",
+        "value"
+      ],
+      "type": "object"
+    },
+    "SearchFacetResponseDto": {
+      "properties": {
+        "counts": {
+          "items": {
+            "$ref": "#/components/schemas/SearchFacetCountResponseDto"
+          },
+          "type": "array"
+        },
+        "fieldName": {
+          "description": "Facet field name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "counts",
+        "fieldName"
+      ],
+      "type": "object"
+    },
+    "SearchResponseDto": {
+      "properties": {
+        "albums": {
+          "$ref": "#/components/schemas/SearchAlbumResponseDto"
+        },
+        "assets": {
+          "$ref": "#/components/schemas/SearchAssetResponseDto"
+        }
+      },
+      "required": [
+        "albums",
+        "assets"
+      ],
+      "type": "object"
+    },
+    "ServerPingResponse": {
+      "properties": {
+        "res": {
+          "example": "pong",
+          "type": "string"
+        }
+      },
+      "required": [
+        "res"
+      ],
+      "type": "object"
+    },
+    "ServerVersionResponseDto": {
+      "properties": {
+        "major": {
+          "description": "Major version number",
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        },
+        "minor": {
+          "description": "Minor version number",
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        },
+        "patch": {
+          "description": "Patch version number",
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "major",
+        "minor",
+        "patch"
+      ],
+      "type": "object"
+    },
+    "SourceType": {
+      "description": "Face detection source type",
+      "enum": [
+        "machine-learning",
+        "exif",
+        "manual"
+      ],
+      "type": "string"
+    },
+    "SyncAckDeleteDto": {
+      "properties": {
+        "types": {
+          "description": "Sync entity types to delete acks for",
+          "items": {
+            "$ref": "#/components/schemas/SyncEntityType"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "SyncAckDto": {
+      "properties": {
+        "ack": {
+          "description": "Acknowledgment ID",
+          "type": "string"
+        },
+        "type": {
+          "$ref": "#/components/schemas/SyncEntityType"
+        }
+      },
+      "required": [
+        "ack",
+        "type"
+      ],
+      "type": "object"
+    },
+    "SyncAckSetDto": {
+      "properties": {
+        "acks": {
+          "description": "Acknowledgment IDs (max 1000)",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 1000,
+          "type": "array"
+        }
+      },
+      "required": [
+        "acks"
+      ],
+      "type": "object"
+    },
+    "SyncEntityType": {
+      "description": "Sync entity type",
+      "enum": [
+        "AuthUserV1",
+        "UserV1",
+        "UserDeleteV1",
+        "AssetV1",
+        "AssetDeleteV1",
+        "AssetExifV1",
+        "AssetEditV1",
+        "AssetEditDeleteV1",
+        "AssetMetadataV1",
+        "AssetMetadataDeleteV1",
+        "PartnerV1",
+        "PartnerDeleteV1",
+        "PartnerAssetV1",
+        "PartnerAssetBackfillV1",
+        "PartnerAssetDeleteV1",
+        "PartnerAssetExifV1",
+        "PartnerAssetExifBackfillV1",
+        "PartnerStackBackfillV1",
+        "PartnerStackDeleteV1",
+        "PartnerStackV1",
+        "AlbumV1",
+        "AlbumDeleteV1",
+        "AlbumUserV1",
+        "AlbumUserBackfillV1",
+        "AlbumUserDeleteV1",
+        "AlbumAssetCreateV1",
+        "AlbumAssetUpdateV1",
+        "AlbumAssetBackfillV1",
+        "AlbumAssetExifCreateV1",
+        "AlbumAssetExifUpdateV1",
+        "AlbumAssetExifBackfillV1",
+        "AlbumToAssetV1",
+        "AlbumToAssetDeleteV1",
+        "AlbumToAssetBackfillV1",
+        "MemoryV1",
+        "MemoryDeleteV1",
+        "MemoryToAssetV1",
+        "MemoryToAssetDeleteV1",
+        "StackV1",
+        "StackDeleteV1",
+        "PersonV1",
+        "PersonDeleteV1",
+        "AssetFaceV1",
+        "AssetFaceV2",
+        "AssetFaceDeleteV1",
+        "UserMetadataV1",
+        "UserMetadataDeleteV1",
+        "SyncAckV1",
+        "SyncResetV1",
+        "SyncCompleteV1"
+      ],
+      "type": "string"
+    },
+    "SyncRequestType": {
+      "description": "Sync request type",
+      "enum": [
+        "AlbumsV1",
+        "AlbumUsersV1",
+        "AlbumToAssetsV1",
+        "AlbumAssetsV1",
+        "AlbumAssetExifsV1",
+        "AssetsV1",
+        "AssetExifsV1",
+        "AssetEditsV1",
+        "AssetMetadataV1",
+        "AuthUsersV1",
+        "MemoriesV1",
+        "MemoryToAssetsV1",
+        "PartnersV1",
+        "PartnerAssetsV1",
+        "PartnerAssetExifsV1",
+        "PartnerStacksV1",
+        "StacksV1",
+        "UsersV1",
+        "PeopleV1",
+        "AssetFacesV1",
+        "AssetFacesV2",
+        "UserMetadataV1"
+      ],
+      "type": "string"
+    },
+    "SyncStreamDto": {
+      "properties": {
+        "reset": {
+          "description": "Reset sync state",
+          "type": "boolean"
+        },
+        "types": {
+          "description": "Sync request types",
+          "items": {
+            "$ref": "#/components/schemas/SyncRequestType"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "types"
+      ],
+      "type": "object"
+    },
+    "TagBulkAssetsDto": {
+      "properties": {
+        "assetIds": {
+          "description": "Asset IDs",
+          "items": {
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "tagIds": {
+          "description": "Tag IDs",
+          "items": {
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "assetIds",
+        "tagIds"
+      ],
+      "type": "object"
+    },
+    "TagBulkAssetsResponseDto": {
+      "properties": {
+        "count": {
+          "description": "Number of assets tagged",
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "count"
+      ],
+      "type": "object"
+    },
+    "TagCreateDto": {
+      "properties": {
+        "color": {
+          "description": "Tag color (hex)",
+          "nullable": true,
+          "pattern": "^#?([0-9A-Fa-f]{3}|[0-9A-Fa-f]{4}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$",
+          "type": "string"
+        },
+        "name": {
+          "description": "Tag name",
+          "type": "string"
+        },
+        "parentId": {
+          "description": "Parent tag ID",
+          "format": "uuid",
+          "nullable": true,
+          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "TagResponseDto": {
+      "properties": {
+        "color": {
+          "description": "Tag color (hex)",
+          "type": "string"
+        },
+        "createdAt": {
+          "description": "Creation date",
+          "format": "date-time",
+          "type": "string"
+        },
+        "id": {
+          "description": "Tag ID",
+          "type": "string"
+        },
+        "name": {
+          "description": "Tag name",
+          "type": "string"
+        },
+        "parentId": {
+          "description": "Parent tag ID",
+          "type": "string"
+        },
+        "updatedAt": {
+          "description": "Last update date",
+          "format": "date-time",
+          "type": "string"
+        },
+        "value": {
+          "description": "Tag value (full path)",
+          "type": "string"
+        }
+      },
+      "required": [
+        "createdAt",
+        "id",
+        "name",
+        "updatedAt",
+        "value"
+      ],
+      "type": "object"
+    },
+    "TrashResponseDto": {
+      "properties": {
+        "count": {
+          "description": "Number of items in trash",
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "count"
+      ],
+      "type": "object"
+    },
+    "UserAdminResponseDto": {
+      "properties": {
+        "avatarColor": {
+          "$ref": "#/components/schemas/UserAvatarColor"
+        },
+        "createdAt": {
+          "description": "Creation date",
+          "example": "2024-01-01T00:00:00.000Z",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
+          "type": "string"
+        },
+        "deletedAt": {
+          "description": "Deletion date",
+          "example": "2024-01-01T00:00:00.000Z",
+          "format": "date-time",
+          "nullable": true,
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
+          "type": "string"
+        },
+        "email": {
+          "description": "User email",
+          "format": "email",
+          "pattern": "^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$",
+          "type": "string"
+        },
+        "id": {
+          "description": "User ID",
+          "format": "uuid",
+          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+          "type": "string"
+        },
+        "isAdmin": {
+          "description": "Is admin user",
+          "type": "boolean"
+        },
+        "license": {
+          "allOf": [
+            {
+              "$ref": "#/components/schemas/UserLicense"
+            }
+          ],
+          "nullable": true
+        },
+        "name": {
+          "description": "User name",
+          "type": "string"
+        },
+        "oauthId": {
+          "description": "OAuth ID",
+          "type": "string"
+        },
+        "profileChangedAt": {
+          "description": "Profile change date",
+          "format": "date-time",
+          "type": "string"
+        },
+        "profileImagePath": {
+          "description": "Profile image path",
+          "type": "string"
+        },
+        "quotaSizeInBytes": {
+          "description": "Storage quota in bytes",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "nullable": true,
+          "type": "integer"
+        },
+        "quotaUsageInBytes": {
+          "description": "Storage usage in bytes",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "nullable": true,
+          "type": "integer"
+        },
+        "shouldChangePassword": {
+          "description": "Require password change on next login",
+          "type": "boolean"
+        },
+        "status": {
+          "$ref": "#/components/schemas/UserStatus"
+        },
+        "storageLabel": {
+          "description": "Storage label",
+          "nullable": true,
+          "type": "string"
+        },
+        "updatedAt": {
+          "description": "Last update date",
+          "example": "2024-01-01T00:00:00.000Z",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "avatarColor",
+        "createdAt",
+        "deletedAt",
+        "email",
+        "id",
+        "isAdmin",
+        "license",
+        "name",
+        "oauthId",
+        "profileChangedAt",
+        "profileImagePath",
+        "quotaSizeInBytes",
+        "quotaUsageInBytes",
+        "shouldChangePassword",
+        "status",
+        "storageLabel",
+        "updatedAt"
+      ],
+      "type": "object"
+    },
+    "UserAvatarColor": {
+      "description": "User avatar color",
+      "enum": [
+        "primary",
+        "pink",
+        "red",
+        "yellow",
+        "blue",
+        "green",
+        "purple",
+        "orange",
+        "gray",
+        "amber"
+      ],
+      "type": "string"
+    },
+    "UserLicense": {
+      "properties": {
+        "activatedAt": {
+          "description": "Activation date",
+          "example": "2024-01-01T00:00:00.000Z",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
+          "type": "string"
+        },
+        "activationKey": {
+          "description": "Activation key",
+          "type": "string"
+        },
+        "licenseKey": {
+          "description": "License key (format: /^IM(SV|CL)(-[\\dA-Za-z]{4}){8}$/)",
+          "pattern": "^IM(SV|CL)(-[\\dA-Za-z]{4}){8}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "activatedAt",
+        "activationKey",
+        "licenseKey"
+      ],
+      "type": "object"
+    },
+    "UserResponseDto": {
+      "properties": {
+        "avatarColor": {
+          "$ref": "#/components/schemas/UserAvatarColor"
+        },
+        "email": {
+          "description": "User email",
+          "format": "email",
+          "pattern": "^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$",
+          "type": "string"
+        },
+        "id": {
+          "description": "User ID",
+          "format": "uuid",
+          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+          "type": "string"
+        },
+        "name": {
+          "description": "User name",
+          "type": "string"
+        },
+        "profileChangedAt": {
+          "description": "Profile change date",
+          "format": "date-time",
+          "type": "string"
+        },
+        "profileImagePath": {
+          "description": "Profile image path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "avatarColor",
+        "email",
+        "id",
+        "name",
+        "profileChangedAt",
+        "profileImagePath"
+      ],
+      "type": "object"
+    },
+    "UserStatus": {
+      "description": "User status",
+      "enum": [
+        "active",
+        "removing",
+        "deleted"
+      ],
+      "type": "string"
+    }
+  }
+}

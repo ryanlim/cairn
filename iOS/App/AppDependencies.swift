@@ -765,6 +765,19 @@ final class AppDependencies {
                         syncLog.notice("[cairn.boot] missing permissions: \(missing.joined(separator: ", "))")
                     }
                 }
+                // Best-effort server version + supported-range advisory.
+                // Soft signal only — surfaced on the Connection page, never
+                // gates sync. Older Immich without /server/version just
+                // leaves both nil.
+                if let version = try? await client.serverVersion() {
+                    self.model.serverVersion = version
+                    self.model.serverVersionAdvisory = ImmichVersionSupport.advisory(for: version)
+                    if let advisory = self.model.serverVersionAdvisory {
+                        syncLog.notice("[cairn.boot] server version \(String(describing: version), privacy: .public) — advisory: \(advisory, privacy: .public)")
+                    } else {
+                        syncLog.notice("[cairn.boot] server version \(String(describing: version), privacy: .public)")
+                    }
+                }
                 // Opportunistic identity refresh for legacy installs. If
                 // we activated with `userId: nil` (cache empty), fetch
                 // identity now that we have a working client. Persist;
