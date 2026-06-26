@@ -6759,10 +6759,18 @@ final class AppDependencies {
                     }
                 }
             )
+            // `heldByQuarantineCandidates` is a subset of
+            // `pendingReviewCandidates` (the engine always populates both
+            // — see `LiveReconciliation`). Pose them as the same set here:
+            // the Status quarantine line (and its `status.openPendingReview`
+            // entry button the demo taps) gates on `pendingReviewCount`,
+            // so leaving the superset empty hid the line and broke the
+            // demo's Pending Review navigation.
+            let demoHeld = demoCandidates.map(\.asServerAsset)
             model.reconciliation = .init(
                 deleteCandidates: [],
-                pendingReviewCandidates: [],
-                heldByQuarantineCandidates: demoCandidates.map(\.asServerAsset),
+                pendingReviewCandidates: demoHeld,
+                heldByQuarantineCandidates: demoHeld,
                 confirmedDeletedAt: confirmedAt,
                 quarantineDays: 14
             )
